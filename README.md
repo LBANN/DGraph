@@ -12,9 +12,32 @@ networks with massive amounts of data.  LBANN is able to advantage of
 tightly-coupled accelerators, low-latency high-bandwidth networking,
 and high-bandwidth parallel file systems.
 
-## <TEMPLATE> Repository
+##  DGraph
+DGraph is deep learning library for training graph neural networks at scale that is built on top of PyTorch.
 
-<REPLACE ME>
+
+To install DGraph, clone the repository and install with pip:
+```shell
+pip install .
+```
+
+### Running tests
+To run the tests, use the following command:
+```shell
+python -m pytest tests/
+```
+
+### Requirements
+DGraph requires the following packages:
+- PyTorch >= 2.1.0
+- NumPy
+- pytest
+
+For the full list of requirements, see `requirements.txt`.
+
+DGraph also requires the following libraries:
+- NCCL
+- NVSHMEM
 
 ## Publications
 
