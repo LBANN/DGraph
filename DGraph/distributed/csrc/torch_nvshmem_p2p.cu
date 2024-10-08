@@ -57,11 +57,11 @@ void NVSHMEMP2P::dist_get(torch::Tensor src, torch::Tensor dst, torch::Tensor in
   }
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  py::class_<NVSHMEMP2P>(m, "NVSHMEMP2P")
-    .def(py::init<>())
-    .def("init", &NVSHMEMP2P::init)
-    .def("finalize", &NVSHMEMP2P::finalize)
-    .def("dist_put", &NVSHMEMP2P::dist_put)
-    .def("dist_get", &NVSHMEMP2P::dist_get);
-}
+// PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+//   py::class_<NVSHMEMP2P>(m, "NVSHMEMP2P")
+//     .def(py::init<>())
+//     .def("init", &NVSHMEMP2P::init)
+//     .def("finalize", &NVSHMEMP2P::finalize)
+//     .def("dist_put", &NVSHMEMP2P::dist_put)
+//     .def("dist_get", &NVSHMEMP2P::dist_get);
+// }

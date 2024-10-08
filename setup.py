@@ -7,6 +7,7 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 nvshmem_p2p_sources = [
     "DGraph/distributed/csrc/torch_nvshmem_p2p.cu",
+    "DGraph/distributed/csrc/torch_nvshmem_p2p_bindings.cpp",
 ]
 
 # Check if CUDA is available
@@ -48,18 +49,26 @@ dgraph_include_dir = os.path.join(cur_dir, "DGraph", "distributed", "include")
 include_dirs = [mpi_include, nvshmem_include, dgraph_include_dir]
 library_dirs = [mpi_lib, nvshmem_lib, cuda_lib]
 library_flags = [
+    "-Wl,--no-as-needed",
     "-lmpi",
     "-lnvshmem",
-    "-lcudart",
-    "-lcuda",
 ]
 
-extra_compile_args = {"nvcc": ["-O3"]}
+extra_compile_args = {
+    "nvcc": [
+        "-O3",
+        "-gencode",
+        "arch=compute_80,code=sm_80",
+        "-rdc=true",
+    ]
+}
 
 nvshmem_module = CUDAExtension(
     name="torch_nvshmem_p2p",
     sources=nvshmem_p2p_sources,
     include_dirs=include_dirs,
+    dlink=True,
+    dlink_libraries=["nvshmem"],
     library_dirs=library_dirs,
     extra_compile_args=extra_compile_args,
     extra_link_args=library_flags,
@@ -69,9 +78,6 @@ setup(
     name="DGraph",
     py_modules=["DGraph"],
     ext_modules=[nvshmem_module],
-    install_requires=[
-        "torch",
-        "numpy",
-    ],
+    install_requires=["torch", "numpy", "ninja"],
     cmdclass={"build_ext": BuildExtension},
 )
