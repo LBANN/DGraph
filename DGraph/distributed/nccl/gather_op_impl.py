@@ -1,7 +1,5 @@
 import torch.distributed as dist
 from DGraph.utils import largest_split
-from DGraph.distributed.nccl.scatter_op_impl import _nccl_scatter_op
-from torch.autograd import Function
 
 
 def _nccl_gather_op(send_tensor_buffer, recv_tensor_buffer, indices, rank, world_size):
@@ -29,25 +27,3 @@ def _nccl_gather_op(send_tensor_buffer, recv_tensor_buffer, indices, rank, world
 
     for req in reqs:
         req.wait()
-
-
-class GatherFunction(Function):
-    @staticmethod
-    def forward(ctx, send_tensor, recv_tensor, indices):
-        ctx.save_for_backward(send_tensor, recv_tensor, indices)
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-        _nccl_gather_op(send_tensor, recv_tensor, indices, rank, world_size)
-        return recv_tensor
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        send_tensor, recv_tensor, indices = ctx.saved_tensors
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-        _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
-        return grad_output, None, None
-
-
-def gather(send_tensor, recv_tensor, indices):
-    return GatherFunction.apply(send_tensor, recv_tensor, indices)

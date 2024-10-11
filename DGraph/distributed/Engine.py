@@ -1,3 +1,6 @@
+import torch
+
+
 class BackendEngine(object):
     def __init__(self):
         pass
@@ -5,14 +8,14 @@ class BackendEngine(object):
     def init_process_group(self, *args, **kwargs):
         raise NotImplementedError
 
-    def get_rank(self):
+    def get_rank(self) -> int:
         raise NotImplementedError
 
-    def get_world_size(self):
+    def get_world_size(self) -> int:
         raise NotImplementedError
 
-    def scatter(self, *args, **kwargs):
+    def scatter(self, *args, **kwargs) -> torch.Tensor:
         raise NotImplementedError
 
-    def gather(self, *args, **kwargs):
+    def gather(self, *args, **kwargs) -> torch.Tensor:
         raise NotImplementedError

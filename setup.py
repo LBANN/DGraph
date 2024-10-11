@@ -5,79 +5,79 @@ import glob
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-nvshmem_p2p_sources = [
-    "DGraph/distributed/csrc/torch_nvshmem_p2p.cu",
-    "DGraph/distributed/csrc/torch_nvshmem_p2p_bindings.cpp",
-]
+# nvshmem_p2p_sources = [
+#     "DGraph/distributed/csrc/torch_nvshmem_p2p.cu",
+#     "DGraph/distributed/csrc/torch_nvshmem_p2p_bindings.cpp",
+# ]
 
-# Check if CUDA is available
-if not torch.cuda.is_available() and "CUDA_HOME" not in os.environ:
-    raise EnvironmentError("CUDA is required to build DGraph")
-# There is no good way to check if Torch was built with CUDA support
-# so we just check if CUDA is available. This could cause an issue
-# if the user is trying to build on a headnode that doesn't have a GPU
-# because CUDA will not be available even if Torch was built with CUDA
+# # Check if CUDA is available
+# if not torch.cuda.is_available() and "CUDA_HOME" not in os.environ:
+#     raise EnvironmentError("CUDA is required to build DGraph")
+# # There is no good way to check if Torch was built with CUDA support
+# # so we just check if CUDA is available. This could cause an issue
+# # if the user is trying to build on a headnode that doesn't have a GPU
+# # because CUDA will not be available even if Torch was built with CUDA
 
-# Check if NVSHMEM_HOME is set
-# TODO: Try to add the ability to input this path as an argument
-if "NVSHMEM_HOME" not in os.environ:
-    raise EnvironmentError("NVSHMEM_HOME must be set to build DGraph")
-
-
-# TODO: Try to add the ability to input this path as an argument
-if "MPI_HOME" not in os.environ:
-    raise EnvironmentError("MPI_HOME must be set to build DGraph")
+# # Check if NVSHMEM_HOME is set
+# # TODO: Try to add the ability to input this path as an argument
+# if "NVSHMEM_HOME" not in os.environ:
+#     raise EnvironmentError("NVSHMEM_HOME must be set to build DGraph")
 
 
-nvshmem_home = os.environ["NVSHMEM_HOME"]
-print(f"Found NVSHMEM_HOME: {nvshmem_home}")
+# # TODO: Try to add the ability to input this path as an argument
+# if "MPI_HOME" not in os.environ:
+#     raise EnvironmentError("MPI_HOME must be set to build DGraph")
 
-nvshmem_include = os.path.join(nvshmem_home, "include")
-nvshmem_lib = os.path.join(nvshmem_home, "lib")
 
-mpi_home = os.environ["MPI_HOME"]
-print(f"Found MPI_HOME: {mpi_home}")
-mpi_include = os.path.join(mpi_home, "include")
-mpi_lib = os.path.join(mpi_home, "lib")
+# nvshmem_home = os.environ["NVSHMEM_HOME"]
+# print(f"Found NVSHMEM_HOME: {nvshmem_home}")
 
-cuda_home = os.environ["CUDA_HOME"]
-print(f"Found CUDA_HOME: {cuda_home}")
-cuda_lib = os.path.join(cuda_home, "lib64")
+# nvshmem_include = os.path.join(nvshmem_home, "include")
+# nvshmem_lib = os.path.join(nvshmem_home, "lib")
 
-cur_dir = os.path.dirname(os.path.abspath(__file__))
-dgraph_include_dir = os.path.join(cur_dir, "DGraph", "distributed", "include")
-include_dirs = [mpi_include, nvshmem_include, dgraph_include_dir]
-library_dirs = [mpi_lib, nvshmem_lib, cuda_lib]
-library_flags = [
-    "-Wl,--no-as-needed",
-    "-lmpi",
-    "-lnvshmem",
-]
+# mpi_home = os.environ["MPI_HOME"]
+# print(f"Found MPI_HOME: {mpi_home}")
+# mpi_include = os.path.join(mpi_home, "include")
+# mpi_lib = os.path.join(mpi_home, "lib")
 
-extra_compile_args = {
-    "nvcc": [
-        "-O3",
-        "-gencode",
-        "arch=compute_80,code=sm_80",
-        "-rdc=true",
-    ]
-}
+# cuda_home = os.environ["CUDA_HOME"]
+# print(f"Found CUDA_HOME: {cuda_home}")
+# cuda_lib = os.path.join(cuda_home, "lib64")
 
-nvshmem_module = CUDAExtension(
-    name="torch_nvshmem_p2p",
-    sources=nvshmem_p2p_sources,
-    include_dirs=include_dirs,
-    dlink=True,
-    dlink_libraries=["nvshmem"],
-    library_dirs=library_dirs,
-    extra_compile_args=extra_compile_args,
-    extra_link_args=library_flags,
-)
+# cur_dir = os.path.dirname(os.path.abspath(__file__))
+# dgraph_include_dir = os.path.join(cur_dir, "DGraph", "distributed", "include")
+# include_dirs = [mpi_include, nvshmem_include, dgraph_include_dir]
+# library_dirs = [mpi_lib, nvshmem_lib, cuda_lib]
+# library_flags = [
+#     "-Wl,--no-as-needed",
+#     "-lmpi",
+#     "-lnvshmem",
+# ]
+
+# extra_compile_args = {
+#     "nvcc": [
+#         "-O3",
+#         "-gencode",
+#         "arch=compute_80,code=sm_80",
+#         "-rdc=true",
+#     ]
+# }
+
+# nvshmem_module = CUDAExtension(
+#     name="torch_nvshmem_p2p",
+#     sources=nvshmem_p2p_sources,
+#     include_dirs=include_dirs,
+#     dlink=True,
+#     dlink_libraries=["nvshmem"],
+#     library_dirs=library_dirs,
+#     extra_compile_args=extra_compile_args,
+#     extra_link_args=library_flags,
+# )
 
 setup(
     name="DGraph",
     py_modules=["DGraph"],
-    ext_modules=[nvshmem_module],
+    # ext_modules=[nvshmem_module],
     install_requires=["torch", "numpy", "ninja"],
     cmdclass={"build_ext": BuildExtension},
 )
