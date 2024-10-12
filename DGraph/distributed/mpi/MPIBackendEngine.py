@@ -5,6 +5,7 @@ from mpi4py import MPI
 from torch.utils.dlpack import to_dlpack  # type: ignore
 from torch.utils.dlpack import from_dlpack
 import cupy as cp
+import warnings
 
 
 class MPIBackendEngine(BackendEngine):
@@ -43,7 +44,40 @@ class MPIBackendEngine(BackendEngine):
         return self._comm.Get_size()
 
     def scatter(self, *args, **kwargs) -> torch.Tensor:
+        input_tensor: torch.Tensor = args[0]
+        indices: torch.Tensor = args[1]
+        local_size: int = args[2]
+        batch_size: int = input_tensor.shape[0]
+        feature_size: int = input_tensor.shape[2]
+
+        output_tensor: torch.Tensor = self.Malloc(
+            batch_size * local_size * feature_size
+        ).reshape(batch_size, local_size, feature_size)
+
+        if indices.device != torch.device("cpu"):
+            indices = indices.cpu()
+            warnings.warn(
+                "Scatter indices not on CPU, moving to CPU."
+                + "MPI requires indices to be on CPU."
+            )
         raise NotImplementedError
 
     def gather(self, *args, **kwargs) -> torch.Tensor:
+        input_tensor: torch.Tensor = args[0]
+        indices: torch.Tensor = args[1]
+        indices_shape = indices.shape
+        b_size = indices_shape[0]
+        n = indices_shape[1]
+        feature_size = input_tensor.shape[2]
+        output_tensor = self.Malloc(b_size * n * feature_size).reshape(
+            b_size, n, feature_size
+        )
+
+        if indices.device != torch.device("cpu"):
+            indices = indices.cpu()
+            warnings.warn(
+                "Gather indices not on CPU, moving to CPU."
+                + "MPI requires indices to be on CPU."
+            )
+
         raise NotImplementedError
