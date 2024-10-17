@@ -3,6 +3,3 @@ def test_import_nvshmem_p2p():
     import torch_nvshmem_p2p
 
     assert True
-
-
-# def test_import_nccl_gather():

@@ -5,26 +5,26 @@ import glob
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-# nvshmem_p2p_sources = [
-#     "DGraph/distributed/csrc/torch_nvshmem_p2p.cu",
-#     "DGraph/distributed/csrc/torch_nvshmem_p2p_bindings.cpp",
-# ]
+nvshmem_p2p_sources = [
+    "DGraph/distributed/csrc/torch_nvshmem_p2p.cu",
+    "DGraph/distributed/csrc/torch_nvshmem_p2p_bindings.cpp",
+]
 
-# # Check if CUDA is available
+# Check if CUDA is available
 # if not torch.cuda.is_available() and "CUDA_HOME" not in os.environ:
 #     raise EnvironmentError("CUDA is required to build DGraph")
-# # There is no good way to check if Torch was built with CUDA support
-# # so we just check if CUDA is available. This could cause an issue
-# # if the user is trying to build on a headnode that doesn't have a GPU
-# # because CUDA will not be available even if Torch was built with CUDA
+# There is no good way to check if Torch was built with CUDA support
+# so we just check if CUDA is available. This could cause an issue
+# if the user is trying to build on a headnode that doesn't have a GPU
+# because CUDA will not be available even if Torch was built with CUDA
 
-# # Check if NVSHMEM_HOME is set
-# # TODO: Try to add the ability to input this path as an argument
+# Check if NVSHMEM_HOME is set
+# TODO: Try to add the ability to input this path as an argument
 # if "NVSHMEM_HOME" not in os.environ:
 #     raise EnvironmentError("NVSHMEM_HOME must be set to build DGraph")
 
 
-# # TODO: Try to add the ability to input this path as an argument
+# TODO: Try to add the ability to input this path as an argument
 # if "MPI_HOME" not in os.environ:
 #     raise EnvironmentError("MPI_HOME must be set to build DGraph")
 
