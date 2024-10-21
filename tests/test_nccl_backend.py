@@ -23,9 +23,9 @@ def setup_gather_data():
     all_rank_output = torch.zeros(2, 8, 64)
 
 
-    for k in range(2)
+    for k in range(2):
         for i in range(8):
-            all_rank_output[i] = all_rank_input_data[all_edge_coo[k, i]]
+            all_rank_output[k] = all_rank_input_data[all_edge_coo[k, i]]
 
     return all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output
 
