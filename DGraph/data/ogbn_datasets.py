@@ -83,10 +83,12 @@ class DistributedOGBWrapper(Dataset):
 
             # NOTE: Two-sided comm needs all the edge indices not the local ones
             edge_indices = self.graph_obj.get_global_edge_indices()
+            rank_mappings = self.graph_obj.get_global_rank_mappings()
 
-            return local_node_features, edge_indices
         else:
             # One-sided communication, no need for rank placement data
 
             edge_indices = self.graph_obj.get_local_edge_indices()
-            return local_node_features, edge_indices
+            rank_mappings = self.graph_obj.get_local_rank_mappings()
+
+        return local_node_features, edge_indices, rank_mappings

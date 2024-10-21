@@ -19,3 +19,9 @@ class BackendEngine(object):
 
     def gather(self, *args, **kwargs) -> torch.Tensor:
         raise NotImplementedError
+
+    def finalize(self) -> None:
+        raise NotImplementedError
+
+    def barrier(self) -> None:
+        raise NotImplementedError

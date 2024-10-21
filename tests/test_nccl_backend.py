@@ -20,6 +20,7 @@ def setup_gather_data():
     all_edge_coo = torch.tensor([[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]])
     # rank_mappings = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]]).view(1, 4, 2)
     # all_rank_output = torch.tensor([2.0, 4.0, 1.0, 3.0]).view(1, -1, 1)
+
     return all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output
 
 

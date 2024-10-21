@@ -63,7 +63,7 @@ class NCCLBackendEngine(BackendEngine):
         if not dist.is_initialized():
             dist.init_process_group(backend="nccl", *args, **kwargs)
 
-            self._initialized = True
+        self._initialized = True
 
     def get_rank(self) -> int:
         return dist.get_rank()
@@ -96,3 +96,12 @@ class NCCLBackendEngine(BackendEngine):
         feature_size = input_tensor.shape[2]
         output_tensor = torch.zeros(b_size, n, feature_size, device=input_tensor.device)
         return gather(input_tensor, output_tensor, indices)
+
+    def destroy(self) -> None:
+        if self._initialized:
+            # dist.destroy_process_group()
+            self._initialized = False
+
+    def finalize(self) -> None:
+        if self._initialized:
+            dist.barrier()
