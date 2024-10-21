@@ -12,7 +12,7 @@ SUPPORTED_DATASETS = datasets = [
 ]
 
 
-def process_homogenuos_data(
+def process_homogenous_data(
     graph_data, labels, rank, world_Size, *args, **kwargs
 ) -> DistributedGraph:
     """For processing homogenous graph with node features, edge index and labels"""
@@ -65,7 +65,7 @@ class DistributedOGBWrapper(Dataset):
         breakpoint()
 
         self.split_idx = self.dataset.get_idx_split()
-        graph_obj = process_homogenuos_data(
+        graph_obj = process_homogenous_data(
             graph_data, labels, self._rank, self._world_size, *args, **kwargs
         )
 
