@@ -65,7 +65,7 @@ class ScatterFunction(Function):
             torch.tensor(rank),
             torch.tensor(world_size),
         )
-
+        recv_tensor.scatter_add_(0, local_indices, send_tensor)
         _nccl_scatter_op(send_tensor, recv_tensor, indices, rank, world_size)
         return recv_tensor
 

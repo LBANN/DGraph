@@ -47,13 +47,12 @@ class Communicator(CommunicatorBase):
         return self.__backend_engine.get_local_rank_slice(tensor)
 
     def scatter(self, *args, **kwargs) -> torch.Tensor:
+        self.__check_init()
         return self.__backend_engine.scatter(*args, **kwargs)
 
     def gather(self, *args, **kwargs) -> torch.Tensor:
+        self.__check_init()
         return self.__backend_engine.gather(*args, **kwargs)
-
-    def get_local_rank_slice(self, tensor: torch.Tensor):
-        return self.__backend_engine.get_local_rank_slice(tensor)
 
     def destroy(self) -> None:
         """Destroys the process group and releases resources."""
