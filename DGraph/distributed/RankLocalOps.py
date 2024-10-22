@@ -12,6 +12,19 @@ def RankLocalMaskedGather(
     This function gathers the indices from the source rank to the destination rank.
     """
     local_indices = indices[rank_mapping == rank]
+    num_features = _src.shape[-1]
+    local_indices = local_indices.view(-1, 1).expand(-1, num_features)
+    local_gathered_data = torch.gather(_src, 0, local_indices)
+    return local_gathered_data
+
+
+def OutOfPlaceRankLocalMaskedGather(
+    _src: torch.Tensor, indices: torch.Tensor, rank_mapping: torch.Tensor, rank: int
+) -> torch.Tensor:
+    """
+    This function gathers the indices from the source rank to the destination rank.
+    """
+    local_indices = indices[rank_mapping == rank]
     local_gathered_data = torch.gather(_src, 0, local_indices)
     return local_gathered_data
 

@@ -45,7 +45,7 @@ def test_nccl_backend_init(init_nccl_backend):
 
 
 def test_nccl_backend_gather(init_nccl_backend, setup_gather_data):
-    comm = init_nccl_backend
+    comm: Comm.Communicator = init_nccl_backend
     all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output = (
         setup_gather_data
     )

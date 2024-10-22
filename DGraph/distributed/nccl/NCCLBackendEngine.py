@@ -3,6 +3,7 @@ import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
 from DGraph.distributed.nccl.gather_op_impl import _nccl_gather_op
 from DGraph.distributed.nccl.scatter_op_impl import _nccl_scatter_op
+from DGraph.distributed.RankLocalOps import RankLocalMaskedGather
 from torch.autograd import Function
 
 
@@ -27,6 +28,12 @@ class GatherFunction(Function):
             torch.tensor(world_size),
         )
 
+        # do local gather
+        recv_tensor[local_rank_mapping == rank] = RankLocalMaskedGather(
+            send_tensor, local_indices, local_rank_mapping, rank
+        )
+
+        # do global gather
         _nccl_gather_op(send_tensor, recv_tensor, indices, rank, world_size)
         return recv_tensor
 
@@ -58,6 +65,7 @@ class ScatterFunction(Function):
             torch.tensor(rank),
             torch.tensor(world_size),
         )
+
         _nccl_scatter_op(send_tensor, recv_tensor, indices, rank, world_size)
         return recv_tensor
 
