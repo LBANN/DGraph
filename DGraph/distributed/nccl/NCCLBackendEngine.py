@@ -8,11 +8,57 @@ from torch.autograd import Function
 
 class GatherFunction(Function):
     @staticmethod
-    def forward(ctx, send_tensor, recv_tensor, indices):
-        ctx.save_for_backward(send_tensor, recv_tensor, indices)
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
+    def forward(
+        ctx,
+        send_tensor: torch.Tensor,
+        recv_tensor: torch.Tensor,
+        indices: torch.LongTensor,
+        global_rank_mapping: torch.LongTensor,
+        local_indices: torch.LongTensor,
+        local_rank_mapping: torch.LongTensor,
+        rank: int,
+        world_size: int,
+    ):
+        ctx.save_for_backward(
+            send_tensor,
+            recv_tensor,
+            indices,
+            torch.tensor(rank),
+            torch.tensor(world_size),
+        )
+
         _nccl_gather_op(send_tensor, recv_tensor, indices, rank, world_size)
+        return recv_tensor
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        send_tensor, recv_tensor, indices, rank, world_size = ctx.saved_tensors
+
+        _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
+        return grad_output, None, None
+
+
+class ScatterFunction(Function):
+    @staticmethod
+    def forward(
+        ctx,
+        send_tensor: torch.Tensor,
+        recv_tensor: torch.Tensor,
+        indices: torch.Tensor,
+        global_rank_mapping: torch.Tensor,
+        local_indices: torch.Tensor,
+        local_rank_mapping: torch.Tensor,
+        rank: int,
+        world_size: int,
+    ) -> torch.Tensor:
+        ctx.save_for_backward(
+            send_tensor,
+            recv_tensor,
+            indices,
+            torch.tensor(rank),
+            torch.tensor(world_size),
+        )
+        _nccl_scatter_op(send_tensor, recv_tensor, indices, rank, world_size)
         return recv_tensor
 
     @staticmethod
@@ -21,27 +67,7 @@ class GatherFunction(Function):
         rank = dist.get_rank()
         world_size = dist.get_world_size()
         _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
-        return grad_output
-
-
-class ScatterFunction(Function):
-    @staticmethod
-    def forward(
-        ctx, send_tensor: torch.Tensor, recv_tensor: torch.Tensor, indices: torch.Tensor
-    ) -> torch.Tensor:
-        ctx.save_for_backward(send_tensor, recv_tensor, indices)
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-        _nccl_scatter_op(send_tensor, recv_tensor, indices, rank, world_size)
-        return recv_tensor
-
-    @staticmethod
-    def backward(ctx, grad_output) -> torch.Tensor:
-        send_tensor, recv_tensor, indices = ctx.saved_tensors
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-        _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
-        return grad_output
+        return grad_output, None, None
 
 
 def scatter(
@@ -71,6 +97,16 @@ class NCCLBackendEngine(BackendEngine):
     def get_world_size(self) -> int:
         return dist.get_world_size()
 
+    def get_local_rank_slice(self, tensor: torch.Tensor):
+        rank = self.get_rank()
+        world_size = self.get_world_size()
+        tensor_shape = tensor.shape
+        tensor_size = tensor_shape[0]
+        local_size = tensor_size // world_size
+        start_index = rank * local_size
+        end_index = start_index + local_size
+        return tensor[:, start_index:end_index]
+
     def scatter(self, *args, **kwargs) -> torch.Tensor:
         input_tensor: torch.Tensor = args[0]
         indices: torch.Tensor = args[1]
@@ -90,12 +126,20 @@ class NCCLBackendEngine(BackendEngine):
     def gather(self, *args, **kwargs) -> torch.Tensor:
         input_tensor = args[0]
         indices = args[1]
+        rank_mappings = args[2]
         indices_shape = indices.shape
         b_size = indices_shape[0]
+
+        assert b_size == 1, "Multi-batch gather disabled for testing"
         n = indices_shape[1]
         feature_size = input_tensor.shape[2]
         output_tensor = torch.zeros(b_size, n, feature_size, device=input_tensor.device)
-        return gather(input_tensor, output_tensor, indices)
+
+        # do local gather
+
+        local_indices = self.get_local_rank_slice(indices)
+        local_rank_mapping = self.get_local_rank_slice(rank_mappings)
+        return output_tensor
 
     def destroy(self) -> None:
         if self._initialized:

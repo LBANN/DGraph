@@ -37,7 +37,7 @@ def process_homogenous_data(
         world_size=world_Size,
         graph_labels=labels,
     )
-    pass
+    return graph_obj
 
 
 class DistributedOGBWrapper(Dataset):
@@ -84,6 +84,12 @@ class DistributedOGBWrapper(Dataset):
             # NOTE: Two-sided comm needs all the edge indices not the local ones
             edge_indices = self.graph_obj.get_global_edge_indices()
             rank_mappings = self.graph_obj.get_global_rank_mappings()
+
+            # A hack to get the local edge indices, will fix this later with
+            # TensorDict as the underlying data object rather than tensors.
+            # This is just for quick spin up of the experiments
+            edge_indices.__setattr__("local_num_edges", self.graph_obj._edges_per_rank)
+            rank_mappings.__setattr__("local_num_edges", self.graph_obj._edges_per_rank)
 
         else:
             # One-sided communication, no need for rank placement data
