@@ -40,7 +40,7 @@ class Communicator(CommunicatorBase):
 
     def get_world_size(self) -> int:
         self.__check_init()
-        return self.__backend_engine.get_rank()
+        return self.__backend_engine.get_world_size()
 
     def get_local_rank_slice(self, tensor: torch.Tensor) -> torch.Tensor:
         self.__check_init()

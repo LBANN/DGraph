@@ -109,7 +109,7 @@ class NCCLBackendEngine(BackendEngine):
         rank = self.get_rank()
         world_size = self.get_world_size()
         tensor_shape = tensor.shape
-        tensor_size = tensor_shape[0]
+        tensor_size = tensor_shape[1]
         local_size = tensor_size // world_size
         start_index = rank * local_size
         end_index = start_index + local_size
