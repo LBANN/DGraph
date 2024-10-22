@@ -1,0 +1,1 @@
+from DGraph.data.ogbn_datasets import DistributedOGBWrapper
