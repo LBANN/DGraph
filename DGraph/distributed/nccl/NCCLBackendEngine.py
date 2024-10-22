@@ -97,7 +97,7 @@ class NCCLBackendEngine(BackendEngine):
     def get_world_size(self) -> int:
         return dist.get_world_size()
 
-    def get_local_rank_slice(self, tensor: torch.Tensor):
+    def get_local_rank_slice(self, tensor: torch.Tensor) -> torch.Tensor:
         rank = self.get_rank()
         world_size = self.get_world_size()
         tensor_shape = tensor.shape

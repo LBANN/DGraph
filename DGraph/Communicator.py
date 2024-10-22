@@ -42,6 +42,10 @@ class Communicator(CommunicatorBase):
         self.__check_init()
         return self.__backend_engine.get_rank()
 
+    def get_local_rank_slice(self, tensor: torch.Tensor) -> torch.Tensor:
+        self.__check_init()
+        return self.__backend_engine.get_local_rank_slice(tensor)
+
     def scatter(self, *args, **kwargs) -> torch.Tensor:
         return self.__backend_engine.scatter(*args, **kwargs)
 
