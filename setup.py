@@ -100,7 +100,6 @@ setup(
     name="DGraph",
     py_modules=["DGraph"],
     # ext_modules=[nvshmem_module],
-    install_requires=["torch", "numpy", "ninja"],
-    extras_require=EXTRAS_REQUIRE,
+    install_requires=["torch", "numpy", "ninja", "mpi4py", "cupy"],
     cmdclass={"build_ext": BuildExtension},
 )

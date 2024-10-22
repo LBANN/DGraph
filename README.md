@@ -32,6 +32,8 @@ DGraph requires the following packages:
 - PyTorch >= 2.1.0
 - NumPy
 - pytest
+- mpi4py
+- cupy
 
 For the full list of requirements, see `requirements.txt`.
 
