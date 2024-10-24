@@ -17,6 +17,7 @@ The arguments are as follows:
 All runs are on the full graph. The script saves the logs in the `log_dir` directory. The logs contain the training and validation loss and accuracy for each run. The script also saves the model with the best validation accuracy.
 
 ### Additional Notes
-The experiments use some additional libraries. 
+The experiments use some additional libraries. Use the [ogb] option
+when installing with pip.
 
 - fire: For command line argument parsing
