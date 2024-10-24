@@ -20,17 +20,13 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from GCN import CommAwareGCN as GCN
-
-
-def cleanup():
-    if dist.is_initialized():
-        dist.destroy_process_group()
-
-
-def write_experiment_log(log: str, fname: str, rank: int):
-    if rank == 0:
-        with open(fname, "a") as f:
-            f.write(log + "\n")
+from utils import (
+    dist_print_ephemeral,
+    write_experiment_log,
+    cleanup,
+    visualize_trajectories,
+    safe_create_dir,
+)
 
 
 class SingleProcessDummyCommunicator(CommunicatorBase):
@@ -47,23 +43,32 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
     def get_world_size(self):
         return self._world_size
 
-    def scatter(self, tensor: torch.Tensor, src: torch.LongTensor):
-        out = torch.zeros(tensor.shape[0], src.shape[1], tensor.shape[2]).to(
-            tensor.device
-        )
-        out.scatter_add(1, src, tensor)
+    def scatter(
+        self, tensor: torch.Tensor, src: torch.Tensor, rank_mappings, num_local_nodes
+    ):
+        # TODO: Wrap this in the datawrapper class
+        src = src.unsqueeze(-1).expand(-1, tensor.shape[-1])
+
+        out = torch.zeros(num_local_nodes, tensor.shape[1]).to(tensor.device)
+        out.scatter_add(0, src, tensor)
         return out
 
-    def gather(self, tensor, dst):
-        out = torch.gather(tensor, 1, dst)
+    def gather(self, tensor, dst, rank_mappings):
+        # TODO: Wrap this in the datawrapper class
+        dst = dst.unsqueeze(-1).expand(-1, tensor.shape[-1])
+        out = torch.gather(tensor, 0, dst)
         return out
 
     def __str__(self) -> str:
         return self.backend
 
+    def rank_cuda_device(self):
+        device = torch.cuda.current_device()
+        return device
+
 
 def _run_experiment(dataset, comm, lr, epochs, log_prefix):
-    model = GCN(in_channels=128, hidden_dims=256, num_classes=10, comm=comm)
+    model = GCN(in_channels=128, hidden_dims=256, num_classes=40, comm=comm)
     rank = comm.get_rank()
     model = (
         DDP(model, device_ids=[rank], output_device=rank)
@@ -77,15 +82,45 @@ def _run_experiment(dataset, comm, lr, epochs, log_prefix):
     stream = torch.cuda.Stream()
 
     start_time.record(stream)
-    for _ in range(epochs):
+    node_features, edge_indices, rank_mappings, labels = dataset[0]
+
+    device = comm.rank_cuda_device()
+
+    node_features = node_features.to(device)
+    edge_indices = edge_indices.to(device)
+    labels = labels.to(device)
+
+    criterion = torch.nn.CrossEntropyLoss()
+
+    model = model.to(device)
+
+    train_mask = dataset.graph_obj.get_local_mask("train")
+    validation_mask = dataset.graph_obj.get_local_mask("val")
+    training_loss_scores = []
+    validation_loss_scores = []
+    for i in range(epochs):
         optimizer.zero_grad()
-        node_features, edge_indices, rank_mappings = dataset[0]
-        output = model(node_features, edge_indices, rank_mappings)
-        loss = output.mean()
+        _output = model(node_features, edge_indices, rank_mappings)
+        output = _output[train_mask]
+        loss = criterion(output, labels[train_mask].squeeze())
         loss.backward()
+        dist_print_ephemeral(f"Epoch {i} \t Loss: {loss.item()}", rank)
         optimizer.step()
 
+        training_loss_scores.append(loss.item())
         write_experiment_log(str(loss.item()), f"{log_prefix}_training_loss.log", rank)
+
+        model.eval()
+        with torch.no_grad():
+            validation_score = criterion(
+                _output[validation_mask],
+                labels[validation_mask].squeeze(),
+            )
+            write_experiment_log(
+                str(validation_score.item()), f"{log_prefix}_validation_loss.log", rank
+            )
+            validation_loss_scores.append(validation_score.item())
+        model.train()
     torch.cuda.synchronize()
     end_time.record(stream)
     torch.cuda.synchronize()
@@ -94,16 +129,19 @@ def _run_experiment(dataset, comm, lr, epochs, log_prefix):
     log_str = f"Average time per epoch: {average_time:.4f} ms"
     write_experiment_log(log_str, f"{log_prefix}_runtime_experiment.log", rank)
 
+    return training_loss_scores, validation_loss_scores
+
 
 def main(
     backend: str = "single",
-    dataset: str = "ogbn-arxiv",
+    dataset: str = "arxiv",
     epochs: int = 100,
-    lr: float = 0.01,
+    lr: float = 0.001,
     runs: int = 1,
     log_dir: str = "logs",
 ):
     _communicator = backend.lower()
+
     assert _communicator.lower() in [
         "single",
         "nccl",
@@ -120,12 +158,31 @@ def main(
         dist.init_process_group(backend="nccl")
         comm = Communicator.init_process_group(_communicator)
 
+    safe_create_dir(log_dir, comm.get_rank())
     training_dataset = DistributedOGBWrapper(f"ogbn-{dataset}", comm)
 
+    training_trajectores = []
+    validation_trajectores = []
     for i in range(runs):
         log_prefix = f"{log_dir}/run_{i}"
-        _run_experiment(training_dataset, comm, lr, epochs, log_prefix)
+        training_traj, val_traj = _run_experiment(
+            training_dataset, comm, lr, epochs, log_prefix
+        )
+        training_trajectores.append(training_traj)
+        validation_trajectores.append(val_traj)
 
+    visualize_trajectories(
+        training_trajectores,
+        "Training Loss",
+        f"{log_dir}/training_loss.png",
+        comm.get_rank(),
+    )
+    visualize_trajectories(
+        validation_trajectores,
+        "Validation Loss",
+        f"{log_dir}/validation_loss.png",
+        comm.get_rank(),
+    )
     cleanup()
 
 

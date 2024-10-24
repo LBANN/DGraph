@@ -26,7 +26,7 @@ SUPPORTED_DATASETS = datasets = [
 
 
 def process_homogenous_data(
-    graph_data, labels, rank, world_Size, *args, **kwargs
+    graph_data, labels, rank, world_Size, split_idx, *args, **kwargs
 ) -> DistributedGraph:
     """For processing homogenous graph with node features, edge index and labels"""
     assert "node_feat" in graph_data, "Node features not found"
@@ -38,6 +38,7 @@ def process_homogenous_data(
     node_features = torch.Tensor(graph_data["node_feat"]).float()
     edge_index = torch.Tensor(graph_data["edge_index"]).long()
     num_nodes = graph_data["num_nodes"]
+    labels = torch.Tensor(labels).long()
     # For bidirectional graphs the number of edges are double counted
     num_edges = edge_index.shape[1]
 
@@ -48,7 +49,10 @@ def process_homogenous_data(
         num_edges=num_edges,
         rank=rank,
         world_size=world_Size,
-        graph_labels=labels,
+        labels=labels,
+        train_mask=split_idx["train"],
+        val_mask=split_idx["valid"],
+        test_mask=split_idx["test"],
     )
     return graph_obj
 
@@ -76,8 +80,16 @@ class DistributedOGBWrapper(Dataset):
         graph_data, labels = self.dataset[0]
 
         self.split_idx = self.dataset.get_idx_split()
+        assert self.split_idx is not None, "Split index not found"
+
         graph_obj = process_homogenous_data(
-            graph_data, labels, self._rank, self._world_size, *args, **kwargs
+            graph_data,
+            labels,
+            self._rank,
+            self._world_size,
+            self.split_idx,
+            *args,
+            **kwargs,
         )
 
         self.graph_obj = graph_obj
@@ -87,6 +99,7 @@ class DistributedOGBWrapper(Dataset):
 
     def __getitem__(self, idx: int):
         local_node_features = self.graph_obj.get_local_node_features()
+        labels = self.graph_obj.get_local_labels()
 
         # TODO: Move this to a backend-specific collator in the future
         if self.comm_object.backend == "nccl":
@@ -108,4 +121,4 @@ class DistributedOGBWrapper(Dataset):
             edge_indices = self.graph_obj.get_local_edge_indices()
             rank_mappings = self.graph_obj.get_local_rank_mappings()
 
-        return local_node_features, edge_indices, rank_mappings
+        return local_node_features, edge_indices, rank_mappings, labels
