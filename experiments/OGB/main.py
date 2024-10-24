@@ -26,7 +26,9 @@ from utils import (
     cleanup,
     visualize_trajectories,
     safe_create_dir,
+    calculate_accuracy,
 )
+import numpy as np
 
 
 class SingleProcessDummyCommunicator(CommunicatorBase):
@@ -98,6 +100,7 @@ def _run_experiment(dataset, comm, lr, epochs, log_prefix):
     validation_mask = dataset.graph_obj.get_local_mask("val")
     training_loss_scores = []
     validation_loss_scores = []
+    validation_accuracy_scores = []
     for i in range(epochs):
         optimizer.zero_grad()
         _output = model(node_features, edge_indices, rank_mappings)
@@ -112,24 +115,58 @@ def _run_experiment(dataset, comm, lr, epochs, log_prefix):
 
         model.eval()
         with torch.no_grad():
+            validation_preds = _output[validation_mask]
+            label_validation = labels[validation_mask].squeeze()
             validation_score = criterion(
-                _output[validation_mask],
-                labels[validation_mask].squeeze(),
+                validation_preds,
+                label_validation,
             )
             write_experiment_log(
                 str(validation_score.item()), f"{log_prefix}_validation_loss.log", rank
             )
+
             validation_loss_scores.append(validation_score.item())
+
+            val_pred = torch.log_softmax(validation_preds, dim=1)
+            accuracy = calculate_accuracy(val_pred, label_validation)
+            validation_accuracy_scores.append(accuracy)
+            write_experiment_log(
+                f"Validation Accuracy: {accuracy:.2f}",
+                f"{log_prefix}_validation_accuracy.log",
+                rank,
+            )
         model.train()
+
     torch.cuda.synchronize()
     end_time.record(stream)
     torch.cuda.synchronize()
+
+    model.eval()
+
+    with torch.no_grad():
+        test_idx = dataset.graph_obj.get_local_mask("test")
+        test_labels = labels[test_idx].squeeze()
+        test_preds = model(node_features, edge_indices, rank_mappings)[test_idx]
+        test_loss = criterion(test_preds, test_labels)
+        test_preds = torch.log_softmax(test_preds, dim=1)
+        test_accuracy = calculate_accuracy(test_preds, test_labels)
+        test_log_file = f"{log_prefix}_test_results.log"
+        write_experiment_log(
+            "loss,accuracy",
+            test_log_file,
+            rank,
+        )
+        write_experiment_log(f"{test_loss.item()},{test_accuracy}", test_log_file, rank)
 
     average_time = start_time.elapsed_time(end_time) / epochs
     log_str = f"Average time per epoch: {average_time:.4f} ms"
     write_experiment_log(log_str, f"{log_prefix}_runtime_experiment.log", rank)
 
-    return training_loss_scores, validation_loss_scores
+    return (
+        np.array(training_loss_scores),
+        np.array(validation_loss_scores),
+        np.array(validation_accuracy_scores),
+    )
 
 
 def main(
@@ -161,15 +198,17 @@ def main(
     safe_create_dir(log_dir, comm.get_rank())
     training_dataset = DistributedOGBWrapper(f"ogbn-{dataset}", comm)
 
-    training_trajectores = []
-    validation_trajectores = []
+    training_trajectores = np.zeros((runs, epochs))
+    validation_trajectores = np.zeros((runs, epochs))
+    validation_accuracies = np.zeros((runs, epochs))
     for i in range(runs):
         log_prefix = f"{log_dir}/run_{i}"
-        training_traj, val_traj = _run_experiment(
+        training_traj, val_traj, val_accuracy = _run_experiment(
             training_dataset, comm, lr, epochs, log_prefix
         )
-        training_trajectores.append(training_traj)
-        validation_trajectores.append(val_traj)
+        training_trajectores[i] = training_traj
+        validation_trajectores[i] = val_traj
+        validation_accuracies[i] = val_accuracy
 
     visualize_trajectories(
         training_trajectores,
@@ -181,6 +220,12 @@ def main(
         validation_trajectores,
         "Validation Loss",
         f"{log_dir}/validation_loss.png",
+        comm.get_rank(),
+    )
+    visualize_trajectories(
+        validation_accuracies,
+        "Validation Accuracy",
+        f"{log_dir}/validation_accuracy.png",
         comm.get_rank(),
     )
     cleanup()

@@ -45,3 +45,9 @@ def safe_create_dir(directory, rank):
     if rank == 0:
         if not os.path.exists(directory):
             os.makedirs(directory)
+
+
+def calculate_accuracy(pred, labels):
+    pred = pred.argmax(dim=1)
+    correct = pred.eq(labels).sum().item()
+    return correct / len(labels) * 100
