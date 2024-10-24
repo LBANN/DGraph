@@ -47,11 +47,16 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
     def get_world_size(self):
         return self._world_size
 
-    def scatter(self, tensor, src):
-        return tensor
+    def scatter(self, tensor: torch.Tensor, src: torch.LongTensor):
+        out = torch.zeros(tensor.shape[0], src.shape[1], tensor.shape[2]).to(
+            tensor.device
+        )
+        out.scatter_add(1, src, tensor)
+        return out
 
     def gather(self, tensor, dst):
-        return tensor
+        out = torch.gather(tensor, 1, dst)
+        return out
 
     def __str__(self) -> str:
         return self.backend
