@@ -53,22 +53,11 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
     def gather(self, tensor, dst):
         return tensor
 
+    def __str__(self) -> str:
+        return self.backend
 
-def main(_communicator: str = "dummy", num_epochs: int = 10):
-    assert _communicator.lower() in [
-        "dummy",
-        "nccl",
-        "nvshmem",
-        "mpi",
-    ], "Invalid communicator"
 
-    if _communicator.lower() == "dummy":
-        # Dummy communicator for single process testing
-        comm = SingleProcessDummyCommunicator()
-    else:
-        dist.init_process_group(backend="nccl")
-        comm = Communicator.init_process_group(_communicator)
-    dataset = DistributedOGBWrapper("ogbn-arxiv", comm)
+def _run_experiment(dataset, comm, lr, epochs, log_prefix):
     model = GCN(in_channels=128, hidden_dims=256, num_classes=10, comm=comm)
     rank = comm.get_rank()
     model = (
@@ -76,27 +65,62 @@ def main(_communicator: str = "dummy", num_epochs: int = 10):
         if comm.get_world_size() > 1
         else model
     )
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
     start_time = torch.cuda.Event(enable_timing=True)
     end_time = torch.cuda.Event(enable_timing=True)
 
     stream = torch.cuda.Stream()
 
     start_time.record(stream)
-    for _ in range(num_epochs):
+    for _ in range(epochs):
         optimizer.zero_grad()
         node_features, edge_indices, rank_mappings = dataset[0]
         output = model(node_features, edge_indices, rank_mappings)
         loss = output.mean()
         loss.backward()
         optimizer.step()
+
+        write_experiment_log(str(loss.item()), f"{log_prefix}_training_loss.log", rank)
     torch.cuda.synchronize()
     end_time.record(stream)
     torch.cuda.synchronize()
 
-    average_time = start_time.elapsed_time(end_time) / num_epochs
+    average_time = start_time.elapsed_time(end_time) / epochs
     log_str = f"Average time per epoch: {average_time:.4f} ms"
-    write_experiment_log(log_str, f"{_communicator}_experiment.log", rank)
+    write_experiment_log(log_str, f"{log_prefix}_runtime_experiment.log", rank)
+
+
+def main(
+    backend: str = "single",
+    dataset: str = "ogbn-arxiv",
+    epochs: int = 100,
+    lr: float = 0.01,
+    runs: int = 1,
+    log_dir: str = "logs",
+):
+    _communicator = backend.lower()
+    assert _communicator.lower() in [
+        "single",
+        "nccl",
+        "nvshmem",
+        "mpi",
+    ], "Invalid backend"
+
+    assert dataset in ["arxiv"], "Invalid dataset"
+
+    if _communicator.lower() == "single":
+        # Dummy communicator for single process testing
+        comm = SingleProcessDummyCommunicator()
+    else:
+        dist.init_process_group(backend="nccl")
+        comm = Communicator.init_process_group(_communicator)
+
+    training_dataset = DistributedOGBWrapper(f"ogbn-{dataset}", comm)
+
+    for i in range(runs):
+        log_prefix = f"{log_dir}/run_{i}"
+        _run_experiment(training_dataset, comm, lr, epochs, log_prefix)
+
     cleanup()
 
 
