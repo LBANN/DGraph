@@ -35,8 +35,8 @@ def process_homogenous_data(
 
     assert graph_data["edge_feat"] is None, "Edge features not supported"
 
-    node_features = graph_data["node_feat"]
-    edge_index = graph_data["edge_index"]
+    node_features = torch.Tensor(graph_data["node_feat"]).float()
+    edge_index = torch.Tensor(graph_data["edge_index"]).long()
     num_nodes = graph_data["num_nodes"]
     # For bidirectional graphs the number of edges are double counted
     num_edges = edge_index.shape[1]
@@ -74,8 +74,6 @@ class DistributedOGBWrapper(Dataset):
             name=dname,
         )
         graph_data, labels = self.dataset[0]
-
-        breakpoint()
 
         self.split_idx = self.dataset.get_idx_split()
         graph_obj = process_homogenous_data(

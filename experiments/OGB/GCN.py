@@ -42,7 +42,7 @@ class CommAwareGCN(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         self.comm = comm
 
-    def forward(self, node_features, edge_index):
+    def forward(self, node_features, edge_index, rank_mapping):
         x = self.comm.gather(node_features, edge_index[0])
         x = self.conv1(x)
         x = self.comm.scatter(x, edge_index[1])

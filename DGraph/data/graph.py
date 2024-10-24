@@ -52,8 +52,10 @@ class DistributedGraph:
         self.world_size = world_size
         self._nodes_per_rank = num_nodes // world_size
         self._edges_per_rank = num_edges // world_size
+        self.rank_mappings = None
         if pre_calculate_mapping:
             self._precalculate_index_rank_mappings(edge_index)
+        self._make_push_graph_data()
 
     def _get_local_shape(self, dim: int) -> int:
         return dim // self.world_size
@@ -148,6 +150,10 @@ class DistributedGraph:
 
     def get_local_rank_mappings(self):
 
+        if self.rank_mappings is None:
+            self._precalculate_index_rank_mappings(self.edge_index)
+
+        assert self.rank_mappings is not None, "Rank mappings not precalculated"
         _start_index = self._get_global_start_index(self.rank_mappings.shape[0])
         _end_index = self._get_global_end_index(self.rank_mappings.shape[0])
 
