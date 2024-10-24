@@ -18,7 +18,7 @@ DGraph is deep learning library for training graph neural networks at scale that
 
 To install DGraph, clone the repository and install with pip:
 ```shell
-pip install .
+pip install -e .[ogb]
 ```
 
 ### Running tests
