@@ -26,12 +26,12 @@ class DistributedGraph:
         self,
         node_features: torch.Tensor,
         edge_index: torch.LongTensor,
+        labels: torch.Tensor,
         num_nodes: int,
         num_edges: int,
         rank: int,
         world_size: int,
         edge_features: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
         train_mask: Optional[torch.Tensor] = None,
         val_mask: Optional[torch.Tensor] = None,
         test_mask: Optional[torch.Tensor] = None,
@@ -52,8 +52,10 @@ class DistributedGraph:
         self.world_size = world_size
         self._nodes_per_rank = num_nodes // world_size
         self._edges_per_rank = num_edges // world_size
+        self.rank_mappings = None
         if pre_calculate_mapping:
             self._precalculate_index_rank_mappings(edge_index)
+        self._make_push_graph_data()
 
     def _get_local_shape(self, dim: int) -> int:
         return dim // self.world_size
@@ -148,10 +150,35 @@ class DistributedGraph:
 
     def get_local_rank_mappings(self):
 
+        if self.rank_mappings is None:
+            self._precalculate_index_rank_mappings(self.edge_index)
+
+        assert self.rank_mappings is not None, "Rank mappings not precalculated"
         _start_index = self._get_global_start_index(self.rank_mappings.shape[0])
         _end_index = self._get_global_end_index(self.rank_mappings.shape[0])
 
         return self._get_local_slice(self.rank_mappings, _start_index, _end_index)
+
+    def get_local_labels(self):
+        return self._get_local_slice(self.labels, 0, self._nodes_per_rank)
+
+    def get_global_labels(self):
+        return self._get_global_slice(self.labels)
+
+    def get_local_mask(self, mask):
+        if mask == "train":
+            assert self.train_mask is not None, "Train mask not found"
+            return self._get_local_slice(self.train_mask, 0, self._nodes_per_rank)
+
+        elif mask == "val":
+            assert self.val_mask is not None, "Val mask not found"
+            return self._get_local_slice(self.val_mask, 0, self._nodes_per_rank)
+
+        elif mask == "test":
+            assert self.test_mask is not None, "Test mask not found"
+            return self._get_local_slice(self.test_mask, 0, self._nodes_per_rank)
+        else:
+            raise ValueError(f"Invalid mask {mask}")
 
     def _make_push_graph_data(self):
         """Two-sided communication backends (NCCL) can only do push operations.

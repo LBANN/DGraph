@@ -92,5 +92,8 @@ setup(
     py_modules=["DGraph"],
     # ext_modules=[nvshmem_module],
     install_requires=["torch", "numpy", "ninja"],
+    extras_require={
+        "ogb": ["ogb", "fire"],
+    },
     cmdclass={"build_ext": BuildExtension},
 )
