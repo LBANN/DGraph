@@ -67,7 +67,7 @@ def test_nccl_backend_gather(init_nccl_backend, setup_gather_data):
 
     rank = comm.get_rank()
     world_size = comm.get_world_size()
-    #print(rank, world_size)
+    # print(rank, world_size)
     start_index = (all_rank_input_data.shape[1] // world_size) * rank
     end_index = (all_rank_input_data.shape[1] // world_size) * (rank + 1)
     print(start_index, end_index, all_rank_input_data.shape, local_input_data.shape)
@@ -75,3 +75,28 @@ def test_nccl_backend_gather(init_nccl_backend, setup_gather_data):
     # assert False
     assert local_input_data.shape == (1, 2, 64)
     assert torch.allclose(local_input_data, local_input_data_gt)
+
+
+def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
+    comm: Comm.Communicator = init_nccl_backend
+    all_rank_input_data, all_rank_indices, rank_mappings, all_rank_output = (
+        setup_scatter_data
+    )
+
+    local_input_data = comm.get_local_rank_slice(all_rank_input_data)
+    local_indices = comm.get_local_rank_slice(all_rank_indices)
+    local_rank_mappings = comm.get_local_rank_slice(rank_mappings)
+
+    rank = comm.get_rank()
+    world_size = comm.get_world_size()
+
+    local_size = all_rank_input_data.shape[1] // world_size
+    start_index = local_size * rank
+    end_index = local_size * (rank + 1)
+
+    local_output = torch.zeros(1, local_size, 64)
+    for i in range(local_size):
+        local_output[:, i] = local_input_data[:, local_indices[0, i]]
+
+    assert local_output.shape == (1, 2, 64)
+    assert torch.allclose(local_output, all_rank_output[:, start_index:end_index])

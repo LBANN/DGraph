@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
+from typing import Optional, Union
 
 
 class BackendEngine(object):
@@ -27,10 +28,25 @@ class BackendEngine(object):
     def get_world_size(self) -> int:
         raise NotImplementedError
 
-    def scatter(self, *args, **kwargs) -> torch.Tensor:
+    def scatter(
+        self,
+        src_tensor: torch.Tensor,
+        indices: Union[torch.Tensor, torch.LongTensor],
+        rank_mappings: Optional[torch.Tensor],
+        output_size: int,
+        *args,
+        **kwargs
+    ) -> torch.Tensor:
         raise NotImplementedError
 
-    def gather(self, *args, **kwargs) -> torch.Tensor:
+    def gather(
+        self,
+        src_tensor: torch.Tensor,
+        indices: Union[torch.Tensor, torch.LongTensor],
+        rank_mappings: Optional[torch.Tensor],
+        *args,
+        **kwargs
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     def finalize(self) -> None:

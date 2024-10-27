@@ -128,21 +128,21 @@ class NCCLBackendEngine(BackendEngine):
         end_index = start_index + local_size
         return tensor[:, start_index:end_index]
 
-    def scatter(self, *args, **kwargs) -> torch.Tensor:
+    def scatter(
+        self, src_tensor, indices, rank_mappings, output_size, *args, **kwargs
+    ) -> torch.Tensor:
         input_tensor: torch.Tensor = args[0]
-        indices: torch.Tensor = args[1]
-        local_size: int = args[2]
-        batch_size: int = input_tensor.shape[0]
-        feature_size: int = input_tensor.shape[2]
+        batch_size: int = src_tensor.shape[0]
+        feature_size: int = src_tensor.shape[2]
 
         output_tensor: torch.Tensor = torch.zeros(
             (
                 batch_size,
-                local_size,
+                output_size,
                 feature_size,
             )
         )
-        return scatter(input_tensor, output_tensor, indices)
+        return scatter(src_tensor, output_tensor, indices)
 
     def gather(self, *args, **kwargs) -> torch.Tensor:
         input_tensor = args[0]
