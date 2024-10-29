@@ -54,7 +54,7 @@ namespace NVSHMEM
   template <typename DataType>
   __global__ void Scatter_NVSHMEM_Kernel(
       const DataType *__restrict__ values,
-      const DataType *__restrict__ indices,
+      const long *__restrict__ indices,
       DataType *__restrict__ outputs,
       const int mini_batch_size,
       const int num_local_values_rows,
@@ -213,7 +213,7 @@ namespace NVSHMEM
   template <typename DataType>
   __global__ void Gather_NVSHMEM_Kernel_Warp(
       const DataType *__restrict__ values,
-      const DataType *__restrict__ indices,
+      const long *__restrict__ indices,
       DataType *__restrict__ shared_buffer,
       const int mini_batch_size,
       const int num_local_values_rows,
