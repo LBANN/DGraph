@@ -174,3 +174,34 @@ torch::Tensor NVSHMEMP2P::AllocateSymmetricMemory(const int size)
   // https://pytorch.org/cppdocs/api/function_namespacetorch_1ad7fb2a7759ef8c9443b489ddde494787.html
   return torch::from_blob(ptr, {size}, {1}, deleter);
 }
+
+void register_memory(torch::Tensor tensor)
+{
+  if (!tensor.is_contiguous())
+  {
+    throw std::runtime_error("Tensor is not contiguous");
+  }
+
+  if (tensor.device().type() != at::DeviceType::CUDA)
+  {
+    throw std::runtime_error("Tensor is not on CUDA device");
+  }
+
+  void *ptr = tensor.data_ptr();
+  size_t size = tensor.numel() * tensor.element_size();
+  // TODO: It would be nice to be able wrap the torch::Tensor so we
+  // can this through that and store the state in the tensor
+  nvshmemx_buffer_register(ptr, size);
+}
+
+void deregister_memory(torch::Tensor tensor)
+{
+  if (!tensor.is_contiguous())
+  {
+    throw std::runtime_error("Tensor is not contiguous");
+  }
+
+  if (tensor.device().type() != at::DeviceType::CUDA)
+  {
+    throw std::runtime_error("Tensor is not on CUDA device");
+  }
