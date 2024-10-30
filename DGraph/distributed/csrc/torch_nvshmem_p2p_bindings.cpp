@@ -24,5 +24,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
       .def("finalize", &NVSHMEMP2P::finalize)
       .def("dist_put", &NVSHMEMP2P::dist_put)
       .def("allocate_symmetric_memory", $NVSHMEMP2P::AllocateSymmetricMemory)
+      .def("register_memory", &NVSHMEMP2P::register_memory)
+      .def("deregister_memory", &NVSHMEMP2P::deregister_memory)
       .def("dist_get", &NVSHMEMP2P::dist_get);
 }

@@ -28,22 +28,25 @@ public:
   NVSHMEMP2P() {};
   static void init(int rank, int world_size);
   static void finalize();
-  void dist_put(torch::Tensor src,
-                torch::Tensor dst,
-                torch::Tensor indices,
-                const int mini_batches,
-                const int num_input_rows,
-                const int cols,
-                const int num_output_rows);
-  void dist_get(torch::Tensor src,
-                torch::Tensor dst,
-                torch::Tensor indices,
-                const int mini_batches,
-                const int num_input_rows,
-                const int cols,
-                const int num_output_rows);
-  torch::Tensor AllocateSymmetricMemory(const int size);
-  
+  static void dist_put(torch::Tensor src,
+                       torch::Tensor dst,
+                       torch::Tensor indices,
+                       const int mini_batches,
+                       const int num_input_rows,
+                       const int cols,
+                       const int num_output_rows);
+  static void dist_get(torch::Tensor src,
+                       torch::Tensor dst,
+                       torch::Tensor indices,
+                       const int mini_batches,
+                       const int num_input_rows,
+                       const int cols,
+                       const int num_output_rows);
+  static torch::Tensor AllocateSymmetricMemory(const int size);
+
+  static void register_memory(torch::Tensor tensor);
+  static void deregister_memory(torch::Tensor tensor);
+
   static int m_rank;
   static int m_world_size;
   static bool m_initialized;
