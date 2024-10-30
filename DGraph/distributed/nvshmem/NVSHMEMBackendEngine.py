@@ -57,33 +57,54 @@ def _nvshmem_scatter(input_tensor, indices, scattered_tensor):
 
 class NVSHMEMGatherFunction(Function):
     @staticmethod
-    def forward(ctx, send_tensor, indices, gathered_tensor):
+    def forward(ctx, send_tensor, indices):
         # Register the send tensor
+        ctx.save_for_backward(indices, torch.tensor(send_tensor.shape))
         nvshmem.register_memory(send_tensor)
+        bs = send_tensor.shape[0]
+        num_rows = indices.shape[1]
+        num_features = send_tensor.shape[2]
+
+        gathered_tensor = torch.zeros((bs, num_rows, num_features)).to(
+            send_tensor.device
+        )
         gathered_tensors = _nvshmmem_gather(send_tensor, indices, gathered_tensor)
         nvshmem.deregister_memory(send_tensor)
         return gathered_tensors
 
     @staticmethod
     def backward(ctx, grad_output):
-        return grad_output, None, None
+        indices, shape = ctx.saved_tensors
+
+        num_elements = torch.cumprod(shape, dim=0)[-1].item()
+
+        scattered_grad_tensor = nvshmem.AllocateSymmetricMemory(num_elements).reshape(
+            shape
+        )
+
+        _nvshmem_scatter(grad_output, indices, scattered_grad_tensor)
+
+        return scattered_grad_tensor, None
 
 
 class NVSHMEMScatterFunction(Function):
     @staticmethod
-    def forward(ctx, input_tensor, indices, scattered_tensor):
+    def forward(ctx, input_tensor, indices):
         # Allocate buffer
+        ctx.save_for_backward(indices)
         _size = input_tensor.numel()
         _put_buffer = nvshmem.AllocateSymmetricMemory(_size).reshape(input_tensor.shape)
 
-        scattered_tensors = _nvshmem_scatter(input_tensor, indices, scattered_tensor)
+        scattered_tensors = _nvshmem_scatter(input_tensor, indices, _put_buffer)
         return scattered_tensors
 
     @staticmethod
     def backward(ctx, grad_output):
         nvshmem.register_memory(grad_output)
+        indices = ctx.saved_tensors[0]
+        scattered_tensor = torch.zeros_like(grad_output)
         nvshmem.deregister_memory(grad_output)
-        return grad_output, None, None
+        return grad_output, None
 
 
 class NVSHMEMBackendEngine(BackendEngine):
@@ -124,13 +145,9 @@ class NVSHMEMBackendEngine(BackendEngine):
         return nvshmem.get_world_size()
 
     def gather(self, input_tensor, indices, rank_mappings):
-        gathered_tensors = NVSHMEMGatherFunction.apply(
-            input_tensor, indices, rank_mappings
-        )
+        gathered_tensors = NVSHMEMGatherFunction.apply(input_tensor, indices)
         return gathered_tensors
 
     def scatter(self, input_tensor, indices, rank_mappings):
-        scattered_tensors = NVSHMEMScatterFunction.apply(
-            input_tensor, indices, rank_mappings
-        )
+        scattered_tensors = NVSHMEMScatterFunction.apply(input_tensor, indices)
         return scattered_tensors
