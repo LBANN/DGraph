@@ -147,7 +147,7 @@ class SyntheticWeatherDataset(Dataset):
         ]
 
 
-def test_synthetic_weather_dataset(num_days):
+def test_synthetic_weather_dataset(num_days, batch_size=1):
     latlon_res = (721, 1440)
     num_samples_per_year_train = num_days
     num_workers = 8
@@ -168,7 +168,7 @@ def test_synthetic_weather_dataset(num_days):
         num_steps=1,
         grid_size=latlon_res,
         cos_zenith_args=cos_zenith_args,
-        batch_size=1,
+        batch_size=batch_size,
         num_workers=num_workers,
         num_history=num_history,
         use_time_of_year_index=use_time_of_year_index,
