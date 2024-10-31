@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import time
 from typing import Any, Dict, List, Tuple
+from torch.utils.data import Dataset
 
 
 class SyntheticWeatherDataset(Dataset):
@@ -146,6 +147,36 @@ class SyntheticWeatherDataset(Dataset):
         ]
 
 
-if __name__ == "__main__":
-    test_dataset = SyntheticWeatherDataset()
+def test_synthetic_weather_dataset(num_days):
+    latlon_res = (721, 1440)
+    num_samples_per_year_train = num_days
+    num_workers = 8
+    num_channels_climate = 73
+    num_history = 0
+    dt = 6.0
+    start_year = 1980
+    use_time_of_year_index = True
+    channels_list = [i for i in range(num_channels_climate)]
+
+    cos_zenith_args = {
+        "dt": dt,
+        "start_year": start_year,
+    }
+    test_dataset = SyntheticWeatherDataset(
+        channels=channels_list,
+        num_samples_per_year=num_samples_per_year_train,
+        num_steps=1,
+        grid_size=latlon_res,
+        cos_zenith_args=cos_zenith_args,
+        batch_size=1,
+        num_workers=num_workers,
+        num_history=num_history,
+        use_time_of_year_index=use_time_of_year_index,
+    )
     print(len(test_dataset))
+
+
+if __name__ == "__main__":
+    from fire import Fire
+
+    Fire(test_synthetic_weather_dataset)
