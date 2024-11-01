@@ -1,7 +1,107 @@
+# Copyright (c) 2014-2024, Lawrence Livermore National Security, LLC.
+# Produced at the Lawrence Livermore National Laboratory.
+# Written by the LBANN Research Team (B. Van Essen, et al.) listed in
+# the CONTRIBUTORS file. See the top-level LICENSE file for details.
+#
+# LLNL-CODE-697807.
+# All rights reserved.
+#
+# This file is part of LBANN: Livermore Big Artificial Neural Network
+# Toolkit. For details, see http://software.llnl.gov/LBANN or
+# https://github.com/LBANN and https://github.com/LLNL/LBANN.
+#
+# SPDX-License-Identifier: (Apache-2.0)
+
 import torch
 import torch.nn as nn
 from typing import Optional
-from layers import Encoder, Processor, Decoder
+from torch import Tensor
+from layers import Processor, MLP
+
+
+class GraphCastEncoder(nn.Module):
+    """Encoder for the GraphCast model. The encoder is responsible for taking grid
+    information and encoding it into the multi-mesh, which the processor uses."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.grid_feature_embedder = MLP(73, 512)
+        self.mesh_feature_embedder = MLP(73, 512)
+        self.grid2mesh_edge_embedder = MLP(73, 512)
+        self.mesh2grid_edge_embedder = MLP(73, 512)
+        self.mesh2mesh_edge_embedder = MLP(73, 512)
+
+    def forward(
+        self,
+        grid_features: Tensor,
+        mesh_features: Tensor,
+        mesh2mesh_edge_features: Tensor,
+        grid2mesh_edge_features: Tensor,
+        grid2mesh_edge_indices,
+        mesh2grid_edge_features: Tensor,
+        mesh2grid_edge_indices,
+    ):
+        embedded_grid_features = self.grid_feature_embedder(grid_features)
+        embedded_mesh_features = self.mesh_feature_embedder(mesh_features)
+        embedded_grid2mesh_edge_features = self.grid2mesh_edge_embedder(
+            grid2mesh_edge_features
+        )
+        embedded_mesh2grid_edge_features = self.mesh2grid_edge_embedder(
+            mesh2grid_edge_features
+        )
+        embedded_mesh2mesh_edge_features = self.mesh2mesh_edge_embedder(
+            mesh2mesh_edge_features
+        )
+
+        return (
+            embedded_grid_features,
+            embedded_mesh_features,
+            embedded_mesh2mesh_edge_features,
+            embedded_grid2mesh_edge_features,
+            grid2mesh_edge_indices,
+            embedded_mesh2grid_edge_features,
+            mesh2grid_edge_indices,
+        )
+
+
+class GraphCastProcessor(nn.Module):
+    """Processor for the GraphCast model. The processor is responsible for
+    processing the multi-mesh and updating the state of the forecast."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.processor = Processor(512, 512, 9, 512, 2, 512, 2)
+
+    def forward(
+        self,
+        embedded_mesh_features: Tensor,
+        embedded_mesh2mesh_edge_features: Tensor,
+        mesh2mesh_edge_indices,
+        embedded_grid2mesh_edge_features: Tensor,
+        grid2mesh_edge_indices,
+        embedded_mesh2grid_edge_features: Tensor,
+        mesh2grid_edge_indices,
+    ):
+        return self.processor(
+            embedded_mesh_features,
+            embedded_mesh2mesh_edge_features,
+            mesh2mesh_edge_indices,
+            embedded_grid2mesh_edge_features,
+            grid2mesh_edge_indices,
+            embedded_mesh2grid_edge_features,
+            mesh2grid_edge_indices,
+        )
+
+
+class GraphCastDecoder(nn.Module):
+    """ """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.decoder = MLP(512, 73)
+
+    def forward(self, x):
+        return self.decoder(x)
 
 
 class GraphWeatherForecaster(nn.Module):
@@ -55,7 +155,7 @@ class GraphWeatherForecaster(nn.Module):
         if output_dim is None:
             output_dim = self.feature_dim
 
-        self.encoder = Encoder(
+        self.encoder = GraphCastEncoder(
             lat_lons=lat_lons,
             resolution=resolution,
             input_dim=feature_dim + aux_dim,
@@ -66,9 +166,8 @@ class GraphWeatherForecaster(nn.Module):
             hidden_dim_processor_node=hidden_dim_processor_node,
             hidden_layers_processor_edge=hidden_layers_processor_edge,
             mlp_norm_type=norm_type,
-            use_checkpointing=use_checkpointing,
         )
-        self.processor = Processor(
+        self.processor = GraphCastProcessor(
             input_dim=node_dim,
             edge_dim=edge_dim,
             num_blocks=num_blocks,
@@ -78,7 +177,7 @@ class GraphWeatherForecaster(nn.Module):
             hidden_layers_processor_edge=hidden_layers_processor_edge,
             mlp_norm_type=norm_type,
         )
-        self.decoder = Decoder(
+        self.decoder = GraphCastDecoder(
             lat_lons=lat_lons,
             resolution=resolution,
             input_dim=node_dim,

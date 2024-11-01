@@ -1,11 +1,25 @@
+# Copyright (c) 2014-2024, Lawrence Livermore National Security, LLC.
+# Produced at the Lawrence Livermore National Laboratory.
+# Written by the LBANN Research Team (B. Van Essen, et al.) listed in
+# the CONTRIBUTORS file. See the top-level LICENSE file for details.
+#
+# LLNL-CODE-697807.
+# All rights reserved.
+#
+# This file is part of LBANN: Livermore Big Artificial Neural Network
+# Toolkit. For details, see http://software.llnl.gov/LBANN or
+# https://github.com/LBANN and https://github.com/LLNL/LBANN.
+#
+# SPDX-License-Identifier: (Apache-2.0)
 import torch
 import numpy as np
 from torch import Tensor
-from typing import List
+from typing import List, Tuple
+from numpy import ndarray
 
 
 def max_edge_length(
-    vertices: List[List[float]], source_nodes: List[int], destination_nodes: List[int]
+    vertices: ndarray, source_nodes: ndarray, destination_nodes: ndarray
 ) -> float:
     """
     Compute the maximum edge length in a graph.
@@ -225,3 +239,35 @@ def rad2deg(rad):
         Tensor of shape (N, ) containing the degrees
     """
     return rad * 180 / np.pi
+
+
+def get_face_centroids(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """
+    Compute the centroids of triangular faces in a graph.
+
+    Parameters:
+    vertices (np.ndarray): A list of tuples representing the coordinates of the vertices.
+    faces (np.ndarray): A list of lists, where each inner list contains three indices representing a triangular face.
+
+    Returns:
+    np.ndarray: A list of tuples representing the centroids of the faces.
+    """
+    centroids = []
+
+    for face in faces:
+        # Extract the coordinates of the vertices for the current face
+        v0 = vertices[face[0]]
+        v1 = vertices[face[1]]
+        v2 = vertices[face[2]]
+
+        # Compute the centroid of the triangle
+        centroid = (
+            (v0[0] + v1[0] + v2[0]) / 3,
+            (v0[1] + v1[1] + v2[1]) / 3,
+            (v0[2] + v1[2] + v2[2]) / 3,
+        )
+
+        centroids.append(centroid)
+
+    centroids = np.array(centroids)
+    return centroids

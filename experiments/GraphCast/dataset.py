@@ -1,3 +1,16 @@
+# Copyright (c) 2014-2024, Lawrence Livermore National Security, LLC.
+# Produced at the Lawrence Livermore National Laboratory.
+# Written by the LBANN Research Team (B. Van Essen, et al.) listed in
+# the CONTRIBUTORS file. See the top-level LICENSE file for details.
+#
+# LLNL-CODE-697807.
+# All rights reserved.
+#
+# This file is part of LBANN: Livermore Big Artificial Neural Network
+# Toolkit. For details, see http://software.llnl.gov/LBANN or
+# https://github.com/LBANN and https://github.com/LLNL/LBANN.
+#
+# SPDX-License-Identifier: (Apache-2.0)
 import torch
 import numpy as np
 import time
@@ -134,17 +147,17 @@ class SyntheticWeatherDataset(Dataset):
         """
         Retrieves a sample from the dataset at the specified index.
         """
-        return [
-            {
-                "invar": torch.tensor(self.temperatures[idx], dtype=torch.float32).to(
-                    self.device
-                ),
-                "outvar": torch.tensor(
-                    self.temperatures[idx + 1 : idx + self.num_steps + 1],
-                    dtype=torch.float32,
-                ).to(self.device),
-            }
-        ]
+        return {
+            "invar": torch.tensor(self.temperatures[idx], dtype=torch.float32).to(
+                self.device
+            ),
+            "outvar": torch.tensor(
+                self.temperatures[idx + 1 : idx + self.num_steps + 1],
+                dtype=torch.float32,
+            )
+            .squeeze(0)
+            .to(self.device),
+        }
 
 
 def test_synthetic_weather_dataset(num_days, batch_size=1):
