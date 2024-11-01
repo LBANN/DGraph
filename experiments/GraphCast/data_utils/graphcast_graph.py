@@ -15,12 +15,12 @@ import numpy as np
 import torch
 from torch import Tensor
 from experiments.GraphCast.data_utils.spatial_utils import max_edge_length
-from icosahedral_mesh import (
+from .icosahedral_mesh import (
     get_hierarchy_of_triangular_meshes_for_sphere,
     faces_to_edges,
     merge_meshes,
 )
-from utils import (
+from .utils import (
     create_graph,
     create_grid2mesh_graph,
     create_mesh2grid_graph,

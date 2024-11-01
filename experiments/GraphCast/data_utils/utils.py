@@ -17,7 +17,7 @@ import torch
 import numpy as np
 from typing import List, Tuple
 from torch import Tensor
-from spatial_utils import (
+from .spatial_utils import (
     get_face_centroids,
     latlon2xyz,
     polar_angle,
@@ -27,7 +27,10 @@ from spatial_utils import (
 )
 
 
-def padded_size(x, y):
+def padded_size(x: int, y: int) -> int:
+    """
+    Returns the next multiple of y that is greater than x.
+    """
     return (x + y - 1) // y * y
 
 
@@ -65,7 +68,6 @@ def generate_edge_features(src_pos, dst_pos):
     # azimuthal & polar rotation
     theta_azimuthal = azimuthal_angle(dst_lon)
     theta_polar = polar_angle(dst_lat)
-
     src_pos = geospatial_rotation(src_pos, theta=theta_azimuthal, axis="z", unit="rad")
     dst_pos = geospatial_rotation(dst_pos, theta=theta_azimuthal, axis="z", unit="rad")
 
@@ -87,8 +89,10 @@ def create_graph(
     to_bidirected: bool = True,
 ):
     if to_bidirected:
-        src_indices = torch.cat([src_indices, dst_indices])
-        dst_indices = torch.cat([dst_indices, src_indices])
+        _src_indices = torch.cat([src_indices, dst_indices])
+        _dst_indices = torch.cat([dst_indices, src_indices])
+        src_indices = _src_indices
+        dst_indices = _dst_indices
 
     src_pos = pos[src_indices.long()]
     dst_pos = pos[dst_indices.long()]
@@ -111,13 +115,13 @@ def create_mesh2grid_graph(
     neighbors = NearestNeighbors(n_neighbors=n_nbrs).fit(face_centroids)
     _, indices = neighbors.kneighbors(cartesian_grid.numpy())
 
-    src = [p for i in indices for p in mesh_faces[i]]
+    src = [p for i in indices for p in mesh_faces[i].flatten()]
     dst = [i for i in range(len(cartesian_grid)) for _ in range(3)]
 
     src_mesh_indices = torch.tensor(src, dtype=torch.int32)
     dst_grid_indices = torch.tensor(dst, dtype=torch.int32)
 
-    src_mesh_node_positions = mesh_vertices
+    src_mesh_node_positions = torch.from_numpy(mesh_vertices)
     dst_grid_node_positions = cartesian_grid
 
     src_pos = src_mesh_node_positions[src_mesh_indices.long()]

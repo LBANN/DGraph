@@ -136,7 +136,6 @@ def geospatial_rotation(
         rotation[:, 2, 2] += 1.0
     else:
         raise ValueError("Invalid axis")
-
     outvar = torch.matmul(rotation, invar)
     outvar = outvar.squeeze()
     return outvar

@@ -16,6 +16,9 @@ import numpy as np
 import time
 from typing import Any, Dict, List, Tuple
 from torch.utils.data import Dataset
+from data_utils.graphcast_graph import DistributedGraphCastGraphGenerator
+from data_utils.utils import padded_size
+from torch.nn.functional import pad
 
 
 class SyntheticWeatherDataset(Dataset):
@@ -43,6 +46,10 @@ class SyntheticWeatherDataset(Dataset):
         base_temp: float = 15,
         amplitude: float = 10,
         noise_level: float = 2,
+        mesh_level: int = 6,
+        rank: int = 0,
+        world_size: int = 1,
+        ranks_per_graph: int = 1,
         **kwargs: Any,
     ):
         self.num_days: int = num_samples_per_year
@@ -50,6 +57,10 @@ class SyntheticWeatherDataset(Dataset):
         self.num_channels: int = len(channels)
         self.device = device
         self.grid_size: Tuple[int, int] = grid_size
+        self.mesh_level: int = mesh_level
+        self.rank: int = rank
+        self.world_size: int = world_size
+        self.ranks_per_graph: int = ranks_per_graph
         start_time = time.time()
         self.temperatures: np.ndarray = self.generate_data(
             self.num_days,
@@ -62,6 +73,27 @@ class SyntheticWeatherDataset(Dataset):
         print(
             f"Generated synthetic temperature data in {time.time() - start_time:.2f} seconds."
         )
+
+        # Generate static graph structure used for all time steps
+        # This could be generated once and saved to disk for future use
+        # For simplicity, all ranks generate the same graph, but this can be modified
+        # so that a single rank generates the graph and broadcasts it to all other ranks
+        # or each rank generates it's own partition of the graph
+
+        start_time = time.time()
+        self.latitudes = torch.linspace(-90, 90, steps=grid_size[0])
+        self.longitudes = torch.linspace(-180, 180, steps=grid_size[1] + 1)[1:]
+        self.lat_lon_grid = torch.stack(
+            torch.meshgrid(self.latitudes, self.longitudes, indexing="ij"), dim=-1
+        )
+        self.graph_cast_graph = DistributedGraphCastGraphGenerator(
+            self.lat_lon_grid,
+            mesh_level=self.mesh_level,
+            ranks_per_graph=self.ranks_per_graph,
+            rank=self.rank,
+            world_size=self.world_size,
+        ).get_graphcast_graph()
+        print(f"Generated static graph in {time.time() - start_time:.2f} seconds.")
         self.extra_args: Dict[str, Any] = kwargs
 
     def generate_data(
@@ -143,20 +175,53 @@ class SyntheticWeatherDataset(Dataset):
         """
         return self.num_days - self.num_steps
 
+    def get_static_graph(self):
+        """
+        Returns the static graph structure used for all time steps. Use this when
+        minimizing host memory usage
+        """
+        return self.graph_cast_graph
+
     def __getitem__(self, idx: int):
         """
         Retrieves a sample from the dataset at the specified index.
         """
-        return {
-            "invar": torch.tensor(self.temperatures[idx], dtype=torch.float32).to(
-                self.device
-            ),
-            "outvar": torch.tensor(
+        in_var = (
+            torch.tensor(self.temperatures[idx], dtype=torch.float32)
+            .permute(1, 2, 0)
+            .reshape(-1, self.num_channels)
+        )
+
+        out_var = (
+            torch.tensor(
                 self.temperatures[idx + 1 : idx + self.num_steps + 1],
                 dtype=torch.float32,
             )
             .squeeze(0)
-            .to(self.device),
+            .permute(1, 2, 0)
+            .reshape(-1, self.num_channels)
+        )
+
+        if self.world_size > 1:
+            # Get oartitioned inputs instead of the full graph
+            num_grid_nodes = in_var.shape[0]
+            padded_num_grid_nodes = padded_size(num_grid_nodes, self.ranks_per_graph)
+
+            num_nodes_per_rank = padded_num_grid_nodes // self.ranks_per_graph
+            in_var = pad(in_var, (padded_num_grid_nodes - num_grid_nodes, 0), value=-0)
+            out_var = pad(
+                out_var, (padded_num_grid_nodes - num_grid_nodes, 0), value=-0
+            )
+
+            start_index = self.rank * num_nodes_per_rank
+            end_index = start_index + num_nodes_per_rank
+
+            in_var = in_var[start_index:end_index]
+            out_var = out_var[start_index:end_index]
+
+        return {
+            "invar": in_var.to(self.device),
+            "outvar": out_var.to(self.device),
         }
 
 
@@ -187,6 +252,27 @@ def test_synthetic_weather_dataset(num_days, batch_size=1):
         use_time_of_year_index=use_time_of_year_index,
     )
     print(len(test_dataset))
+    print("=" * 80)
+    static_graph = test_dataset.get_static_graph()
+    print("Static graph:")
+    print("Mesh label:\t", static_graph.mesh_level)
+    print("Mesh Node features:\t", static_graph.mesh_graph_node_features.shape)
+    print("Mesh Edge features:\t", static_graph.mesh_graph_edge_features.shape)
+    print("Mesh src indices:\t", static_graph.mesh_graph_src_indices.shape)
+    print("Mesh dst indices:\t", static_graph.mesh_graph_dst_indices.shape)
+    print("=" * 80)
+    print(
+        "mesh2grid edge features:\t", static_graph.mesh2grid_graph_edge_features.shape
+    )
+    print("mesh2grid src indices:\t", static_graph.mesh2grid_graph_src_indices.shape)
+    print("mesh2grid dst indices:\t", static_graph.mesh2grid_graph_dst_indices.shape)
+    print("=" * 80)
+    print(
+        "grid2mesh edge features:\t", static_graph.grid2mesh_graph_edge_features.shape
+    )
+    print("grid2mesh src indices:\t", static_graph.grid2mesh_graph_src_indices.shape)
+    print("grid2mesh dst indices:\t", static_graph.grid2mesh_graph_dst_indices.shape)
+    print("=" * 80)
 
 
 if __name__ == "__main__":
