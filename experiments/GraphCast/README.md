@@ -11,4 +11,25 @@ GraphCast is originally trained on the ERA5 dataset from 1979-2017. The dataset 
 
 ### Running Test
 
+Run the single process test with the following command:
+
+```bash
+pytest
+```
+
+
 ### How to run
+
+To run the GraphCast model no additional dependencies are required. Install DGraph with
+
+```bash
+pip install dgraph[graphcast]
+```
+
+The model, data, and training configuration are in `graphcast_config.py`. Change the configuration as needed.
+
+Run the single process GraphCast model with the following command:
+```bash
+python main.py --batch_size <batch_size> 
+```
+

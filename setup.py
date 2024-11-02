@@ -94,6 +94,7 @@ setup(
     install_requires=["torch", "numpy", "ninja"],
     extras_require={
         "ogb": ["ogb", "fire"],
+        "graphcast": ["fire"],
     },
     cmdclass={"build_ext": BuildExtension},
 )
