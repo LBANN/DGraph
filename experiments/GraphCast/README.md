@@ -14,9 +14,8 @@ GraphCast is originally trained on the ERA5 dataset from 1979-2017. The dataset 
 Run the single process test with the following command:
 
 ```bash
-pytest
+DGRAPH_GRAPHCAST_DISTRIBUTED_TESTS=0 pytest
 ```
-
 
 ### How to run
 

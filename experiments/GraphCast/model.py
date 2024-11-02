@@ -14,23 +14,66 @@
 
 import torch
 import torch.nn as nn
-from typing import Optional
+from typing import Optional, Tuple
 from torch import Tensor
-from layers import Processor, MLP
+from layers import MeshEdgeBlock, MeshGraphMLP, MeshNodeBlock
 from graphcast_config import Config
 
 
-class GraphCastEncoder(nn.Module):
-    """Encoder for the GraphCast model. The encoder is responsible for taking grid
-    information and encoding it into the multi-mesh, which the processor uses."""
+class GraphCastEmbedder(nn.Module):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, cfg, *args, **kwargs):
+        """
+        Args:
+            cfg: Config object
+            comm: Communicator object
+        """
         super().__init__()
-        self.grid_feature_embedder = MLP(73, 512)
-        self.mesh_feature_embedder = MLP(73, 512)
-        self.grid2mesh_edge_embedder = MLP(73, 512)
-        self.mesh2grid_edge_embedder = MLP(73, 512)
-        self.mesh2mesh_edge_embedder = MLP(73, 512)
+        grid_input_dim = cfg.model.grid_input_dim
+        mesh_input_dim = cfg.model.mesh_input_dim
+
+        input_edge_dim = cfg.model.input_edge_dim
+        hidden_dim = cfg.model.hidden_dim
+
+        self.grid_input_dim = grid_input_dim
+        self.mesh_input_dim = mesh_input_dim
+        self.hidden_dim = hidden_dim
+
+        # MLP for grid node features
+        self.grid_feature_embedder = MeshGraphMLP(
+            input_dim=grid_input_dim,
+            output_dim=hidden_dim,
+            hidden_dim=hidden_dim,
+            hidden_layers=1,
+        )
+        # MLP for mesh node features
+        self.mesh_feature_embedder = MeshGraphMLP(
+            input_dim=mesh_input_dim,
+            output_dim=hidden_dim,
+            hidden_dim=hidden_dim,
+            hidden_layers=1,
+        )
+        # MLP for grid2mesh edge features
+        self.grid2mesh_edge_embedder = MeshGraphMLP(
+            input_dim=input_edge_dim,
+            output_dim=hidden_dim,
+            hidden_dim=hidden_dim,
+            hidden_layers=1,
+        )
+        # MLP for mesh2grid edge features
+        self.mesh2grid_edge_embedder = MeshGraphMLP(
+            input_dim=input_edge_dim,
+            output_dim=hidden_dim,
+            hidden_dim=hidden_dim,
+            hidden_layers=1,
+        )
+        # MLP for mesh2mesh edge features
+        self.mesh2mesh_edge_embedder = MeshGraphMLP(
+            input_dim=input_edge_dim,
+            output_dim=hidden_dim,
+            hidden_dim=hidden_dim,
+            hidden_layers=1,
+        )
 
     def forward(
         self,
@@ -38,10 +81,8 @@ class GraphCastEncoder(nn.Module):
         mesh_features: Tensor,
         mesh2mesh_edge_features: Tensor,
         grid2mesh_edge_features: Tensor,
-        grid2mesh_edge_indices,
         mesh2grid_edge_features: Tensor,
-        mesh2grid_edge_indices,
-    ):
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         embedded_grid_features = self.grid_feature_embedder(grid_features)
         embedded_mesh_features = self.mesh_feature_embedder(mesh_features)
         embedded_grid2mesh_edge_features = self.grid2mesh_edge_embedder(
@@ -59,168 +100,250 @@ class GraphCastEncoder(nn.Module):
             embedded_mesh_features,
             embedded_mesh2mesh_edge_features,
             embedded_grid2mesh_edge_features,
-            grid2mesh_edge_indices,
             embedded_mesh2grid_edge_features,
-            mesh2grid_edge_indices,
         )
+
+
+class GraphCastEncoder(nn.Module):
+    """Encoder for the GraphCast model. The encoder is responsible for taking grid
+    information and encoding it into the multi-mesh, which the processor uses."""
+
+    def __init__(self, cfg, comm, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        edge_block_invars = (
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            comm,
+            cfg.model.hidden_dim,
+        )
+        self.edge_mlp = MeshEdgeBlock(*edge_block_invars)
+
+        node_block_invars = (
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            comm,
+            cfg.model.hidden_dim,
+        )
+        self.mesh_node_mlp = MeshNodeBlock(*node_block_invars)
+        self.grid_node_mlp = MeshGraphMLP(
+            input_dim=cfg.model.hidden_dim, output_dim=cfg.model.hidden_dim
+        )
+
+    def forward(
+        self,
+        grid_node_features,
+        mesh_node_features,
+        grid2mesh_edge_features,
+        grid2mesh_edge_indices_src,
+        grid2mesh_edge_indices_dst,
+    ):
+        e_feats = self.edge_mlp(
+            mesh_node_features,
+            grid_node_features,
+            grid2mesh_edge_features,
+            grid2mesh_edge_indices_src,
+            grid2mesh_edge_indices_dst,
+        )
+
+        n_feats = self.node_mlp(
+            mesh_node_features,
+            e_feats,
+            grid2mesh_edge_indices_dst,
+            grid2mesh_edge_indices_dst,
+        )
+
+        mesh_node_features = mesh_node_features + n_feats
+        grid_node_features = grid_node_features + self.grid_node_mlp(grid_node_features)
+
+        return grid_node_features, mesh_node_features
 
 
 class GraphCastProcessor(nn.Module):
     """Processor for the GraphCast model. The processor is responsible for
     processing the multi-mesh and updating the state of the forecast."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, cfg, comm, *args, **kwargs):
+        """
+        Args:
+            cfg: Config object
+            comm: Communicator object
+        """
         super().__init__()
-        self.processor = Processor(512, 512, 9, 512, 2, 512, 2)
+        processor_layers = cfg.model.processor_layers
+        node_block_invars = (
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            comm,
+            cfg.model.hidden_dim,
+        )
+        edge_block_invars = (
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            comm,
+            cfg.model.hidden_dim,
+        )
+        edge_layers = []
+        node_layers = []
+        for _ in range(processor_layers):
+            edge_layers.append(MeshEdgeBlock(*edge_block_invars))
+        for _ in range(processor_layers):
+            node_layers.append(MeshNodeBlock(*node_block_invars))
+
+        self.edge_processors = nn.ModuleList(edge_layers)
+        self.node_processors = nn.ModuleList(node_layers)
 
     def forward(
         self,
         embedded_mesh_features: Tensor,
         embedded_mesh2mesh_edge_features: Tensor,
-        mesh2mesh_edge_indices,
-        embedded_grid2mesh_edge_features: Tensor,
-        grid2mesh_edge_indices,
-        embedded_mesh2grid_edge_features: Tensor,
-        mesh2grid_edge_indices,
+        mesh2mesh_edge_indices_src: Tensor,
+        mesh2mesh_edge_indices_dst: Tensor,
     ):
-        return self.processor(
-            embedded_mesh_features,
-            embedded_mesh2mesh_edge_features,
-            mesh2mesh_edge_indices,
-            embedded_grid2mesh_edge_features,
-            grid2mesh_edge_indices,
-            embedded_mesh2grid_edge_features,
-            mesh2grid_edge_indices,
-        )
+        e_feats = embedded_mesh2mesh_edge_features
+        n_feats = embedded_mesh_features
+        for edge_layer, node_layer in zip(self.edge_processors, self.node_processors):
+            e_feats = edge_layer(
+                n_feats,
+                n_feats,
+                e_feats,
+                mesh2mesh_edge_indices_src,
+                mesh2mesh_edge_indices_dst,
+            )
+            n_feats = node_layer(
+                n_feats, e_feats, mesh2mesh_edge_indices_src, mesh2mesh_edge_indices_dst
+            )
+        return n_feats, e_feats
 
 
 class GraphCastDecoder(nn.Module):
-    """ """
+    """Decoder for the GraphCast model. The decoder is responsible for taking the latent
+    state of the mesh graph and decoding it to a regular grid. Unlike the processor,
+    the decoder works on the bipartite graph between the mesh to the grid.
+    """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, cfg, comm, *args, **kwargs):
+        """
+        Args:
+            cfg: Config object
+            comm: Communicator object
+        """
         super().__init__()
-        self.decoder = MLP(512, 73)
+        edge_block_invars = (
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            cfg.model.hidden_dim,
+            comm,
+            cfg.model.hidden_dim,
+        )
+        self.edge_mlp = MeshEdgeBlock(*edge_block_invars)
+        dst_node_input_dim = cfg.model.hidden_dim
+        dst_node_output_dim = cfg.model.hidden_dim
+        m2g_edge_output_dim = cfg.model.hidden_dim
+        self.node_mlp = MeshGraphMLP(
+            input_dim=dst_node_input_dim + m2g_edge_output_dim,
+            output_dim=dst_node_output_dim,
+            hidden_dim=cfg.model.hidden_dim,
+            hidden_layers=1,
+        )
 
-    def forward(self, x):
-        return self.decoder(x)
+    def forward(
+        self,
+        mesh2grid_edge_features,
+        grid_node_features,
+        mesh_node_features,
+        mesh2graph_edge_indices_src,
+        mesh2graph_edge_indices_dst,
+    ):
+        e_feats = self.edge_mlp(
+            grid_node_features,
+            mesh_node_features,
+            mesh2grid_edge_features,
+            mesh2graph_edge_indices_src,
+            mesh2graph_edge_indices_dst,
+        )
+        n_feats = self.node_mlp(
+            mesh_node_features,
+            e_feats,
+            mesh2graph_edge_indices_src,
+            mesh2graph_edge_indices_dst,
+        )
+
+        n_feats = grid_node_features + n_feats
+        return n_feats
 
 
 class DGraphCast(nn.Module):
     """Main weather prediction model from the paper"""
 
-    def __init__(self, cfg: Config, *args, **kwargs):
+    def __init__(self, cfg: Config, comm, *args, **kwargs):
         super().__init__()
-        self.encoder = GraphCastEncoder(*args, **kwargs)
+        self.hidden_dim = cfg.model.hidden_dim
+        self.output_grid_dim = cfg.model.output_grid_dim
+        self.comm = comm
+        self.embedder = GraphCastEmbedder(cfg=cfg, comm=comm, *args, **kwargs)
+        self.encoder = GraphCastEncoder(cfg=cfg, comm=comm, *args, **kwargs)
         self.processor = GraphCastProcessor(*args, **kwargs)
         self.decoder = GraphCastDecoder(*args, **kwargs)
-
-    def forward(self, x):
-        x = self.encoder(x)
-        x = self.processor(x)
-        x = self.decoder(x)
-        return x
-
-
-class GraphWeatherForecaster(nn.Module):
-    """Main weather prediction model from the paper"""
-
-    def __init__(
-        self,
-        lat_lons: list,
-        resolution: int = 2,
-        feature_dim: int = 78,
-        aux_dim: int = 24,
-        output_dim: Optional[int] = None,
-        node_dim: int = 256,
-        edge_dim: int = 256,
-        num_blocks: int = 9,
-        hidden_dim_processor_node: int = 256,
-        hidden_dim_processor_edge: int = 256,
-        hidden_layers_processor_node: int = 2,
-        hidden_layers_processor_edge: int = 2,
-        hidden_dim_decoder: int = 128,
-        hidden_layers_decoder: int = 2,
-        norm_type: str = "LayerNorm",
-        use_checkpointing: bool = False,
-    ):
-        """
-        Graph Weather Model based off https://arxiv.org/pdf/2202.07575.pdf
-
-        Args:
-            lat_lons: List of latitude and longitudes for the grid
-            resolution: Resolution of the H3 grid, prefer even resolutions, as
-                odd ones have octogons and heptagons as well
-            feature_dim: Input feature size
-            aux_dim: Number of non-NWP features (i.e. landsea mask, lat/lon, etc)
-            output_dim: Optional, output feature size, useful if want only subset of variables in
-            output
-            node_dim: Node hidden dimension
-            edge_dim: Edge hidden dimension
-            num_blocks: Number of message passing blocks in the Processor
-            hidden_dim_processor_node: Hidden dimension of the node processors
-            hidden_dim_processor_edge: Hidden dimension of the edge processors
-            hidden_layers_processor_node: Number of hidden layers in the node processors
-            hidden_layers_processor_edge: Number of hidden layers in the edge processors
-            hidden_dim_decoder:Number of hidden dimensions in the decoder
-            hidden_layers_decoder: Number of layers in the decoder
-            norm_type: Type of norm for the MLPs
-                one of 'LayerNorm', 'GraphNorm', 'InstanceNorm', 'BatchNorm', 'MessageNorm', or None
-            use_checkpointing: Use gradient checkpointing to reduce model memory
-        """
-        super().__init__()
-        self.feature_dim = feature_dim
-        if output_dim is None:
-            output_dim = self.feature_dim
-
-        self.encoder = GraphCastEncoder(
-            lat_lons=lat_lons,
-            resolution=resolution,
-            input_dim=feature_dim + aux_dim,
-            output_dim=node_dim,
-            output_edge_dim=edge_dim,
-            hidden_dim_processor_edge=hidden_dim_processor_edge,
-            hidden_layers_processor_node=hidden_layers_processor_node,
-            hidden_dim_processor_node=hidden_dim_processor_node,
-            hidden_layers_processor_edge=hidden_layers_processor_edge,
-            mlp_norm_type=norm_type,
-        )
-        self.processor = GraphCastProcessor(
-            input_dim=node_dim,
-            edge_dim=edge_dim,
-            num_blocks=num_blocks,
-            hidden_dim_processor_edge=hidden_dim_processor_edge,
-            hidden_layers_processor_node=hidden_layers_processor_node,
-            hidden_dim_processor_node=hidden_dim_processor_node,
-            hidden_layers_processor_edge=hidden_layers_processor_edge,
-            mlp_norm_type=norm_type,
-        )
-        self.decoder = GraphCastDecoder(
-            lat_lons=lat_lons,
-            resolution=resolution,
-            input_dim=node_dim,
-            output_dim=output_dim,
-            output_edge_dim=edge_dim,
-            hidden_dim_processor_edge=hidden_dim_processor_edge,
-            hidden_layers_processor_node=hidden_layers_processor_node,
-            hidden_dim_processor_node=hidden_dim_processor_node,
-            hidden_layers_processor_edge=hidden_layers_processor_edge,
-            mlp_norm_type=norm_type,
-            hidden_dim_decoder=hidden_dim_decoder,
-            hidden_layers_decoder=hidden_layers_decoder,
-            use_checkpointing=use_checkpointing,
+        self.final_prediction = MeshGraphMLP(
+            input_dim=self.hidden_dim, output_dim=self.output_grid_dim
         )
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the new state of the forecast
+    def forward(self, data_dict: dict) -> Tensor:
 
-        Args:
-            features: The input features, aligned with the order of lat_lons_heights
+        input_grid_features = data_dict["input_grid_features"]
+        input_mesh_features = data_dict["input_mesh_features"]
+        mesh2mesh_edge_features = data_dict["mesh2mesh_edge_features"]
+        grid2mesh_edge_features = data_dict["grid2mesh_edge_features"]
+        mesh2grid_edge_features = data_dict["mesh2grid_edge_features"]
+        mesh2mesh_edge_indices_src = data_dict["mesh2mesh_edge_indices_src"]
+        mesh2mesh_edge_indices_dst = data_dict["mesh2mesh_edge_indices_dst"]
+        mesh2grid_edge_indices_src = data_dict["mesh2grid_edge_indices_src"]
+        mesh2grid_edge_indices_dst = data_dict["mesh2grid_edge_indices_dst"]
+        grid2mesh_edge_indices_src = data_dict["grid2mesh_edge_indices_src"]
+        grid2mesh_edge_indices_dst = data_dict["grid2mesh_edge_indices_dst"]
 
-        Returns:
-            The next state in the forecast
-        """
-        x, edge_idx, edge_attr = self.encoder(features)
-        x = self.processor(x, edge_idx, edge_attr)
-        x = self.decoder(x, features[..., : self.feature_dim])
-        return x
+        out = self.embedder(
+            input_grid_features,
+            input_mesh_features,
+            mesh2mesh_edge_features,
+            grid2mesh_edge_features,
+            mesh2grid_edge_features,
+        )
+        (
+            embedded_grid_features,
+            embedded_mesh_features,
+            embedded_mesh2mesh_edge_features,
+            embedded_grid2mesh_edge_features,
+            embedded_mesh2grid_edge_features,
+        ) = out
+        encoded_grid_features, encoded_mesh_features = self.encoder(
+            embedded_grid_features,
+            embedded_mesh_features,
+            embedded_grid2mesh_edge_features,
+            grid2mesh_edge_indices_src,
+            grid2mesh_edge_indices_dst,
+        )
+
+        out = self.processor(
+            encoded_mesh_features,
+            embedded_mesh2mesh_edge_features,
+            mesh2mesh_edge_indices_src,
+            mesh2mesh_edge_indices_dst,
+        )
+        processed_mesh_node_features, _ = out
+        x = self.decoder(
+            embedded_mesh2grid_edge_features,
+            encoded_grid_features,
+            processed_mesh_node_features,
+            mesh2grid_edge_indices_src,
+            mesh2grid_edge_indices_dst,
+        )
+        output = self.final_prediction(x)
+        return output
