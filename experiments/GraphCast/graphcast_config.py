@@ -18,9 +18,10 @@ from dataclasses import dataclass
 @dataclass
 class TrainingConfig:
     lr: float = 1e-3
+    lr_step3 = 3e-7
     num_iters_step1: int = 1000
     num_iters_step2: int = 299000
-    lr_step3: int = 11000
+    num_iters_step3: int = 11000
     step_change_freq: int = 1000
     save_freq: int = 1
     grad_clip_norm: float = 32.0
@@ -66,3 +67,10 @@ class ModelConfig:
     hidden_dim: int = 512
     mesh_level: int = 6
     multimesh: bool = True
+
+
+@dataclass
+class Config:
+    training: TrainingConfig = TrainingConfig()
+    data: DataConfig = DataConfig()
+    model: ModelConfig = ModelConfig()

@@ -17,6 +17,7 @@ import torch.nn as nn
 from typing import Optional
 from torch import Tensor
 from layers import Processor, MLP
+from graphcast_config import Config
 
 
 class GraphCastEncoder(nn.Module):
@@ -102,6 +103,22 @@ class GraphCastDecoder(nn.Module):
 
     def forward(self, x):
         return self.decoder(x)
+
+
+class DGraphCast(nn.Module):
+    """Main weather prediction model from the paper"""
+
+    def __init__(self, cfg: Config, *args, **kwargs):
+        super().__init__()
+        self.encoder = GraphCastEncoder(*args, **kwargs)
+        self.processor = GraphCastProcessor(*args, **kwargs)
+        self.decoder = GraphCastDecoder(*args, **kwargs)
+
+    def forward(self, x):
+        x = self.encoder(x)
+        x = self.processor(x)
+        x = self.decoder(x)
+        return x
 
 
 class GraphWeatherForecaster(nn.Module):
