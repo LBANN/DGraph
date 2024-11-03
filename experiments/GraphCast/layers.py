@@ -115,7 +115,6 @@ class MeshNodeBlock(nn.Module):
         node_features: torch.Tensor,
         edge_features: torch.Tensor,
         src_indices: torch.Tensor,
-        dst_indices: torch.Tensor,
     ) -> torch.Tensor:
         """
         Compute the node block
@@ -130,7 +129,7 @@ class MeshNodeBlock(nn.Module):
             The updated node features
         """
         # Sum all the edge features for each node
-        num_local_nodes = node_features.shape[1]
+        num_local_nodes = node_features.shape[0]
         # TODO: This can be optimized by a fused gather-scatter operation - S.Z
 
         aggregated_edge_features = self.comm.scatter(
@@ -181,11 +180,11 @@ class MeshEdgeBlock(nn.Module):
 
     def forward(
         self,
-        src_node_features,
-        dst_node_features,
-        edge_features,
-        src_indices,
-        dst_indices,
+        src_node_features: torch.Tensor,
+        dst_node_features: torch.Tensor,
+        edge_features: torch.Tensor,
+        src_indices: torch.Tensor,
+        dst_indices: torch.Tensor,
     ) -> torch.Tensor:
         """
         Compute the edge block

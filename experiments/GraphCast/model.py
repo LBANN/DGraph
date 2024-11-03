@@ -143,18 +143,17 @@ class GraphCastEncoder(nn.Module):
         grid2mesh_edge_indices_dst,
     ):
         e_feats = self.edge_mlp(
-            mesh_node_features,
-            grid_node_features,
-            grid2mesh_edge_features,
-            grid2mesh_edge_indices_src,
-            grid2mesh_edge_indices_dst,
+            src_node_features=grid_node_features,
+            dst_node_features=mesh_node_features,
+            edge_features=grid2mesh_edge_features,
+            src_indices=grid2mesh_edge_indices_src,
+            dst_indices=grid2mesh_edge_indices_dst,
         )
 
-        n_feats = self.node_mlp(
-            mesh_node_features,
-            e_feats,
-            grid2mesh_edge_indices_dst,
-            grid2mesh_edge_indices_dst,
+        n_feats = self.mesh_node_mlp(
+            node_features=mesh_node_features,
+            edge_features=e_feats,
+            src_indices=grid2mesh_edge_indices_dst,
         )
 
         mesh_node_features = mesh_node_features + n_feats
@@ -218,7 +217,9 @@ class GraphCastProcessor(nn.Module):
                 mesh2mesh_edge_indices_dst,
             )
             n_feats = node_layer(
-                n_feats, e_feats, mesh2mesh_edge_indices_src, mesh2mesh_edge_indices_dst
+                n_feats,
+                e_feats,
+                mesh2mesh_edge_indices_src,
             )
         return n_feats, e_feats
 
@@ -274,7 +275,6 @@ class GraphCastDecoder(nn.Module):
             mesh_node_features,
             e_feats,
             mesh2graph_edge_indices_src,
-            mesh2graph_edge_indices_dst,
         )
 
         n_feats = grid_node_features + n_feats

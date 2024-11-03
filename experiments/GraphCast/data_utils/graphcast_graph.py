@@ -114,9 +114,9 @@ class DistributedGraphCastGraphGenerator:
         end_index = start_index + (num_nodes // self.ranks_per_graph)
         node_features = node_features[start_index:end_index]
 
-        return node_features, edge_features, src_indices, dst_indices
+        return node_features, edge_features, src_indices.long(), dst_indices.long()
 
-    def get_mesh2grid_graph(self):
+    def get_grid2mesh_graph(self):
         max_edge_len = max_edge_length(
             self.finest_mesh_vertices, self.finest_mesh_src, self.finest_mesh_dst
         )
@@ -127,17 +127,17 @@ class DistributedGraphCastGraphGenerator:
         g2m_graph = create_grid2mesh_graph(
             max_edge_len, lat_lon_grid_flat, self.mesh_vertices
         )
-        edge_features, src_mesh_indices, dst_grid_indices = g2m_graph
-        return torch.Tensor([]), edge_features, src_mesh_indices, dst_grid_indices
+        edge_features, src_grid_indices, dst_mesh_indices = g2m_graph
+        return torch.Tensor([]), edge_features, src_grid_indices, dst_mesh_indices
 
-    def get_grid2mesh_graph(self):
+    def get_mesh2grid_graph(self):
         lat_lon_grid_flat = self.lat_lon_grid.permute(2, 0, 1).view(2, -1).permute(1, 0)
 
         m2g_graph = create_mesh2grid_graph(
             lat_lon_grid_flat, self.mesh_vertices, self.mesh_faces
         )
-        edge_features, src_grid_indices, dst_mesh_indices = m2g_graph
-        return torch.Tensor([]), edge_features, src_grid_indices, dst_mesh_indices
+        edge_features, src_mesh_indices, dst_grid_indices = m2g_graph
+        return torch.Tensor([]), edge_features, src_mesh_indices, dst_grid_indices
 
     def get_graphcast_graph(self) -> DistributedGraphCastGraph:
         """Get the distributed graphcast graph."""
