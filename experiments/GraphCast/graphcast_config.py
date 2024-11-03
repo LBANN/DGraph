@@ -12,7 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -32,7 +32,7 @@ class TrainingConfig:
 class DataConfig:
     # Resolution of the latitude-longitude grid.
     # If smaller than the native resolution, bilinear interpolation is applied
-    latlon_res: list[int] = [721, 1440]
+    latlon_res: tuple[int, int] = (721, 1440)
     # Number of samples per year for training.
     num_samples_per_year_train: int = 1408
     # Number of climate channels.
@@ -80,6 +80,6 @@ class ModelConfig:
 
 @dataclass
 class Config:
-    training: TrainingConfig = TrainingConfig()
-    data: DataConfig = DataConfig()
-    model: ModelConfig = ModelConfig()
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    data: DataConfig = field(default_factory=DataConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
