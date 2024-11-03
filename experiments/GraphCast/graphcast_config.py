@@ -17,8 +17,10 @@ from dataclasses import dataclass, field
 
 @dataclass
 class TrainingConfig:
+    # Initial learning rate
     lr: float = 1e-3
-    lr_step3 = 3e-7
+    # Learning rate for the fine-tuning step
+    lr_step3: float = 3e-7
     num_iters_step1: int = 1000
     num_iters_step2: int = 299000
     num_iters_step3: int = 11000
@@ -34,7 +36,8 @@ class DataConfig:
     # If smaller than the native resolution, bilinear interpolation is applied
     latlon_res: tuple[int, int] = (721, 1440)
     # Number of samples per year for training.
-    num_samples_per_year_train: int = 1408
+    # Note: Use a small number here for testing. Otherwise, massive memory is needed.
+    num_samples_per_year_train: int = 4
     # Number of climate channels.
     num_channels_climate: int = 73
     # Number of static channels
@@ -69,7 +72,7 @@ class ModelConfig:
     mesh_level: int = 6
     multimesh: bool = True
     # Input dimension of the grid node features
-    input_grid_dim: int = 474
+    input_grid_dim: int = 73
     # Input dimension of the mesh node features
     input_mesh_dim: int = 3
     # Input dimension of the mesh edge features

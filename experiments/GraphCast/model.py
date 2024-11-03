@@ -23,15 +23,15 @@ from data_utils.graphcast_graph import DistributedGraphCastGraph
 
 class GraphCastEmbedder(nn.Module):
 
-    def __init__(self, cfg, *args, **kwargs):
+    def __init__(self, cfg: Config, *args, **kwargs):
         """
         Args:
             cfg: Config object
             comm: Communicator object
         """
         super().__init__()
-        grid_input_dim = cfg.model.grid_input_dim
-        mesh_input_dim = cfg.model.mesh_input_dim
+        grid_input_dim = cfg.model.input_grid_dim
+        mesh_input_dim = cfg.model.input_mesh_dim
 
         input_edge_dim = cfg.model.input_edge_dim
         hidden_dim = cfg.model.hidden_dim
@@ -109,7 +109,7 @@ class GraphCastEncoder(nn.Module):
     """Encoder for the GraphCast model. The encoder is responsible for taking grid
     information and encoding it into the multi-mesh, which the processor uses."""
 
-    def __init__(self, cfg, comm, *args, **kwargs) -> None:
+    def __init__(self, cfg: Config, comm, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
         edge_block_invars = (
@@ -167,7 +167,7 @@ class GraphCastProcessor(nn.Module):
     """Processor for the GraphCast model. The processor is responsible for
     processing the multi-mesh and updating the state of the forecast."""
 
-    def __init__(self, cfg, comm, *args, **kwargs):
+    def __init__(self, cfg: Config, comm, *args, **kwargs):
         """
         Args:
             cfg: Config object
@@ -229,7 +229,7 @@ class GraphCastDecoder(nn.Module):
     the decoder works on the bipartite graph between the mesh to the grid.
     """
 
-    def __init__(self, cfg, comm, *args, **kwargs):
+    def __init__(self, cfg: Config, comm, *args, **kwargs):
         """
         Args:
             cfg: Config object
@@ -237,6 +237,7 @@ class GraphCastDecoder(nn.Module):
         """
         super().__init__()
         edge_block_invars = (
+            cfg.model.hidden_dim,
             cfg.model.hidden_dim,
             cfg.model.hidden_dim,
             cfg.model.hidden_dim,
@@ -290,8 +291,8 @@ class DGraphCast(nn.Module):
         self.comm = comm
         self.embedder = GraphCastEmbedder(cfg=cfg, comm=comm, *args, **kwargs)
         self.encoder = GraphCastEncoder(cfg=cfg, comm=comm, *args, **kwargs)
-        self.processor = GraphCastProcessor(*args, **kwargs)
-        self.decoder = GraphCastDecoder(*args, **kwargs)
+        self.processor = GraphCastProcessor(cfg=cfg, comm=comm, *args, **kwargs)
+        self.decoder = GraphCastDecoder(cfg=cfg, comm=comm, *args, **kwargs)
         self.final_prediction = MeshGraphMLP(
             input_dim=self.hidden_dim, output_dim=self.output_grid_dim
         )

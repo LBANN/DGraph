@@ -13,7 +13,7 @@
 # SPDX-License-Identifier: (Apache-2.0)
 import numpy as np
 import torch
-from torch import Tensor
+from torch import Tensor, LongTensor
 from experiments.GraphCast.data_utils.spatial_utils import max_edge_length
 from .icosahedral_mesh import (
     get_hierarchy_of_triangular_meshes_for_sphere,

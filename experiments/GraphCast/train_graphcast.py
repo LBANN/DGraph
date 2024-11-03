@@ -32,7 +32,7 @@ def compute_loss(ground_truth, prediction, comm):
 
 
 def main(
-    batch_size: int = 2, is_distributed: bool = False, use_synthetic_data: bool = False
+    batch_size: int = 1, is_distributed: bool = False, use_synthetic_data: bool = False
 ):
     cfg = graphcast_config.Config()
 
@@ -75,7 +75,7 @@ def main(
         channels=[x for x in range(cfg.data.num_channels_climate)],
         num_samples_per_year=cfg.data.num_samples_per_year_train,
         num_steps=cfg.data.num_history,
-        num_history=cfg.data.num_history,
+        device=torch.device("cpu"),
     )
 
     static_graph = dataset.get_static_graph()
@@ -85,6 +85,7 @@ def main(
     dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
     # Train the model
 
+    _iter = 0
     while (
         _iter
         < cfg.training.num_iters_step1

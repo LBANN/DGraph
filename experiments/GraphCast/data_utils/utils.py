@@ -100,7 +100,12 @@ def create_graph(
     edge_features = generate_edge_features(src_pos, dst_pos)
     node_features = generate_node_features(pos)
 
-    return node_features, edge_features, src_indices, dst_indices
+    return (
+        node_features,
+        edge_features,
+        torch.LongTensor(src_indices.long()),
+        torch.LongTensor(dst_indices.long()),
+    )
 
 
 def create_mesh2grid_graph(
@@ -118,8 +123,8 @@ def create_mesh2grid_graph(
     src = [p for i in indices for p in mesh_faces[i].flatten()]
     dst = [i for i in range(len(cartesian_grid)) for _ in range(3)]
 
-    src_mesh_indices = torch.tensor(src, dtype=torch.int32)
-    dst_grid_indices = torch.tensor(dst, dtype=torch.int32)
+    src_mesh_indices = torch.tensor(src, dtype=torch.int64)
+    dst_grid_indices = torch.tensor(dst, dtype=torch.int64)
 
     src_mesh_node_positions = torch.from_numpy(mesh_vertices)
     dst_grid_node_positions = cartesian_grid
@@ -128,7 +133,11 @@ def create_mesh2grid_graph(
     dst_pos = dst_grid_node_positions[dst_grid_indices.long()]
 
     edge_features = generate_edge_features(src_pos, dst_pos)
-    return edge_features, src_mesh_indices, dst_grid_indices
+    return (
+        edge_features,
+        torch.LongTensor(src_mesh_indices.long()),
+        torch.LongTensor(dst_grid_indices.long()),
+    )
 
 
 def create_grid2mesh_graph(
@@ -161,4 +170,8 @@ def create_grid2mesh_graph(
     dst_pos = dst_mesh_node_positions[dst_mesh_indices.long()]
 
     edge_features = generate_edge_features(src_pos, dst_pos)
-    return edge_features, src_grid_indices, dst_mesh_indices
+    return (
+        edge_features,
+        torch.LongTensor(src_grid_indices.long()),
+        torch.LongTensor(dst_mesh_indices.long()),
+    )

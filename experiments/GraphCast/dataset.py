@@ -194,7 +194,7 @@ class SyntheticWeatherDataset(Dataset):
 
         out_var = (
             torch.tensor(
-                self.temperatures[idx + 1 : idx + self.num_steps + 1],
+                self.temperatures[idx + 1 : idx + self.num_steps + 2],
                 dtype=torch.float32,
             )
             .squeeze(0)
