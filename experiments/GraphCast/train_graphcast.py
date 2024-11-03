@@ -20,6 +20,15 @@ from model import DGraphCast
 import torch
 from torch.utils.data import DataLoader
 from dataset import SyntheticWeatherDataset
+from dist_utils import SingleProcessDummyCommunicator, CommAwareDistributedSampler
+
+
+def compute_loss(ground_truth, prediction, comm):
+    loss = (ground_truth - prediction).pow(2)
+    loss = loss.mean(dim=(1, 2, 3))
+    loss = loss.sum()
+    loss = loss * comm._ranks_per_sample / comm.get_world_size()
+    return loss
 
 
 def main(
@@ -28,13 +37,14 @@ def main(
     cfg = graphcast_config.Config()
 
     # Create the model
-    model = DGraphCast(cfg)
 
+    comm = SingleProcessDummyCommunicator()
     if is_distributed:
         raise NotImplementedError("Distributed training is not yet supported.")
-
     if not use_synthetic_data:
         raise NotImplementedError("Real data is not yet supported yet.")
+
+    model = DGraphCast(cfg, comm)
 
     # Create the optimizer
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.lr)
@@ -68,7 +78,11 @@ def main(
         num_history=cfg.data.num_history,
     )
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    static_graph = dataset.get_static_graph()
+    assert batch_size == 1, "Per Rank batch size must be 1 for distributed training."
+
+    sampler = CommAwareDistributedSampler(dataset, comm)
+    dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
     # Train the model
 
     while (
@@ -79,9 +93,13 @@ def main(
     ):
 
         for data in dataloader:
+            in_data = data["invar"]
+            ground_truth = data["outvar"]
+
             model.train()
             optimizer.zero_grad()
-            loss = model(data)
+            predicted_grid = model(in_data, static_graph)
+            loss = compute_loss(ground_truth, predicted_grid, comm)
             loss.backward()
             optimizer.step()
             scheduler.step()

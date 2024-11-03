@@ -18,6 +18,7 @@ from typing import Optional, Tuple
 from torch import Tensor
 from layers import MeshEdgeBlock, MeshGraphMLP, MeshNodeBlock
 from graphcast_config import Config
+from data_utils.graphcast_graph import DistributedGraphCastGraph
 
 
 class GraphCastEmbedder(nn.Module):
@@ -295,19 +296,21 @@ class DGraphCast(nn.Module):
             input_dim=self.hidden_dim, output_dim=self.output_grid_dim
         )
 
-    def forward(self, data_dict: dict) -> Tensor:
+    def forward(
+        self, input_grid_features: Tensor, static_graph: DistributedGraphCastGraph
+    ) -> Tensor:
 
-        input_grid_features = data_dict["input_grid_features"]
-        input_mesh_features = data_dict["input_mesh_features"]
-        mesh2mesh_edge_features = data_dict["mesh2mesh_edge_features"]
-        grid2mesh_edge_features = data_dict["grid2mesh_edge_features"]
-        mesh2grid_edge_features = data_dict["mesh2grid_edge_features"]
-        mesh2mesh_edge_indices_src = data_dict["mesh2mesh_edge_indices_src"]
-        mesh2mesh_edge_indices_dst = data_dict["mesh2mesh_edge_indices_dst"]
-        mesh2grid_edge_indices_src = data_dict["mesh2grid_edge_indices_src"]
-        mesh2grid_edge_indices_dst = data_dict["mesh2grid_edge_indices_dst"]
-        grid2mesh_edge_indices_src = data_dict["grid2mesh_edge_indices_src"]
-        grid2mesh_edge_indices_dst = data_dict["grid2mesh_edge_indices_dst"]
+        input_grid_features = input_grid_features.squeeze(0)
+        input_mesh_features = static_graph.mesh_graph_node_features
+        mesh2mesh_edge_features = static_graph.mesh_graph_edge_features
+        grid2mesh_edge_features = static_graph.grid2mesh_graph_edge_features
+        mesh2grid_edge_features = static_graph.mesh2grid_graph_edge_features
+        mesh2mesh_edge_indices_src = static_graph.mesh_graph_src_indices
+        mesh2mesh_edge_indices_dst = static_graph.mesh_graph_dst_indices
+        mesh2grid_edge_indices_src = static_graph.mesh2grid_graph_src_indices
+        mesh2grid_edge_indices_dst = static_graph.mesh2grid_graph_dst_indices
+        grid2mesh_edge_indices_src = static_graph.grid2mesh_graph_src_indices
+        grid2mesh_edge_indices_dst = static_graph.grid2mesh_graph_dst_indices
 
         out = self.embedder(
             input_grid_features,
