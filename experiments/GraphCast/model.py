@@ -110,6 +110,11 @@ class GraphCastEncoder(nn.Module):
     information and encoding it into the multi-mesh, which the processor uses."""
 
     def __init__(self, cfg: Config, comm, *args, **kwargs) -> None:
+        """
+        Args:
+            cfg: Config object
+            comm: Communicator object
+        """
         super().__init__(*args, **kwargs)
 
         edge_block_invars = (
@@ -136,12 +141,13 @@ class GraphCastEncoder(nn.Module):
 
     def forward(
         self,
-        grid_node_features,
-        mesh_node_features,
-        grid2mesh_edge_features,
-        grid2mesh_edge_indices_src,
-        grid2mesh_edge_indices_dst,
-    ):
+        grid_node_features: Tensor,
+        mesh_node_features: Tensor,
+        grid2mesh_edge_features: Tensor,
+        grid2mesh_edge_indices_src: Tensor,
+        grid2mesh_edge_indices_dst: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+
         e_feats = self.edge_mlp(
             src_node_features=grid_node_features,
             dst_node_features=mesh_node_features,
@@ -205,7 +211,7 @@ class GraphCastProcessor(nn.Module):
         embedded_mesh2mesh_edge_features: Tensor,
         mesh2mesh_edge_indices_src: Tensor,
         mesh2mesh_edge_indices_dst: Tensor,
-    ):
+    ) -> Tuple[Tensor, Tensor]:
         e_feats = embedded_mesh2mesh_edge_features
         n_feats = embedded_mesh_features
         for edge_layer, node_layer in zip(self.edge_processors, self.node_processors):
@@ -245,39 +251,60 @@ class GraphCastDecoder(nn.Module):
             comm,
             cfg.model.hidden_dim,
         )
+        self.comm = comm
         self.edge_mlp = MeshEdgeBlock(*edge_block_invars)
         dst_node_input_dim = cfg.model.hidden_dim
         dst_node_output_dim = cfg.model.hidden_dim
         m2g_edge_output_dim = cfg.model.hidden_dim
-        self.node_mlp = MeshGraphMLP(
-            input_dim=dst_node_input_dim + m2g_edge_output_dim,
-            output_dim=dst_node_output_dim,
+        self.node_mlp = MeshNodeBlock(
+            input_node_dim=dst_node_input_dim,
+            input_edge_dim=m2g_edge_output_dim,
+            output_node_dim=dst_node_output_dim,
             hidden_dim=cfg.model.hidden_dim,
-            hidden_layers=1,
+            comm=comm,
+            num_hidden_layers=1,
         )
 
     def forward(
         self,
-        mesh2grid_edge_features,
-        grid_node_features,
-        mesh_node_features,
-        mesh2graph_edge_indices_src,
-        mesh2graph_edge_indices_dst,
-    ):
+        mesh2grid_edge_features: Tensor,
+        grid_node_features: Tensor,
+        mesh_node_features: Tensor,
+        mesh2graph_edge_indices_src: Tensor,
+        mesh2graph_edge_indices_dst: Tensor,
+    ) -> Tensor:
+        """
+        Args:
+            mesh2grid_edge_features (Tensor): The edge features from the mesh to the grid
+            grid_node_features (Tensor): The grid node features
+            mesh_node_features (Tensor): The mesh node features
+            mesh2graph_edge_indices_src (Tensor): The source indices for the mesh2graph
+                                                  bipartitate edges. These are the indices
+                                                  of the mesh nodes that are connected to
+                                                  the grid nodes.
+            mesh2graph_edge_indices_dst (Tensor): The destination indices for the mesh2graph
+                                                  bipartitate edges. These are the indices of
+                                                  the grid nodes that are connected to the
+                                                  mesh nodes.
+
+        Returns:
+            (Tensor): The updated grid node features
+        """
         e_feats = self.edge_mlp(
-            grid_node_features,
-            mesh_node_features,
-            mesh2grid_edge_features,
-            mesh2graph_edge_indices_src,
-            mesh2graph_edge_indices_dst,
+            src_node_features=mesh_node_features,
+            dst_node_features=grid_node_features,
+            edge_features=mesh2grid_edge_features,
+            src_indices=mesh2graph_edge_indices_src,
+            dst_indices=mesh2graph_edge_indices_dst,
         )
         n_feats = self.node_mlp(
-            mesh_node_features,
-            e_feats,
-            mesh2graph_edge_indices_src,
+            node_features=grid_node_features,
+            edge_features=e_feats,
+            src_indices=mesh2graph_edge_indices_dst,
         )
 
         n_feats = grid_node_features + n_feats
+
         return n_feats
 
 
@@ -285,6 +312,11 @@ class DGraphCast(nn.Module):
     """Main weather prediction model from the paper"""
 
     def __init__(self, cfg: Config, comm, *args, **kwargs):
+        """
+        Args:
+            cfg: Config object
+            comm: Communicator object
+        """
         super().__init__()
         self.hidden_dim = cfg.model.hidden_dim
         self.output_grid_dim = cfg.model.output_grid_dim
@@ -300,6 +332,14 @@ class DGraphCast(nn.Module):
     def forward(
         self, input_grid_features: Tensor, static_graph: DistributedGraphCastGraph
     ) -> Tensor:
+        """
+        Args:
+            input_grid_features (Tensor): The input grid features
+            static_graph (DistributedGraphCastGraph): The static graph object
+
+        Returns:
+            (Tensor): The predicted output grid
+        """
 
         input_grid_features = input_grid_features.squeeze(0)
         input_mesh_features = static_graph.mesh_graph_node_features
@@ -350,4 +390,5 @@ class DGraphCast(nn.Module):
             mesh2grid_edge_indices_dst,
         )
         output = self.final_prediction(x)
+        output = input_grid_features + output
         return output

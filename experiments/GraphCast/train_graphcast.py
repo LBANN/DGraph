@@ -21,18 +21,23 @@ import torch
 from torch.utils.data import DataLoader
 from dataset import SyntheticWeatherDataset
 from dist_utils import SingleProcessDummyCommunicator, CommAwareDistributedSampler
+from torch.profiler import profile, record_function, ProfilerActivity
 
 
 def compute_loss(ground_truth, prediction, comm):
     loss = (ground_truth - prediction).pow(2)
-    loss = loss.mean(dim=(1, 2, 3))
+    loss = loss.mean(dim=(1, 2))
     loss = loss.sum()
     loss = loss * comm._ranks_per_sample / comm.get_world_size()
     return loss
 
 
 def main(
-    batch_size: int = 1, is_distributed: bool = False, use_synthetic_data: bool = False
+    batch_size: int = 1,
+    is_distributed: bool = False,
+    test_run: bool = False,
+    use_synthetic_data: bool = False,
+    benchmark: bool = False,
 ):
     cfg = graphcast_config.Config()
 
@@ -92,6 +97,7 @@ def main(
         + cfg.training.num_iters_step2
         + cfg.training.num_iters_step3
     ):
+        break_training = False
 
         for data in dataloader:
             in_data = data["invar"]
@@ -109,6 +115,10 @@ def main(
 
             scheduler.step()
 
+            if test_run:
+                break_training = True
+                break
+
             # Save the model
             if _iter % cfg.training.save_freq == 0:
                 torch.save(model.state_dict(), f"model_{_iter}.pth")
@@ -117,6 +127,19 @@ def main(
                 model.eval()
                 val_loss = model(data)
                 print(f"Validation loss: {val_loss}")
+
+        if break_training:
+            break
+
+    if benchmark:
+        inputs = next(iter(dataloader))["invar"]
+
+        with profile(
+            activities=[ProfilerActivity.CPU], profile_memory=True, record_shapes=True
+        ) as prof:
+            model(inputs, static_graph)
+
+        print(prof.key_averages().table(sort_by="self_cpu_memory_usage", row_limit=10))
 
 
 if __name__ == "__main__":

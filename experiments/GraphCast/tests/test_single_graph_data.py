@@ -24,10 +24,10 @@ def test_static_graph_data(setup_data):
     assert static_graph.mesh_graph_src_indices.shape == torch.Size([655320])
     assert static_graph.mesh_graph_dst_indices.shape == torch.Size([655320])
 
-    assert static_graph.mesh2grid_graph_edge_features.shape == torch.Size([1618822, 4])
-    assert static_graph.mesh2grid_graph_src_indices.shape == torch.Size([1618822])
-    assert static_graph.mesh2grid_graph_dst_indices.shape == torch.Size([1618822])
+    assert static_graph.grid2mesh_graph_edge_features.shape == torch.Size([1618822, 4])
+    assert static_graph.grid2mesh_graph_src_indices.shape == torch.Size([1618822])
+    assert static_graph.grid2mesh_graph_dst_indices.shape == torch.Size([1618822])
 
-    assert static_graph.grid2mesh_graph_edge_features.shape == torch.Size([3114720, 4])
-    assert static_graph.grid2mesh_graph_src_indices.shape == torch.Size([3114720])
-    assert static_graph.grid2mesh_graph_dst_indices.shape == torch.Size([3114720])
+    assert static_graph.grid2mesh_graph_edge_features.shape == torch.Size([1618822, 4])
+    assert static_graph.grid2mesh_graph_src_indices.shape == torch.Size([1618822])
+    assert static_graph.grid2mesh_graph_dst_indices.shape == torch.Size([1618822])

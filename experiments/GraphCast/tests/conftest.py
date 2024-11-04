@@ -5,6 +5,7 @@ import pytest
 def setup_data():
     import sys
     import os
+    import torch
 
     cur_dir = os.path.dirname(__file__)
     prev_dir = os.path.dirname(cur_dir)
@@ -36,5 +37,6 @@ def setup_data():
         num_workers=num_workers,
         num_history=num_history,
         use_time_of_year_index=use_time_of_year_index,
+        device=torch.device("cpu"),
     )
     return test_dataset

@@ -27,8 +27,13 @@ pip install dgraph[graphcast]
 
 The model, data, and training configuration are in `graphcast_config.py`. Change the configuration as needed.
 
-Run the single process GraphCast model with the following command:
+Run the single process GraphCast model as a test run with the following command:
 ```bash
-python main.py --batch_size <batch_size> 
+python main.py --test_run
 ```
 
+Run with benchmarking with the following command:
+```bash
+python main.py --benchmark
+```
+***Note: *** The graph requires a large amount of memory so better to do run on the CPU and a machine with a large amount of memory. 

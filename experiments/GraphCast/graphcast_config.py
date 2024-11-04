@@ -67,8 +67,8 @@ class DataConfig:
 @dataclass
 class ModelConfig:
     # Number of processor layers in the model
-    processor_layers: int = 16
-    hidden_dim: int = 512
+    processor_layers: int = 4
+    hidden_dim: int = 128
     mesh_level: int = 6
     multimesh: bool = True
     # Input dimension of the grid node features
@@ -78,7 +78,7 @@ class ModelConfig:
     # Input dimension of the mesh edge features
     input_edge_dim: int = 4
     # Predicted variables for each grid node
-    output_grid_dim: int = 227
+    output_grid_dim: int = 73
 
 
 @dataclass
