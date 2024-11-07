@@ -40,3 +40,22 @@ def _nccl_gather_op(send_tensor_buffer, recv_tensor_buffer, indices, rank, world
 
     for req in reqs:
         req.wait()
+
+
+def _optimized_nccl_gather_op(
+    send_buffer_list, recv_buffer_list, indices, global_rank_mappings, rank, world_size
+):
+    """
+    An optimized version of the gather operation that uses NCCL to gather data
+    from multiple ranks. It implements a vector all-gather operation where each rank
+    sends a different buffer to each rank depending on the indices.
+    """
+
+    p2p_op_list = []
+
+    # Figure out the data to send. This is the data that is indexed by the
+    # indices tensor local to the current rank.
+
+    # Figure out which indices are local to the current rank.
+
+    local_indices = indices[global_rank_mappings == rank]

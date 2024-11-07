@@ -35,7 +35,6 @@ class GatherFunction(Function):
     ):
         ctx.save_for_backward(
             send_tensor,
-            recv_tensor,
             indices,
             torch.tensor(rank),
             torch.tensor(world_size),
@@ -46,13 +45,22 @@ class GatherFunction(Function):
             send_tensor, local_indices, local_rank_mapping, rank
         )
 
+        # Since NCCL is two-sided, we need to push from local rank and pull from
+        # remote rank to get the global gather
+
+        p2p_ranks = torch.arange(world_size)
+
+        for p2p_rank in p2p_ranks:
+            if p2p_rank == rank:
+                continue
+
         # do global gather
         _nccl_gather_op(send_tensor, recv_tensor, indices, rank, world_size)
         return recv_tensor
 
     @staticmethod
     def backward(ctx, grad_output):
-        send_tensor, recv_tensor, indices, rank, world_size = ctx.saved_tensors
+        send_tensor, indices, rank, world_size = ctx.saved_tensors
 
         _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
         return grad_output, None, None

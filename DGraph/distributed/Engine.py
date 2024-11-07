@@ -32,8 +32,8 @@ class BackendEngine(object):
         self,
         src_tensor: torch.Tensor,
         indices: Union[torch.Tensor, torch.LongTensor],
-        rank_mappings: Optional[torch.Tensor],
         output_size: int,
+        rank_mappings: Optional[torch.Tensor] = None,
         *args,
         **kwargs
     ) -> torch.Tensor:
@@ -43,7 +43,7 @@ class BackendEngine(object):
         self,
         src_tensor: torch.Tensor,
         indices: Union[torch.Tensor, torch.LongTensor],
-        rank_mappings: Optional[torch.Tensor],
+        rank_mappings: Optional[torch.Tensor] = None,
         *args,
         **kwargs
     ) -> torch.Tensor:
