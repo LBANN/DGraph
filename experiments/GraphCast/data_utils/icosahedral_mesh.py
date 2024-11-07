@@ -11,12 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Utils for creating icosahedral meshes. 
+"""Utils for creating icosahedral meshes.
 Obtained from: https://github.com/google-deepmind/graphcast/blob/main/graphcast/icosahedral_mesh.py
 """
 
 import itertools
 from typing import List, NamedTuple, Sequence, Tuple
+
+import sys
+if sys.version_info >= (3, 11):
+    from itertools import pairwise
+else:
+    from more_itertools import pairwise
 
 import numpy as np
 from scipy.spatial import transform
@@ -49,7 +55,7 @@ def merge_meshes(mesh_list: Sequence[TriangularMesh]) -> TriangularMesh:
        resolution mesh in the hierarchy, and the faces are the join set of the
        faces at all levels of the hierarchy.
     """
-    for mesh_i, mesh_ip1 in itertools.pairwise(mesh_list):
+    for mesh_i, mesh_ip1 in pairwise(mesh_list):
         num_nodes_mesh_i = mesh_i.vertices.shape[0]
         assert np.allclose(mesh_i.vertices, mesh_ip1.vertices[:num_nodes_mesh_i])
 
