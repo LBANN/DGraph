@@ -132,7 +132,7 @@ def create_mesh2grid_graph(
     src_pos = src_mesh_node_positions[src_mesh_indices.long()]
     dst_pos = dst_grid_node_positions[dst_grid_indices.long()]
 
-    edge_features = generate_edge_features(src_pos, dst_pos)
+    edge_features = generate_edge_features(src_pos, dst_pos).float()
     return (
         edge_features,
         torch.LongTensor(src_mesh_indices.long()),
