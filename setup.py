@@ -14,6 +14,7 @@
 import os
 import torch
 import glob
+import sys
 
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
@@ -87,13 +88,19 @@ nvshmem_p2p_sources = [
 #     extra_link_args=library_flags,
 # )
 
+EXTRAS_REQUIRE = {
+    "ogb": ["ogb", "fire"],
+    "graphcast": ["fire"],
+}
+# Conditional extra dependencies
+if sys.version_info < (3, 11):
+    EXTRAS_REQUIRE["graphcast"].append("more_itertools")
+
 setup(
     name="DGraph",
     py_modules=["DGraph"],
     # ext_modules=[nvshmem_module],
     install_requires=["torch", "numpy", "ninja"],
-    extras_require={
-        "ogb": ["ogb", "fire"],
-    },
+    extras_require=EXTRAS_REQUIRE,
     cmdclass={"build_ext": BuildExtension},
 )
