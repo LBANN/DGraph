@@ -76,7 +76,7 @@ class DistributedGraphCastGraphGenerator:
         _meshes = get_hierarchy_of_triangular_meshes_for_sphere(splits=mesh_level)
         finest_mesh = _meshes[-1]  # get the last one in the list of meshes
         self.finest_mesh_src, self.finest_mesh_dst = faces_to_edges(finest_mesh.faces)
-        self.finest_mesh_vertices = np.array(finest_mesh.vertices)
+        self.finest_mesh_vertices = np.array(finest_mesh.vertices).astype(np.float64)
 
         mesh = merge_meshes(_meshes)
         self.mesh_src, self.mesh_dst = faces_to_edges(mesh.faces)  # type: ignore

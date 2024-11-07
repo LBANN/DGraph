@@ -14,7 +14,7 @@
 import torch
 import numpy as np
 from torch import Tensor
-from typing import List, Tuple
+from typing import List
 from numpy import ndarray
 
 
@@ -25,9 +25,9 @@ def max_edge_length(
     Compute the maximum edge length in a graph.
 
     Parameters:
-    vertices (List[List[float]]): A list of tuples representing the coordinates of the vertices.
-    source_nodes (List[int]): A list of indices representing the source nodes of the edges.
-    destination_nodes (List[int]): A list of indices representing the destination nodes of the edges.
+    vertices (np.ndarray): A list of tuples representing the coordinates of the vertices.
+    source_nodes (np.ndarray): A list of indices representing the source nodes of the edges.
+    destination_nodes (np.ndarray): A list of indices representing the destination nodes of the edges.
 
     Returns:
     The maximum edge length in the graph (float).
@@ -112,7 +112,7 @@ def geospatial_rotation(
         raise ValueError("Not a valid unit")
 
     invar = torch.unsqueeze(invar, -1)
-    rotation = torch.zeros((theta.size(0), 3, 3))
+    rotation = torch.zeros((theta.size(0), 3, 3)).type_as(invar)
     cos = torch.cos(theta)
     sin = torch.sin(theta)
 

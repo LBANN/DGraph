@@ -144,24 +144,27 @@ def create_grid2mesh_graph(
     max_edge_len: float, lat_lon_grid_flat: Tensor, mesh_vertices: np.ndarray
 ):
 
-    cartesian_grid = latlon2xyz(lat_lon_grid_flat)
+    cartesian_grid = latlon2xyz(lat_lon_grid_flat.double())
     n_nbrs = 4
-    neighbors = NearestNeighbors(n_neighbors=n_nbrs).fit(mesh_vertices)
-    distances, indices = neighbors.kneighbors(cartesian_grid.numpy())
-
+    neighbors = NearestNeighbors(
+        n_neighbors=n_nbrs,
+    ).fit(mesh_vertices)
+    distances, indices = neighbors.kneighbors(cartesian_grid.double().numpy())
     src, dst = [], []
+
     for i in range(len(cartesian_grid)):
         for j in range(n_nbrs):
-            if distances[i][j] <= 0.6 * max_edge_len:
+            if distances[i][j] < 0.6 * max_edge_len:
                 src.append(i)
                 dst.append(indices[i][j])
                 # NOTE this gives 1,618,820 edges, in the paper it is 1,618,746
 
+    # assert len(src) == 1618820, f"Expected 1618820 edges, got {len(src)}"
     # Note that this is a uni-directional bipartite graph
     # The reverse direction is not added because grid nodes are not
     # receivers of any edges
-    src_grid_node_positions = torch.Tensor(cartesian_grid)
-    dst_mesh_node_positions = torch.Tensor(mesh_vertices)
+    src_grid_node_positions = torch.Tensor(cartesian_grid).float()
+    dst_mesh_node_positions = torch.Tensor(mesh_vertices).float()
 
     src_grid_indices = torch.tensor(src, dtype=torch.int32)
     dst_mesh_indices = torch.tensor(dst, dtype=torch.int32)

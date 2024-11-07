@@ -19,6 +19,7 @@ import itertools
 from typing import List, NamedTuple, Sequence, Tuple
 
 import sys
+
 if sys.version_info >= (3, 11):
     from itertools import pairwise
 else:
@@ -123,7 +124,7 @@ def get_icosahedron() -> TriangularMesh:
             vertices.append((0.0, c1, c2))
             vertices.append((c2, 0.0, c1))
 
-    vertices = np.array(vertices, dtype=np.float32)
+    vertices = np.array(vertices, dtype=np.float64)
     vertices /= np.linalg.norm([1.0, phi])
 
     # I did this manually, checking the orientation one by one.
@@ -176,7 +177,7 @@ def get_icosahedron() -> TriangularMesh:
     vertices = np.dot(vertices, rotation_matrix)
 
     return TriangularMesh(
-        vertices=vertices.astype(np.float32), faces=np.array(faces, dtype=np.int32)
+        vertices=vertices.astype(np.float64), faces=np.array(faces, dtype=np.int32)
     )
 
 
