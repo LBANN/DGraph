@@ -29,7 +29,7 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
         src = src.unsqueeze(-1).expand(-1, tensor.shape[-1])
 
         out = torch.zeros(num_local_nodes, tensor.shape[1]).to(tensor.device)
-        out.scatter_add(0, src, tensor)
+        out = out.scatter_add(0, src, tensor)
         return out
 
     def gather(self, tensor, dst, rank_mappings):
