@@ -14,55 +14,112 @@
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
-from DGraph.distributed.nccl.gather_op_impl import _nccl_gather_op
+from DGraph.distributed.nccl.gather_op_impl import (
+    _nccl_gather_op,
+    _optimized_nccl_gather_op,
+)
 from DGraph.distributed.nccl.scatter_op_impl import _nccl_scatter_op
 from DGraph.distributed.RankLocalOps import RankLocalMaskedGather
 from torch.autograd import Function
+from DGraph.utils import largest_split
 
 
 class GatherFunction(Function):
     @staticmethod
     def forward(
         ctx,
-        send_tensor: torch.Tensor,
-        recv_tensor: torch.Tensor,
+        local_send_tensor: torch.Tensor,
         indices: torch.LongTensor,
-        global_rank_mapping: torch.LongTensor,
-        local_indices: torch.LongTensor,
-        local_rank_mapping: torch.LongTensor,
+        send_ranks: torch.Tensor,
+        recv_ranks: torch.Tensor,
         rank: int,
         world_size: int,
     ):
         ctx.save_for_backward(
-            send_tensor,
             indices,
             torch.tensor(rank),
             torch.tensor(world_size),
         )
 
-        # do local gather
-        recv_tensor[local_rank_mapping == rank] = RankLocalMaskedGather(
-            send_tensor, local_indices, local_rank_mapping, rank
-        )
-
         # Since NCCL is two-sided, we need to push from local rank and pull from
         # remote rank to get the global gather
 
-        p2p_ranks = torch.arange(world_size)
+        # TODO: One possible optmization is cache all these calculations
+        # and only do the gather when the cache is invalidated. Essentially
+        # if we are working with static graphs, the indices and distribution pattern
+        # will not change and we can cache the communication pattern. - S.Z
 
-        for p2p_rank in p2p_ranks:
-            if p2p_rank == rank:
+        # We can also pre-compute this on the data ingestion side. Might
+        # be worth looking to some kind of cached communication pattern store
+        # that can be passed to the communicator. - S.Z
+
+        recv_tensor = torch.zeros_like(local_send_tensor)
+        num_features = local_send_tensor.shape[1]
+
+        local_indices_slice = indices[recv_ranks == rank]
+        local_rank_mapping = send_ranks[local_indices_slice]
+
+        local_indices = local_indices_slice[local_rank_mapping == rank]
+
+        # do local gather
+        recv_tensor[local_rank_mapping == rank] = RankLocalMaskedGather(
+            local_send_tensor, local_indices, local_rank_mapping, rank
+        )
+
+        # Communication happens when send_ranks != recv_ranks
+        remote_indices_mask = send_ranks != recv_ranks
+        remote_sender_ranks = send_ranks[remote_indices_mask]
+        remote_receiver_ranks = recv_ranks[remote_indices_mask]
+
+        # Get the messages being sent to this rank
+
+        remote_receiver_rank_here = remote_receiver_ranks == rank
+        remote_sender_ranks_here = remote_sender_ranks[remote_receiver_rank_here]
+
+        # For now assume only 1 partition per world size
+
+        comm_vector = torch.bincount(
+            remote_sender_ranks_here, minlength=world_size
+        ).long()
+
+        recv_buffer_list = []
+        recv_local_placement = []
+
+        for i, num_messages in enumerate(comm_vector):
+            if num_messages == 0:
+                continue
+            if i == rank:
                 continue
 
+            recv_buffer = torch.zeros(int(num_messages.item()), num_features).to(
+                local_send_tensor.device
+            )
+            recv_buffer_list.append(recv_buffer)
+            _local_placement_indices = torch.where(local_rank_mapping == i)[0]
+            recv_local_placement.append(_local_placement_indices)
+
         # do global gather
-        _nccl_gather_op(send_tensor, recv_tensor, indices, rank, world_size)
+        remote_messages = _optimized_nccl_gather_op(
+            local_send_tensor,
+            recv_buffer_list,
+            remote_sender_ranks,
+            remote_receiver_ranks,
+            comm_vector,
+            rank,
+            world_size,
+        )
+        for i, recv_buffer in enumerate(remote_messages):
+            if comm_vector[i] == 0:
+                continue
+            recv_tensor[recv_local_placement[i]] = recv_buffer
+
         return recv_tensor
 
     @staticmethod
     def backward(ctx, grad_output):
-        send_tensor, indices, rank, world_size = ctx.saved_tensors
+        indices, rank, world_size = ctx.saved_tensors
 
-        _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
+        # _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
         return grad_output, None, None
 
 
@@ -155,20 +212,23 @@ class NCCLBackendEngine(BackendEngine):
     def gather(self, *args, **kwargs) -> torch.Tensor:
         input_tensor = args[0]
         indices = args[1]
-        rank_mappings = args[2]
         indices_shape = indices.shape
         b_size = indices_shape[0]
 
         assert b_size == 1, "Multi-batch gather disabled for testing"
-        n = indices_shape[1]
-        feature_size = input_tensor.shape[2]
-        output_tensor = torch.zeros(b_size, n, feature_size, device=input_tensor.device)
+        world_size = self.get_world_size()
+        rank = self.get_rank()
+        num_local_output_rows = largest_split(indices_shape[1], world_size)
+        num_local_input_rows = largest_split(input_tensor.shape[1], world_size)
+        send_rank = args[2]
+        recv_rank = torch.arange(len(indices)) // num_local_output_rows
 
-        # do local gather
+        renumbered_indices = indices % num_local_input_rows
+        output_tensor = GatherFunction.apply(
+            input_tensor, renumbered_indices, send_rank, recv_rank, rank, world_size
+        )
 
-        local_indices = self.get_local_rank_slice(indices)
-        local_rank_mapping = self.get_local_rank_slice(rank_mappings)
-        return output_tensor
+        return output_tensor  # type: ignore
 
     def destroy(self) -> None:
         if self._initialized:

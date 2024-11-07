@@ -13,6 +13,9 @@
 # SPDX-License-Identifier: (Apache-2.0)
 import torch.distributed as dist
 from DGraph.utils import largest_split
+from torch import Tensor
+from typing import List
+import torch
 
 
 def _nccl_gather_op(send_tensor_buffer, recv_tensor_buffer, indices, rank, world_size):
@@ -43,19 +46,64 @@ def _nccl_gather_op(send_tensor_buffer, recv_tensor_buffer, indices, rank, world
 
 
 def _optimized_nccl_gather_op(
-    send_buffer_list, recv_buffer_list, indices, global_rank_mappings, rank, world_size
+    send_buffer: Tensor,
+    recv_buffer_list: List[Tensor],
+    send_ranks: Tensor,
+    recv_ranks: Tensor,
+    comm_vector: Tensor,
+    rank: int,
+    world_size: int,
 ):
     """
     An optimized version of the gather operation that uses NCCL to gather data
     from multiple ranks. It implements a vector all-gather operation where each rank
     sends a different buffer to each rank depending on the indices.
+
+    This ensures that for any data, only one coalesced message is sent between
+    each pair of ranks.
+
+    Note: The receving rank is in-charge of placing the data in the correct
+    position in the output tensor.
+
+    Args:
+
     """
 
     p2p_op_list = []
 
-    # Figure out the data to send. This is the data that is indexed by the
-    # indices tensor local to the current rank.
+    assert (
+        send_ranks != recv_ranks
+    ).any(), "No self-sends allowed. Should be done in the local gather."
 
-    # Figure out which indices are local to the current rank.
+    for send_rank_index in range(world_size):
+        for recv_rank_index in range(world_size):
+            if send_rank_index == recv_rank_index:
+                # No self-sends allowed. Should be done in the local gather.
+                continue
+            if (send_rank_index != rank) and (recv_rank_index != rank):
+                # Current rank not involved in this p2p communication pair.
+                continue
 
-    local_indices = indices[global_rank_mappings == rank]
+            if comm_vector[send_rank_index] == 0:
+                # No communication between these ranks.
+                continue
+            # Current rank is involved in this p2p communication pair.
+            # Also there is communication between these ranks according to
+            # the communication matrix.
+            if send_rank_index == rank:
+                # Current rank is sending data to recv_rank_index.
+                send_tensor = send_buffer
+                p2p_op_list.append(dist.P2POp(dist.isend, send_tensor, recv_rank_index))
+
+            if recv_rank_index == rank:
+                # Current rank is receiving data from send_rank_index.
+                recv_tensor = recv_buffer_list[send_rank_index]
+                p2p_op_list.append(dist.P2POp(dist.irecv, recv_tensor, send_rank_index))
+
+    reqs = dist.batch_isend_irecv(p2p_op_list)
+
+    for req in reqs:
+        req.wait()
+
+    torch.cuda.synchronize()
+    return recv_buffer_list
