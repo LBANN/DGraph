@@ -80,7 +80,7 @@ def _optimized_nccl_gather_op(
             if send_rank_index == recv_rank_index:
                 # No self-sends allowed. Should be done in the local gather.
                 continue
-            if (send_rank_index != rank) and (recv_rank_index != rank):
+            if (send_rank_index != rank) or (recv_rank_index != rank):
                 # Current rank not involved in this p2p communication pair.
                 continue
 

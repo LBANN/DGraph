@@ -60,9 +60,9 @@ def _optimized_nccl_scatter_op(
     for send_rank_index in range(world_size):
         for recv_rank_index in range(world_size):
             if send_rank_index == recv_rank_index:
-                # No self-sends allowed. Should be done in the local gather.
+                # No self-sends allowed. Should be done in the local scatter.
                 continue
-            if (send_rank_index != rank) and (recv_rank_index != rank):
+            if (send_rank_index != rank) or (recv_rank_index != rank):
                 # Current rank not involved in this p2p communication pair.
                 continue
 
