@@ -53,7 +53,7 @@ def _optimized_nccl_gather_op(
     recv_comm_vector: Tensor,
     rank: int,
     world_size: int,
-):
+) -> List[Tensor]:
     """
     An optimized version of the gather operation that uses NCCL to gather data
     from multiple ranks. It implements a vector all-gather operation where each rank

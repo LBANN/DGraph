@@ -13,6 +13,8 @@
 # SPDX-License-Identifier: (Apache-2.0)
 import torch.distributed as dist
 from DGraph.utils import largest_split
+from torch import Tensor
+from typing import List
 
 
 def _nccl_scatter_op(send_tensor_buffer, recv_tensor_buffer, indices, rank, world_size):
@@ -40,3 +42,37 @@ def _nccl_scatter_op(send_tensor_buffer, recv_tensor_buffer, indices, rank, worl
 
     for req in reqs:
         req.wait()
+
+
+def _optimized_nccl_scatter_op(
+    send_buffer_list: List[Tensor],
+    recv_buffer_list: List[Tensor],
+    indices: Tensor,
+    recv_comm_matrix: Tensor,
+    rank: int,
+    world_size: int,
+) -> List[Tensor]:
+    """
+    An optimized scatter operation.
+    """
+    p2p_op_list = []
+
+    for send_rank_index in range(world_size):
+        for recv_rank_index in range(world_size):
+            if send_rank_index == recv_rank_index:
+                # No self-sends allowed. Should be done in the local gather.
+                continue
+            if (send_rank_index != rank) and (recv_rank_index != rank):
+                # Current rank not involved in this p2p communication pair.
+                continue
+
+            if recv_comm_matrix[send_rank_index, recv_rank_index] == 0:
+                # No communication between these ranks.
+                continue
+
+    reqs = dist.batch_isend_irecv(p2p_op_list)
+
+    for req in reqs:
+        req.wait()
+
+    return recv_buffer_list
