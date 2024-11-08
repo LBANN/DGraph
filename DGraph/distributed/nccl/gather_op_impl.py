@@ -50,7 +50,7 @@ def _optimized_nccl_gather_op(
     recv_buffer_list: List[Tensor],
     send_ranks: Tensor,
     recv_ranks: Tensor,
-    comm_vector: Tensor,
+    recv_comm_vector: Tensor,
     rank: int,
     world_size: int,
 ):
@@ -84,7 +84,7 @@ def _optimized_nccl_gather_op(
                 # Current rank not involved in this p2p communication pair.
                 continue
 
-            if comm_vector[send_rank_index] == 0:
+            if recv_comm_vector[send_rank_index] == 0:
                 # No communication between these ranks.
                 continue
             # Current rank is involved in this p2p communication pair.

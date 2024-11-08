@@ -53,8 +53,11 @@ class GatherFunction(Function):
         # be worth looking to some kind of cached communication pattern store
         # that can be passed to the communicator. - S.Z
 
-        recv_tensor = torch.zeros_like(local_send_tensor)
+        num_local_output_rows = largest_split(indices.shape[1], world_size)
         num_features = local_send_tensor.shape[1]
+        recv_tensor = torch.zeros(num_local_output_rows, num_features).to(
+            local_send_tensor.device
+        )
 
         local_indices_slice = indices[recv_ranks == rank]
         local_rank_mapping = send_ranks[local_indices_slice]
@@ -76,7 +79,8 @@ class GatherFunction(Function):
         remote_receiver_rank_here = remote_receiver_ranks == rank
         remote_sender_ranks_here = remote_sender_ranks[remote_receiver_rank_here]
 
-        # For now assume only 1 partition per world size
+        # For now assume only 1 partition per world size. This will be changed
+        # in the next update to allow multiple partition groups - S.Z
 
         comm_vector = torch.bincount(
             remote_sender_ranks_here, minlength=world_size
@@ -99,6 +103,7 @@ class GatherFunction(Function):
             recv_local_placement.append(_local_placement_indices)
 
         # do global gather
+        # If you squint hard enough, this is basically an alltoallv operation
         remote_messages = _optimized_nccl_gather_op(
             local_send_tensor,
             recv_buffer_list,
@@ -120,7 +125,7 @@ class GatherFunction(Function):
         indices, rank, world_size = ctx.saved_tensors
 
         # _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
-        return grad_output, None, None
+        return grad_output, None, None, None, None, None
 
 
 class ScatterFunction(Function):
@@ -130,20 +135,72 @@ class ScatterFunction(Function):
         send_tensor: torch.Tensor,
         recv_tensor: torch.Tensor,
         indices: torch.Tensor,
-        global_rank_mapping: torch.Tensor,
-        local_indices: torch.Tensor,
-        local_rank_mapping: torch.Tensor,
+        send_ranks: torch.Tensor,
+        recv_ranks: torch.Tensor,
+        output_size: int,
         rank: int,
         world_size: int,
     ) -> torch.Tensor:
         ctx.save_for_backward(
-            send_tensor,
-            recv_tensor,
-            indices,
+            torch.tensor(output_size),
             torch.tensor(rank),
             torch.tensor(world_size),
         )
-        recv_tensor.scatter_add_(0, local_indices, send_tensor)
+        feature_size = send_tensor.shape[1]
+        recv_tensor = torch.zeros(output_size, feature_size).to(send_tensor.device)
+
+        # Start local only scatter
+        local_indices_slice = indices[send_ranks == rank]
+        local_rank_mapping = recv_ranks[local_indices_slice]
+        local_indices = local_indices_slice[local_rank_mapping == rank]
+        local_send_tensor = send_tensor[local_rank_mapping == rank]
+        recv_tensor.scatter_add_(0, local_indices, local_send_tensor)
+        # End local only scatter
+
+        _all_messages_mask = send_ranks != recv_ranks
+        _remote_sender_ranks = send_ranks[_all_messages_mask]
+        _remote_receiver_ranks = recv_ranks[_all_messages_mask]
+        _indices = indices[_all_messages_mask]
+        # This is not the message size because we have to locally aggregate
+        # the messages before sending them to the remote rank
+
+        # Perform local aggregation, also coung the number of messages
+        comm_matrix = torch.zeros(world_size, world_size).long()
+        recv_buffer_list = []
+        send_buffer_list = []
+        recv_local_placement = []
+
+        for _sender in range(world_size):
+            _sender_mask = _remote_sender_ranks == _sender
+            for _receiver in range(world_size):
+                if _sender == _receiver:
+                    continue
+                _receiver_mask = _remote_receiver_ranks == _receiver
+                _mask = _sender_mask & _receiver_mask
+
+                if torch.sum(_mask) == 0:
+                    # No messages to send
+                    continue
+                recv_positions = _indices[_mask]
+                unique_indices = torch.unique(recv_positions)
+                num_messages = len(unique_indices)
+
+                renumbered_indices = torch.zeros_like(_indices)
+                # TODO: Optimize this code
+                for i, idx in enumerate(unique_indices):
+                    renumbered_indices[_indices == idx] = i
+                comm_matrix[_sender, _receiver] = num_messages
+                recv_buffer = torch.zeros(num_messages, feature_size).to(
+                    send_tensor.device
+                )
+                send_buffer = torch.zeros(num_messages, feature_size).to(
+                    send_tensor.device
+                )
+                send_buffer.scatter_add_(0, renumbered_indices, send_tensor[_mask])
+                recv_buffer_list.append(recv_buffer)
+                recv_local_placement.append(recv_positions)
+
+        # Communication happens when send_ranks != recv_ranks
         _nccl_scatter_op(send_tensor, recv_tensor, indices, rank, world_size)
         return recv_tensor
 
