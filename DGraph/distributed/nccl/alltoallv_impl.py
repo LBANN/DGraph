@@ -73,23 +73,17 @@ def _nccl_alltoall_v(
                 # Current rank is sending data to recv_rank_index
                 if send_comm_vector[recv_rank_index].item() == 0:
                     continue
-                assert send_rank_index == 0, print(send_rank_index)
-                assert recv_rank_index == 1
                 send_tensor = local_send_tensor[
                     :, send_local_placement[recv_rank_index], :
                 ]
                 p2p_op_list.append(dist.P2POp(dist.isend, send_tensor, recv_rank_index))
-                # p2p_op_list.append(dist.P2POp(dist.irecv, recv_tensor, send_rank_index))
 
             if recv_rank_index == rank:
                 if recv_comm_vector[send_rank_index].item() == 0:
                     # print(f"Rank {rank}")
                     continue
                 recv_tensor = recv_buffer_dict[send_rank_index]
-                # p2p_op_list.append(dist.P2POp(dist.isend, send_tensor, recv_rank_index))
                 p2p_op_list.append(dist.P2POp(dist.irecv, recv_tensor, send_rank_index))
-
-    # assert len(p2p_op_list) > 0, f"Rank: {rank} No p2p ops found"
 
     if len(p2p_op_list) > 0:
         reqs = dist.batch_isend_irecv(p2p_op_list)

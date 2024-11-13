@@ -79,7 +79,6 @@ def test_nccl_backend_gather(setup_gather_data):
     # print(rank, world_size)
     start_index = (all_rank_input_data.shape[1] // world_size) * rank
     end_index = (all_rank_input_data.shape[1] // world_size) * (rank + 1)
-    print(start_index, end_index, all_rank_input_data.shape, local_input_data.shape)
     local_input_data_gt = all_rank_input_data[:, start_index:end_index]
 
     output_start_index = (all_rank_output.shape[1] // world_size) * rank
@@ -99,6 +98,13 @@ def test_nccl_backend_gather(setup_gather_data):
     )
     assert dgraph_output_tensor_0.shape == (1, 4, 64)
     assert torch.allclose(dgraph_output_tensor_0.cpu(), local_output_data_gt[0])
+
+    dgraph_output_tensor_1 = comm.gather(
+        local_input_data.cuda(), all_edge_coo[[1]].cuda(), rank_mappings[1]
+    )
+
+    assert dgraph_output_tensor_1.shape == (1, 4, 64)
+    assert torch.allclose(dgraph_output_tensor_1.cpu(), local_output_data_gt[1])
 
 
 def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
