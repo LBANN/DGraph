@@ -26,8 +26,8 @@ def RankLocalMaskedGather(
     """
     local_indices = indices[rank_mapping == rank]
     num_features = _src.shape[-1]
-    local_indices = local_indices.view(-1, 1).expand(-1, num_features)
-    local_gathered_data = torch.gather(_src, 0, local_indices)
+    local_indices = local_indices.view(1, -1, 1).expand(1, -1, num_features)
+    local_gathered_data = torch.gather(_src, 1, local_indices)
     return local_gathered_data
 
 

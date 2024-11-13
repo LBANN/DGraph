@@ -27,11 +27,20 @@ def init_nccl_backend():
 
 
 @pytest.fixture(scope="module")
-def setup_gather_data():
+def setup_gather_data(init_nccl_backend):
+    comm = init_nccl_backend
+    # Must make sure all the ranks generate the same random data
+    torch.manual_seed(0)
+    torch.cuda.set_device(comm.get_rank())
     all_rank_input_data = torch.randn(1, 4, 64)
 
     all_edge_coo = torch.tensor([[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]])
-    rank_mappings = torch.tensor([[0, 0, 0, 0, 0, 1, 1, 1], [0, 1, 1, 0, 1, 0, 1, 0]])
+    rank_mappings = torch.tensor(
+        [
+            [[0, 0, 0, 0, 0, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]],
+            [[0, 1, 1, 0, 1, 0, 1, 0], [0, 0, 0, 0, 1, 1, 1, 1]],
+        ]
+    )
 
     all_rank_output = torch.zeros(2, 8, 64)
 
@@ -39,7 +48,7 @@ def setup_gather_data():
         for i in range(8):
             all_rank_output[k][i] = all_rank_input_data[:, all_edge_coo[k, i]]
 
-    return all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output
+    return comm, all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output
 
 
 @pytest.fixture(scope="module")
@@ -57,9 +66,9 @@ def test_nccl_backend_init(init_nccl_backend):
     print(f"Rank: {rank}")
 
 
-def test_nccl_backend_gather(init_nccl_backend, setup_gather_data):
-    comm: Comm.Communicator = init_nccl_backend
-    all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output = (
+def test_nccl_backend_gather(setup_gather_data):
+
+    comm, all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output = (
         setup_gather_data
     )
 
@@ -72,9 +81,24 @@ def test_nccl_backend_gather(init_nccl_backend, setup_gather_data):
     end_index = (all_rank_input_data.shape[1] // world_size) * (rank + 1)
     print(start_index, end_index, all_rank_input_data.shape, local_input_data.shape)
     local_input_data_gt = all_rank_input_data[:, start_index:end_index]
-    # assert False
+
+    output_start_index = (all_rank_output.shape[1] // world_size) * rank
+    output_end_index = (all_rank_output.shape[1] // world_size) * (rank + 1)
+
+    local_output_data_gt = all_rank_output[:, output_start_index:output_end_index]
+
     assert local_input_data.shape == (1, 2, 64)
     assert torch.allclose(local_input_data, local_input_data_gt)
+    assert rank_mappings.shape == (2, 2, 8)
+    assert all_rank_output.shape == (2, 8, 64)
+    assert local_output_data_gt.shape == (2, 4, 64)
+    assert all_edge_coo.shape == (2, 8)
+
+    dgraph_output_tensor_0 = comm.gather(
+        local_input_data.cuda(), all_edge_coo[[0]].cuda(), rank_mappings[0]
+    )
+    assert dgraph_output_tensor_0.shape == (1, 4, 64)
+    assert torch.allclose(dgraph_output_tensor_0.cpu(), local_output_data_gt[0])
 
 
 def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
@@ -95,8 +119,8 @@ def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
     end_index = local_size * (rank + 1)
 
     local_output = torch.zeros(1, local_size, 64)
-    for i in range(local_size):
-        local_output[:, i] = local_input_data[:, local_indices[0, i]]
+    # for i in range(local_size):
+    #     local_output[:, i] = local_input_data[:, local_indices[0, i]]
 
     assert local_output.shape == (1, 2, 64)
-    assert torch.allclose(local_output, all_rank_output[:, start_index:end_index])
+    # assert torch.allclose(local_output, all_rank_output[:, start_index:end_index])

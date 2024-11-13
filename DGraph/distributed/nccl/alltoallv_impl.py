@@ -1,0 +1,103 @@
+import torch
+import torch.distributed as dist
+
+
+def _nccl_alltoall_v(
+    local_send_tensor,
+    local_recv_tensor,
+    indices,
+    local_rank_mapping,
+    src_ranks,
+    dest_ranks,
+    rank,
+    world_size,
+):
+    num_features = local_send_tensor.shape[2]
+    num_src_rows = local_send_tensor.shape[1]
+    # These are all the rows participating in communication
+    all_comm_mask = src_ranks != dest_ranks
+    # These ranks will send a message
+    comm_senders = src_ranks[all_comm_mask]
+    # These ranks will recieve a message
+    comm_receivers = dest_ranks[all_comm_mask]
+
+    # Current rank will send to these ranks
+    send_to_ranks = comm_receivers[comm_senders == rank]
+
+    # Current rank will receive from these ranks
+    receive_from_ranks = comm_senders[comm_receivers == rank]
+
+    recv_comm_vector = torch.bincount(receive_from_ranks, minlength=world_size).long()
+    send_comm_vector = torch.bincount(send_to_ranks, minlength=world_size).long()
+    recv_buffer_dict = {}
+    recv_local_placement = {}
+    send_local_placement = {}
+
+    for i, num_messages in enumerate(recv_comm_vector):
+        if num_messages == 0:
+            continue
+
+        if i == rank:
+            continue
+
+        recv_buffer = torch.zeros(1, int(num_messages.item()), num_features).to(
+            local_send_tensor.device
+        )
+        recv_buffer_dict[i] = recv_buffer
+        _local_placement_indices = torch.where(local_rank_mapping == i)[0]
+        recv_local_placement[i] = _local_placement_indices
+
+    for i, num_messages in enumerate(send_comm_vector):
+        if num_messages == 0:
+            # Not sending any messages current_rank to rank i
+            continue
+
+        if i == rank:
+            continue
+
+        _mask = (src_ranks == rank) & (dest_ranks == i)
+        _send_row = indices[0][_mask] % num_src_rows
+        send_local_placement[i] = _send_row
+
+    p2p_op_list = []
+    for send_rank_index in range(world_size):
+        for recv_rank_index in range(world_size):
+            if send_rank_index == recv_rank_index:
+                # No self-sends allowed. Should be done in the local gather.
+                continue
+            if (send_rank_index != rank) and (recv_rank_index != rank):
+                # Current rank not involved in this p2p communication pair.
+                continue
+
+            if send_rank_index == rank:
+                # Current rank is sending data to recv_rank_index
+                if send_comm_vector[recv_rank_index].item() == 0:
+                    continue
+                assert send_rank_index == 0, print(send_rank_index)
+                assert recv_rank_index == 1
+                send_tensor = local_send_tensor[
+                    :, send_local_placement[recv_rank_index], :
+                ]
+                p2p_op_list.append(dist.P2POp(dist.isend, send_tensor, recv_rank_index))
+                # p2p_op_list.append(dist.P2POp(dist.irecv, recv_tensor, send_rank_index))
+
+            if recv_rank_index == rank:
+                if recv_comm_vector[send_rank_index].item() == 0:
+                    # print(f"Rank {rank}")
+                    continue
+                recv_tensor = recv_buffer_dict[send_rank_index]
+                # p2p_op_list.append(dist.P2POp(dist.isend, send_tensor, recv_rank_index))
+                p2p_op_list.append(dist.P2POp(dist.irecv, recv_tensor, send_rank_index))
+
+    # assert len(p2p_op_list) > 0, f"Rank: {rank} No p2p ops found"
+
+    if len(p2p_op_list) > 0:
+        reqs = dist.batch_isend_irecv(p2p_op_list)
+
+        for req in reqs:
+            req.wait()
+
+    for key, recv_buffer in recv_buffer_dict.items():
+        local_recv_tensor[:, recv_local_placement[key], :] = recv_buffer
+
+    return local_recv_tensor
