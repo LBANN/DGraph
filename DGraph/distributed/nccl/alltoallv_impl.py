@@ -122,4 +122,6 @@ def _nccl_alltoallv_with_dict(send_buffer_dict, recv_buffer_dict, rank, world_si
 
         for req in reqs:
             req.wait()
+    for key, recv_buffer in recv_buffer_dict.items():
+        recv_buffer_dict[key] = recv_buffer.float()
     return recv_buffer_dict

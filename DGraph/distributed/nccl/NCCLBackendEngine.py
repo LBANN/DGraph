@@ -376,18 +376,34 @@ class NCCLBackendEngine(BackendEngine):
     _is_initialized = False
     _rank = -1
     _world_size = -1
+    _ranks_per_partition = -1
+    _partition_rank = -1
+    _partition_id = -1
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, ranks_per_partition=-1, *args, **kwargs):
         # check if already initialized
         # self._initialized = dist.is_initialized()
         if not NCCLBackendEngine._is_initialized:
-            self.init_process_group()
+            self.init_process_group(ranks_per_partition)
 
-    def init_process_group(self, *args, **kwargs):
+    def init_process_group(self, ranks_per_partition=-1, *args, **kwargs):
         if not dist.is_initialized():
             dist.init_process_group(backend="nccl", *args, **kwargs)
 
         NCCLBackendEngine._is_initialized = True
+        NCCLBackendEngine._rank = dist.get_rank()
+        NCCLBackendEngine._world_size = dist.get_world_size()
+        if ranks_per_partition == -1:
+            NCCLBackendEngine._ranks_per_partition = NCCLBackendEngine._world_size
+        else:
+            assert (
+                NCCLBackendEngine._world_size % ranks_per_partition == 0
+            ), "Invalid ranks per partition"
+            NCCLBackendEngine._ranks_per_partition = ranks_per_partition
+        NCCLBackendEngine._partition_rank = (
+            NCCLBackendEngine._rank % ranks_per_partition
+        )
+        NCCLBackendEngine._partition_id = NCCLBackendEngine._rank // ranks_per_partition
 
     def get_rank(self) -> int:
         return dist.get_rank()
