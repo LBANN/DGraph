@@ -14,7 +14,6 @@
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
-from DGraph.distributed.nccl.scatter_op_impl import _nccl_scatter_op
 from DGraph.distributed.nccl.alltoallv_impl import (
     _nccl_alltoall_v,
     _nccl_alltoallv_with_dict,
@@ -77,10 +76,6 @@ class GatherFunction(Function):
         local_rank_mapping = send_ranks[_start_index:_end_index]
 
         local_indices = local_indices_slice % local_send_tensor.shape[1]
-
-        print(rank, local_indices_slice)
-        print(rank, local_rank_mapping)
-        print(local_indices_slice[local_rank_mapping == rank])
 
         if len(local_indices_slice) > 0:
 
@@ -184,33 +179,9 @@ class GatherFunction(Function):
                     ).cuda()
                     recv_placement[_sender] = unique_send_indices
 
-        # recv_buffer_dict = _nccl_alltoall_v_with_dict()
-        p2p_op_list = []
-        for _sender in range(world_size):
-            for _receiver in range(world_size):
-                if _sender == _receiver:
-                    continue
-                if (_sender != rank) and (_receiver != rank):
-                    continue
-
-                if _sender == rank:
-                    if _receiver in send_buffer_dict:
-                        send_buffer = send_buffer_dict[_receiver]
-                        p2p_op_list.append(
-                            dist.P2POp(dist.isend, send_buffer, _receiver)
-                        )
-
-                if _receiver == rank:
-                    if _sender in recv_buffer_dict:
-                        recv_buffer = recv_buffer_dict[_sender]
-                        p2p_op_list.append(dist.P2POp(dist.irecv, recv_buffer, _sender))
-
-        # print(p2p_op_list)
-        if len(p2p_op_list) > 0:
-            reqs = dist.batch_isend_irecv(p2p_op_list)
-
-            for req in reqs:
-                req.wait()
+        recv_buffer_dict = _nccl_alltoallv_with_dict(
+            send_buffer_dict, recv_buffer_dict, rank, world_size
+        )
         for key, recv_buffer in recv_buffer_dict.items():
             local_rank_output.scatter_add_(
                 1,
@@ -312,33 +283,9 @@ class ScatterFunction(Function):
                     ).cuda()
                     recv_placement[_sender] = unique_send_indices
 
-        # recv_buffer_dict = _nccl_alltoall_v_with_dict()
-        p2p_op_list = []
-        for _sender in range(world_size):
-            for _receiver in range(world_size):
-                if _sender == _receiver:
-                    continue
-                if (_sender != rank) and (_receiver != rank):
-                    continue
-
-                if _sender == rank:
-                    if _receiver in send_buffer_dict:
-                        send_buffer = send_buffer_dict[_receiver]
-                        p2p_op_list.append(
-                            dist.P2POp(dist.isend, send_buffer, _receiver)
-                        )
-
-                if _receiver == rank:
-                    if _sender in recv_buffer_dict:
-                        recv_buffer = recv_buffer_dict[_sender]
-                        p2p_op_list.append(dist.P2POp(dist.irecv, recv_buffer, _sender))
-
-        # print(p2p_op_list)
-        if len(p2p_op_list) > 0:
-            reqs = dist.batch_isend_irecv(p2p_op_list)
-
-            for req in reqs:
-                req.wait()
+        recv_buffer_dict = _nccl_alltoallv_with_dict(
+            send_buffer_dict, recv_buffer_dict, rank, world_size
+        )
         for key, recv_buffer in recv_buffer_dict.items():
             local_rank_output.scatter_add_(
                 1,
@@ -374,10 +321,6 @@ class ScatterFunction(Function):
         local_rank_mapping = send_ranks[_start_index:_end_index]
 
         local_indices = local_indices_slice % grad_output.shape[1]
-
-        print(rank, local_indices_slice)
-        print(rank, local_rank_mapping)
-        print(local_indices_slice[local_rank_mapping == rank])
 
         if len(local_indices_slice) > 0:
 
