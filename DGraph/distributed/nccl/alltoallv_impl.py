@@ -95,3 +95,31 @@ def _nccl_alltoall_v(
         local_recv_tensor[:, recv_local_placement[key], :] = recv_buffer
 
     return local_recv_tensor
+
+
+def _nccl_alltoallv_with_dict(send_buffer_dict, recv_buffer_dict, rank, world_size):
+    p2p_op_list = []
+    for _sender in range(world_size):
+        for _receiver in range(world_size):
+            if _sender == _receiver:
+                continue
+            if (_sender != rank) and (_receiver != rank):
+                continue
+
+            if _sender == rank:
+                if _receiver in send_buffer_dict:
+                    send_buffer = send_buffer_dict[_receiver]
+                    p2p_op_list.append(dist.P2POp(dist.isend, send_buffer, _receiver))
+
+            if _receiver == rank:
+                if _sender in recv_buffer_dict:
+                    recv_buffer = recv_buffer_dict[_sender]
+                    p2p_op_list.append(dist.P2POp(dist.irecv, recv_buffer, _sender))
+
+    # print(p2p_op_list)
+    if len(p2p_op_list) > 0:
+        reqs = dist.batch_isend_irecv(p2p_op_list)
+
+        for req in reqs:
+            req.wait()
+    return recv_buffer_dict

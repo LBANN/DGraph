@@ -45,15 +45,28 @@ def OutOfPlaceRankLocalMaskedGather(
 def RankLocalMaskedScatter(
     _src: torch.Tensor,
     _output: torch.Tensor,
-    indices: torch.Tensor,
-    rank_mapping: torch.Tensor,
+    local_indices_slice: torch.Tensor,
+    local_dest_ranks: torch.Tensor,
     rank: int,
 ) -> torch.Tensor:
     """
     This function scatters the data from the source rank to the destination rank.
     """
-    local_indices = indices[rank_mapping == rank]  # Masked local indices
-    _output.scatter_(0, local_indices, _src)
+    local_comm_mask = local_dest_ranks == rank
+    num_features = _src.shape[-1]
+    num_local_output_rows = _output.shape[1]
+
+    if torch.any(local_comm_mask):
+        local_scatter_indices = local_indices_slice[local_comm_mask]
+        local_scatter_indices = local_scatter_indices.view(1, -1, 1).expand(
+            1, -1, num_features
+        )
+
+        _output.scatter_add_(
+            1,
+            local_scatter_indices % num_local_output_rows,
+            _src[:, local_comm_mask, :],
+        )
     return _output
 
 
