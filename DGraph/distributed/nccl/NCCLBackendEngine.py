@@ -205,9 +205,6 @@ class GatherFunction(Function):
             world_size_grad,
         )
 
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
-
 
 class ScatterFunction(Function):
     @staticmethod
@@ -312,6 +309,7 @@ class ScatterFunction(Function):
     def backward(ctx, grad_output):
         indices, send_ranks, recv_ranks, _, rank, world_size = ctx.saved_tensors
         # We need to switch the send and recv ranks
+        print(indices.shape)
         _send_ranks = recv_ranks
         recv_ranks = send_ranks
         send_ranks = _send_ranks
@@ -319,6 +317,7 @@ class ScatterFunction(Function):
         world_size = world_size.item()
         send_tensor = grad_output
 
+        indices = indices.unsqueeze(0)
         # Now it's a gather operation
         num_local_output_rows = largest_split(indices.shape[1], world_size)
 
