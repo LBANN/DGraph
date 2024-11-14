@@ -189,7 +189,21 @@ class GatherFunction(Function):
                 recv_buffer,
             )
 
-        return local_rank_output, None, None, None, None, None
+        send_tensor_grad = local_rank_output
+        indices_grad = None
+        send_ranks_grad = None
+        recv_ranks_grad = None
+        rank_grad = None
+        world_size_grad = None
+
+        return (
+            send_tensor_grad,
+            indices_grad,
+            send_ranks_grad,
+            recv_ranks_grad,
+            rank_grad,
+            world_size_grad,
+        )
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
@@ -338,7 +352,25 @@ class ScatterFunction(Function):
             rank=rank,
             world_size=world_size,
         )
-        return recv_tensor, None, None, None, None, None
+        # NOTE: even if the inputs are non-tensors, the number of backward outputs
+        # must be the same as the number of inputs.
+        send_tensor_grad = recv_tensor
+        indices_grad = None
+        send_ranks_grad = None
+        recv_ranks_grad = None
+        num_local_output_rows_grad = None
+        rank_grad = None
+        world_size_grad = None
+
+        return (
+            send_tensor_grad,
+            indices_grad,
+            send_ranks_grad,
+            recv_ranks_grad,
+            num_local_output_rows_grad,
+            rank_grad,
+            world_size_grad,
+        )
 
 
 class NCCLBackendEngine(BackendEngine):
