@@ -440,8 +440,8 @@ class NCCLBackendEngine(BackendEngine):
         output_tensor = ScatterFunction.apply(
             local_send_tensor,
             indices,
-            rank_mappings[0],
-            rank_mappings[1],
+            send_rank,
+            recv_rank,
             output_size,
             rank,
             world_size,

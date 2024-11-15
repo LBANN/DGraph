@@ -55,7 +55,9 @@ def setup_gather_data(init_nccl_backend):
 @pytest.fixture(scope="module")
 def setup_scatter_data():
     num_features = 4
-    all_rank_input_data = torch.randn(1, 8, num_features)
+    all_rank_input_data = torch.randn(
+        1, 8, num_features, requires_grad=True, device="cuda"
+    )
     all_rank_indices = torch.tensor(
         [[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]]
     )
