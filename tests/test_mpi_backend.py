@@ -7,7 +7,9 @@ import torch
 @pytest.fixture(scope="module")
 def init_mpi_backend():
     dist.init_process_group(backend="nccl")
-    comm = Comm.Communicator.init_process_group("mpi")
+    # We are only testing the MPI backend, the Torch Dist does not need to be
+    # in sync with the MPI backend for this test
+    comm = Comm.Communicator.init_process_group("mpi", SKIP_NCCL_ASSERT=True)
     return comm
 
 
@@ -43,7 +45,6 @@ def test_mpi_backend_init(init_mpi_backend):
     comm = init_mpi_backend
     rank = comm.get_rank()
     world_size = comm.get_world_size()
-    print(f"Rank: {rank}")
     assert rank > -1
     assert world_size > 0
     assert rank < world_size
@@ -82,8 +83,12 @@ def test_mpi_backend_gather(init_mpi_backend, setup_gather_data):
     output_end_index = (all_rank_output.shape[1] // world_size) * (rank + 1)
 
     local_output_gt = all_rank_output[:, output_start_index:output_end_index]
+    for i in range(2):
+        local_output = comm.gather(
+            local_output, local_index[[0]], local_rank_mappings[[0]]
+        )
 
-    assert torch.allclose(local_output, local_output_gt)
+        assert torch.allclose(local_output, local_output_gt[[i]])
 
 
 def test_mpi_backend_scatter(init_mpi_backend, setup_scatter_data):
