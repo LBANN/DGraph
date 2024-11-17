@@ -15,11 +15,9 @@ import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
 from mpi4py import MPI
-from torch.utils.dlpack import to_dlpack  # type: ignore
-from torch.utils.dlpack import from_dlpack
-import cupy as cp
 import warnings
 from torch.autograd import Function
+from functools import reduce
 
 
 def _mpi_vector_get(send_tensor, indices, recv_tensor, win, rank, world_size):
@@ -80,7 +78,8 @@ class MPIGatherFunction(Function):
         bs = send_tensor.shape[0]
         num_nodes = send_tensor.shape[1]
         feat_size = send_tensor.shape[2]
-        win, grad_input = MPIBackendEngine.Malloc(size)
+        device = grad_output.device
+        win, grad_input = MPIBackendEngine.Malloc(size, device)
         grad_input = grad_input.reshape(bs, num_nodes, feat_size)
         win.Fence()
         return grad_input, None
@@ -92,8 +91,11 @@ class MPIScatterFunction(Function):
         ctx,
         send_tensor: torch.Tensor,
         indices: torch.LongTensor,
+        rank_mapping: torch.LongTensor,
     ):
-        ctx.save_for_backward(send_tensor, indices)
+
+        ctx.save_for_backward(indices)
+        ctx.send_tensor_shape = send_tensor.shape
         bs = send_tensor.shape[0]
         send_size = send_tensor.shape[2]
         num_indices = indices.shape[1]
@@ -110,21 +112,28 @@ class MPIScatterFunction(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        send_tensor, indices = ctx.saved_tensors
-        size = send_tensor.numel()
-        bs = send_tensor.shape[0]
-        num_nodes = send_tensor.shape[1]
-        feat_size = send_tensor.shape[2]
-        win, grad_input = MPIBackendEngine.Malloc(size)
-        grad_input = grad_input.reshape(bs, num_nodes, feat_size)
+        indices = ctx.saved_tensors
+        send_tensor_shape = ctx.send_tensor_shape
+        size = reduce(lambda x, y: x * y, send_tensor_shape)
+
+        bs = send_tensor_shape.shape[0]
+        num_nodes = send_tensor_shape.shape[1]
+        feat_size = send_tensor_shape.shape[2]
+
+        device = grad_output.device
+        win, input_grad = MPIBackendEngine.Malloc(size, device)
         win.Fence()
-        return grad_input, None
+        grad_input = input_grad.reshape(bs, num_nodes, feat_size)
+        win.Detach(grad_input)
+        win.Free()
+        return input_grad, None, None
 
 
 class MPIBackendEngine(BackendEngine):
     _is_initialized = False
     _rank = -1
     _world_size = -1
+    _comm = None
 
     def __init__(self, *args, **kwargs):
         # self._iniitalized = dist.is_initialized()
@@ -143,6 +152,8 @@ class MPIBackendEngine(BackendEngine):
             MPIBackendEngine._rank = self._comm.Get_rank()
             MPIBackendEngine._world_size = self._comm.Get_size()
             # TODO: Might be worth it to require a specific init_method
+            # for MPI to ensure that the processes are started correctly
+            # In my experience, file-based rendezvous is the most reliable - S.Z
             dist.init_process_group(
                 *args,
                 backend="nccl",
@@ -158,28 +169,23 @@ class MPIBackendEngine(BackendEngine):
             self._initialized = False
 
     @staticmethod
-    def Malloc(size: int):
+    def Malloc(size: int, device: torch.device):
         """Allocates memory on the GPU that is accessible by MPI one-sided communication"""
 
-        cupy_tensor = cp.empty(size, dtype=cp.float32)
-        win = MPI.Win.Create(
-            cupy_tensor.data.ptr, disp_unit=MPI.FLOAT.Get_size(), comm=MPI.COMM_WORLD
-        )
+        torch_tensor = torch.zeros(size, dtype=torch.float32, device=device)
 
-        win.Attach(cupy_tensor.data.ptr)
-        torch_tensor = from_dlpack(to_dlpack(cupy_tensor))  # Zero copy
+        win = MPI.Win.Create(
+            torch_tensor, disp_unit=MPI.FLOAT.Get_size(), comm=MPI.COMM_WORLD
+        )
         return win, torch_tensor
 
     @staticmethod
     def Attach(tensor: torch.Tensor):
-        cupy_tensor = cp.fromDlpack(to_dlpack(tensor))
-        cp.cuda.get_current_stream().synchronize()
+        torch.cuda.synchronize()
         win = MPI.Win.Create(
-            cupy_tensor.data.ptr, disp_unit=MPI.FLOAT.Get_size(), comm=MPI.COMM_WORLD
+            tensor.data, disp_unit=MPI.FLOAT.Get_size(), comm=MPI.COMM_WORLD
         )
-
-        win.Attach(cupy_tensor)
-        return win, cupy_tensor
+        return win, tensor
 
     @staticmethod
     def Detach(win):
@@ -191,7 +197,7 @@ class MPIBackendEngine(BackendEngine):
 
     @staticmethod
     def get_world_size() -> int:
-        return self._comm.Get_size()
+        return MPIBackendEngine._world_size
 
     def get_local_rank_slice(self, tensor: torch.Tensor) -> torch.Tensor:
         rank = self.get_rank()
