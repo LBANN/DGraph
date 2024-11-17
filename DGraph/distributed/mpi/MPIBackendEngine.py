@@ -11,6 +11,7 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
+from typing import Optional
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
@@ -54,7 +55,8 @@ class MPIGatherFunction(Function):
     def forward(
         ctx,
         send_tensor: torch.Tensor,
-        indices: torch.LongTensor,
+        indices: torch.Tensor,
+        rank_mapping: torch.Tensor,
     ):
         ctx.save_for_backward(send_tensor, indices)
         bs = send_tensor.shape[0]
@@ -91,6 +93,7 @@ class MPIScatterFunction(Function):
         ctx,
         send_tensor: torch.Tensor,
         indices: torch.LongTensor,
+        num_output_rows: int,
         rank_mapping: torch.LongTensor,
     ):
 
@@ -126,20 +129,23 @@ class MPIScatterFunction(Function):
         grad_input = input_grad.reshape(bs, num_nodes, feat_size)
         win.Detach(grad_input)
         win.Free()
-        return input_grad, None, None
+        return input_grad, None, None, None
 
 
 class MPIBackendEngine(BackendEngine):
     _is_initialized = False
-    _rank = -1
+    _global_rank = -1
     _world_size = -1
     _comm = None
+    _partition_size = None
+    _local_rank = None
+    _partition_num = None
 
     def __init__(self, *args, **kwargs):
         # self._iniitalized = dist.is_initialized()
         pass
 
-    def init_process_group(self, *args, **kwargs):
+    def init_process_group(self, ranks_per_graph=None, *args, **kwargs):
         if not MPIBackendEngine._is_initialized:
             # We want both NCCL and MPI to be initialized
 
@@ -149,8 +155,26 @@ class MPIBackendEngine(BackendEngine):
             MPIBackendEngine._is_initialized = True
 
             self._comm = MPI.COMM_WORLD
-            MPIBackendEngine._rank = self._comm.Get_rank()
+            MPIBackendEngine._global_rank = self._comm.Get_rank()
             MPIBackendEngine._world_size = self._comm.Get_size()
+
+            if ranks_per_graph is not None:
+                assert (
+                    MPIBackendEngine._world_size % ranks_per_graph == 0
+                ), f"World size {MPIBackendEngine._world_size} not divisible by ranks per graph {ranks_per_graph}"
+                MPIBackendEngine._partition_size = (
+                    MPIBackendEngine._world_size // ranks_per_graph
+                )
+                MPIBackendEngine._local_rank = (
+                    MPIBackendEngine._global_rank % ranks_per_graph
+                )
+                MPIBackendEngine._partition_num = (
+                    MPIBackendEngine._global_rank // ranks_per_graph
+                )
+            else:
+                MPIBackendEngine._partition_size = MPIBackendEngine._world_size
+                MPIBackendEngine._local_rank = MPIBackendEngine._global_rank
+                MPIBackendEngine._partition_num = 1
             # TODO: Might be worth it to require a specific init_method
             # for MPI to ensure that the processes are started correctly
             # In my experience, file-based rendezvous is the most reliable - S.Z
@@ -214,13 +238,44 @@ class MPIBackendEngine(BackendEngine):
 
     @staticmethod
     def get_rank() -> int:
-        return MPIBackendEngine._rank
+        return MPIBackendEngine._global_rank
 
     @staticmethod
     def get_world_size() -> int:
         return MPIBackendEngine._world_size
 
+    @staticmethod
+    def get_local_rank() -> int:
+        assert (
+            MPIBackendEngine._local_rank is not None
+        ), "MPIBackendEngine not initialized"
+        return MPIBackendEngine._local_rank
+
+    @staticmethod
+    def get_comm() -> MPI.Comm:
+        assert MPIBackendEngine._comm is not None, "MPIBackendEngine not initialized"
+        return MPIBackendEngine._comm
+
+    @staticmethod
+    def get_partition_size() -> int:
+        assert (
+            MPIBackendEngine._partition_size is not None
+        ), "MPIBackendEngine not initialized"
+        return MPIBackendEngine._partition_size
+
+    @staticmethod
+    def to_global_rank(local_rank: int) -> int:
+        """Converts a local rank in the current partition to it's global rank"""
+        assert (
+            MPIBackendEngine._partition_size is not None
+        ), "MPIBackendEngine not initialized"
+        partition_offset = (
+            MPIBackendEngine._partition_num * MPIBackendEngine._partition_size
+        )
+        return partition_offset + local_rank
+
     def get_local_rank_slice(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Returns a slice of the tensor that corresponds to the local rank."""
         rank = self.get_rank()
         world_size = self.get_world_size()
         tensor_shape = tensor.shape
@@ -230,12 +285,51 @@ class MPIBackendEngine(BackendEngine):
         end_index = start_index + local_size
         return tensor[:, start_index:end_index]
 
-    def scatter(self, *args, **kwargs) -> torch.Tensor:
-        input_tensor: torch.Tensor = args[0]
-        indices: torch.Tensor = args[1]
-        local_size: int = args[2]
-        batch_size: int = input_tensor.shape[0]
-        feature_size: int = input_tensor.shape[2]
+    def scatter(
+        self,
+        send_tensor: torch.Tensor,
+        indices: torch.Tensor,
+        num_output_rows: int,
+        rank_mapping: Optional[torch.Tensor] = None,
+        *args,
+        **kwargs,
+    ) -> torch.Tensor:
+        """Scatters and accumulates the input tensor to the indices provided.
+        Returns output_tensor such that:
+
+            output_tensor[:, indices[i], :] += send_tensor[:, i, :]
+
+        If the optional rank_mapping tensor specifies the rank location
+        output_tensor[:, indices[i], :] in the partition group. If
+        rank_mapping[i] != rank, communication is initiated to the remote rank.
+
+        Args:
+            send_tensor (torch.Tensor): The tensor to scatter. Shape (1, N, F)
+            indices (torch.Tensor): The indices to scatter to. Shape (1, N)
+            num_output_rows (int): The number of output rows.
+            rank_mapping (Optional[torch.Tensor], optional): The rank mapping tensor.
+                Defaults to None. Shape (1, N)
+
+        Returns:
+            torch.Tensor: The scattered tensor. Shape (1, num_output_rows, F)
+        """
+
+        assert (
+            indices.type == torch.long or indices.type == torch.int
+        ), f"Indices must be long or int, found {indices.type}"
+
+        send_tensor_shape = send_tensor.shape
+        indices_shape = indices.shape
+        b_size = indices_shape[0]
+
+        assert b_size == 1, (
+            "Multi-batch scatter disabled for testing."
+            + "Maximize DDP distribution first."
+        )
+        assert send_tensor_shape[0] == 1, (
+            "Multi-batch scatter disabled for testing."
+            + "Maximize DDP distribution first."
+        )
 
         if indices.device != torch.device("cpu"):
             indices = indices.cpu()
@@ -243,22 +337,63 @@ class MPIBackendEngine(BackendEngine):
                 "Scatter indices not on CPU, moving to CPU."
                 + "MPI requires indices to be on CPU."
             )
-        out = MPIScatterFunction.apply(input_tensor, indices)
+
+        if rank_mapping is None:
+            rank_mapping = indices // self.get_partition_size()
+        assert indices.shape == rank_mapping.shape
+        out = MPIScatterFunction.apply(
+            send_tensor, indices, num_output_rows, rank_mapping
+        )
         return out
 
-    def gather(self, *args, **kwargs) -> torch.Tensor:
-        input_tensor: torch.Tensor = args[0]
-        indices: torch.Tensor = args[1]
+    def gather(
+        self,
+        send_tensor: torch.Tensor,
+        indices: torch.Tensor,
+        rank_mapping: Optional[torch.Tensor] = None,
+        *args,
+        **kwargs,
+    ) -> torch.Tensor:
+        """Gathers the input tensor to the indices provided.
+        Returns output_tensor such that:
+
+            output_tensor[:, i, :] += send_tensor[:, indices[i], :]
+
+        If the optional rank_mapping tensor specifies the rank location
+        send_tensor[:, indices[i], :] in the partition group. If
+        rank_mapping[i] != rank, communication is initiated to the remote rank.
+
+        Args:
+            send_tensor (torch.Tensor): The tensor to scatter. Shape (1, N, F)
+            indices (torch.Tensor): The indices to scatter to. Shape (1, E)
+            rank_mapping (Optional[torch.Tensor], optional): The rank mapping tensor.
+                Defaults to None. Shape (1, E)
+
+        Returns:
+            torch.Tensor: The scattered tensor. Shape (1, E, F)
+        """
+        assert (
+            indices.type == torch.long or indices.type == torch.int
+        ), f"Indices must be long or int, found {indices.type}"
         indices_shape = indices.shape
         b_size = indices_shape[0]
-        n = indices_shape[1]
-        feature_size = input_tensor.shape[2]
+
         if indices.device != torch.device("cpu"):
             indices = indices.cpu()
             warnings.warn(
                 "Gather indices not on CPU, moving to CPU."
                 + "MPI requires indices to be on CPU."
             )
-        out = MPIGatherFunction.apply(input_tensor, indices)
+        if rank_mapping is None:
+            rank_mapping = indices // self.get_partition_size()
+
+        assert b_size == 1, (
+            "Multi-batch gather disabled for testing."
+            + "Maximize DDP distribution first."
+        )
+
+        assert indices.shape == rank_mapping.shape
+
+        out = MPIGatherFunction.apply(send_tensor, indices, rank_mapping)
 
         return out
