@@ -154,19 +154,40 @@ class MPIBackendEngine(BackendEngine):
             # TODO: Might be worth it to require a specific init_method
             # for MPI to ensure that the processes are started correctly
             # In my experience, file-based rendezvous is the most reliable - S.Z
-            dist.init_process_group(
-                *args,
-                backend="nccl",
-                rank=self._comm.Get_rank(),
-                world_size=self._comm.Get_size(),
-                **kwargs
-            )
+
+            if not dist.is_initialized():
+                # Only initialize NCCL if it hasn't been initialized by the user
+                dist.init_process_group(
+                    *args,
+                    backend="nccl",
+                    rank=self._comm.Get_rank(),
+                    world_size=self._comm.Get_size(),
+                    **kwargs,
+                )
+            else:
+                warnings.warn(
+                    "NCCL already initialized. Skipping initialization of NCCL."
+                )
+
+                if "SKIP_NCCL_ASSERT" not in kwargs:
+                    if kwargs["SKIP_NCCL_ASSERT"] is not True:
+                        assert dist.get_rank() == self._comm.Get_rank(), (
+                            f"Rank mismatch between NCCL and MPI. NCCL Rank: {dist.get_rank()},"
+                            + f"MPI Rank: {self._comm.Get_rank()}. This may cause undefined behavior."
+                            + "Either use DGraph to initialize NCCL using the Keyword arguments or"
+                            + "pass SKIP_NCCL_ASSERT to the DGraph communicator."
+                        )
+
+                        assert dist.get_world_size() == self._comm.Get_size(), (
+                            f"World size mismatch between NCCL and MPI. NCCL World Size: {dist.get_world_size()}, "
+                            f"MPI World Size: {self._comm.Get_size()}"
+                        )
 
     def finalize(self):
         if self._initialized:
             MPI.Finalize()
 
-            self._initialized = False
+            MPIBackendEngine._initialized = False
 
     @staticmethod
     def Malloc(size: int, device: torch.device):

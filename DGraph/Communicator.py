@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
+from DGraph.distributed.mpi.MPIBackendEngine import MPIBackendEngine
 from DGraph.distributed.nccl import NCCLBackendEngine
 from DGraph.CommunicatorBase import CommunicatorBase
 
@@ -35,6 +36,8 @@ class Communicator(CommunicatorBase):
         # self.__backend_engine
         if backend == "nccl":
             self.__backend_engine = NCCLBackendEngine()
+        elif backend == "mpi":
+            self.__backend_engine = MPIBackendEngine(**kwargs)
         else:
             raise NotImplementedError(f"Backend {backend} not implemented")
         Communicator._is_initialized = True
