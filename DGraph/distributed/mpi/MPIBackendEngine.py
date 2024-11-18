@@ -15,38 +15,50 @@ from typing import Optional
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
+from DGraph.distributed.RankLocalOps import RankLocalMaskedGather
 from mpi4py import MPI
 import warnings
 from torch.autograd import Function
 from functools import reduce
 
 
-def _mpi_vector_get(send_tensor, indices, recv_tensor, win, rank, world_size):
-    num_indices = indices.shape[1]
-    bs = send_tensor.shape[0]
-    for i in range(bs):
-        for j in range(num_indices):
-            win.Get(
-                [recv_tensor[i, j], MPI.FLOAT],
-                target_rank=indices[i, j] // world_size,
-                target=0,
-            )
-    win.Fence()
+def _mpi_vector_get(
+    send_tensor: torch.Tensor,
+    recv_tensor: torch.Tensor,
+    indices: torch.Tensor,
+    local_placement: torch.Tensor,
+    rank_mapping: torch.Tensor,
+    win: MPI.Win,
+):
+    num_local_send_rows = send_tensor.shape[1]
+    num_features = send_tensor.shape[-1]
+    rank_mapping = rank_mapping.view(-1)
+    indices = indices.view(-1)
+    data_type = MPI.FLOAT
+
+    for _index, remote_rank, local_index in zip(indices, rank_mapping, local_placement):
+        displacement = (_index.item() % num_local_send_rows) * num_features
+        count = num_features
+
+        target_spec = (displacement, count, data_type)
+        remote_rank = MPIBackendEngine.to_global_rank(int(remote_rank.item()))
+        win.Get(
+            [recv_tensor[0][local_index], MPI.FLOAT],
+            target_rank=remote_rank,
+            target=target_spec,
+        )
     return recv_tensor
 
 
 def _mpi_vector_accumulate(send_tensor, indices, recv_tensor, win, rank, world_size):
     num_indices = indices.shape[1]
     bs = send_tensor.shape[0]
-    win.Fence()
-    for i in range(bs):
-        for j in range(num_indices):
-            win.Get(
-                [recv_tensor[i, j], MPI.FLOAT],
-                target_rank=indices[i, j] // world_size,
-                target=0,
-            )
-    win.Fence()
+    for j in range(num_indices):
+        win.Get(
+            [recv_tensor[i, j], MPI.FLOAT],
+            target_rank=indices[i, j] // world_size,
+            target=0,
+        )
     return recv_tensor
 
 
@@ -56,21 +68,49 @@ class MPIGatherFunction(Function):
         ctx,
         send_tensor: torch.Tensor,
         indices: torch.Tensor,
-        rank_mapping: torch.Tensor,
+        src_rank_mapping: torch.Tensor,
     ):
         ctx.save_for_backward(send_tensor, indices)
         bs = send_tensor.shape[0]
-        send_size = send_tensor.shape[2]
+        num_features = send_tensor.shape[2]
         num_indices = indices.shape[1]
+        src_rank_mapping = src_rank_mapping.view(num_indices)
 
-        win, attached_send_tensor = MPIBackendEngine.Attach(send_tensor)
-        recv_tensor = torch.zeros(bs, num_indices, send_size)
-        rank = MPIBackendEngine.get_rank()
+        rank = MPIBackendEngine.get_local_rank()
         world_size = MPIBackendEngine.get_world_size()
 
-        recv_tensor = _mpi_vector_get(
-            attached_send_tensor, indices, recv_tensor, win, rank, world_size
-        )
+        # Attach the send tensor to the window. T
+        # TODO: his can potentially be done in parallel with the local gather
+        # as the local gather is read-only on the send_tensor. - S.Z
+        win, attached_send_tensor = MPIBackendEngine.Attach(send_tensor)
+
+        recv_tensor = torch.zeros(bs, num_indices, num_features)
+        local_rank_src = src_rank_mapping == rank
+
+        # First do local gather
+        if local_rank_src.any():
+            recv_tensor[:, local_rank_src, :] = RankLocalMaskedGather(
+                send_tensor,
+                indices,
+                rank_mapping=src_rank_mapping,
+                rank=rank,
+            )
+
+        non_local_rank = ~local_rank_src
+        win.Fence()  # Start the Epoch for MPI RMA
+        if non_local_rank.any():
+            local_placement = torch.where(src_rank_mapping == rank)[0]
+            remote_rank_mapping = src_rank_mapping[non_local_rank]
+            recv_tensor = _mpi_vector_get(
+                send_tensor=attached_send_tensor,
+                recv_tensor=recv_tensor,
+                indices=indices,
+                local_placement=local_placement,
+                rank_mapping=remote_rank_mapping,
+                win=win,
+            )
+        win.Fence()  # End the Epoch for MPI RMA
+        win.Free()  # Free the window
         return recv_tensor
 
     @staticmethod
@@ -129,7 +169,11 @@ class MPIScatterFunction(Function):
         grad_input = input_grad.reshape(bs, num_nodes, feat_size)
         win.Detach(grad_input)
         win.Free()
-        return input_grad, None, None, None
+        indices_grad = None
+        num_output_grad = None
+        rank_mapping_grad = None
+
+        return input_grad, indices_grad, num_output_grad, rank_mapping_grad
 
 
 class MPIBackendEngine(BackendEngine):
@@ -143,7 +187,9 @@ class MPIBackendEngine(BackendEngine):
 
     def __init__(self, *args, **kwargs):
         # self._iniitalized = dist.is_initialized()
-        pass
+        if MPIBackendEngine._is_initialized:
+            return
+        self.init_process_group(*args, **kwargs)
 
     def init_process_group(self, ranks_per_graph=None, *args, **kwargs):
         if not MPIBackendEngine._is_initialized:
@@ -151,7 +197,6 @@ class MPIBackendEngine(BackendEngine):
 
             # Dist initialization is done by the user and handles
             # the collective operations need for SGD
-            MPI.Init()
             MPIBackendEngine._is_initialized = True
 
             self._comm = MPI.COMM_WORLD
@@ -174,7 +219,7 @@ class MPIBackendEngine(BackendEngine):
             else:
                 MPIBackendEngine._partition_size = MPIBackendEngine._world_size
                 MPIBackendEngine._local_rank = MPIBackendEngine._global_rank
-                MPIBackendEngine._partition_num = 1
+                MPIBackendEngine._partition_num = 0
             # TODO: Might be worth it to require a specific init_method
             # for MPI to ensure that the processes are started correctly
             # In my experience, file-based rendezvous is the most reliable - S.Z
@@ -186,7 +231,6 @@ class MPIBackendEngine(BackendEngine):
                     backend="nccl",
                     rank=self._comm.Get_rank(),
                     world_size=self._comm.Get_size(),
-                    **kwargs,
                 )
             else:
                 warnings.warn(
@@ -274,16 +318,18 @@ class MPIBackendEngine(BackendEngine):
         )
         return partition_offset + local_rank
 
-    def get_local_rank_slice(self, tensor: torch.Tensor) -> torch.Tensor:
+    def get_local_rank_slice(self, tensor: torch.Tensor, dim=-1) -> torch.Tensor:
         """Returns a slice of the tensor that corresponds to the local rank."""
         rank = self.get_rank()
         world_size = self.get_world_size()
         tensor_shape = tensor.shape
-        tensor_size = tensor_shape[1]
+        tensor_size = tensor_shape[dim]
         local_size = tensor_size // world_size
         start_index = rank * local_size
         end_index = start_index + local_size
-        return tensor[:, start_index:end_index]
+
+        length = end_index - start_index
+        return torch.narrow(tensor, dim, start_index, length)
 
     def scatter(
         self,
@@ -299,7 +345,7 @@ class MPIBackendEngine(BackendEngine):
 
             output_tensor[:, indices[i], :] += send_tensor[:, i, :]
 
-        If the optional rank_mapping tensor specifies the rank location
+        The optional rank_mapping tensor specifies the rank location
         output_tensor[:, indices[i], :] in the partition group. If
         rank_mapping[i] != rank, communication is initiated to the remote rank.
 
@@ -315,7 +361,7 @@ class MPIBackendEngine(BackendEngine):
         """
 
         assert (
-            indices.type == torch.long or indices.type == torch.int
+            indices.dtype == torch.long or indices.dtype == torch.int
         ), f"Indices must be long or int, found {indices.type}"
 
         send_tensor_shape = send_tensor.shape
@@ -359,7 +405,7 @@ class MPIBackendEngine(BackendEngine):
 
             output_tensor[:, i, :] += send_tensor[:, indices[i], :]
 
-        If the optional rank_mapping tensor specifies the rank location
+        The optional rank_mapping tensor specifies the rank location
         send_tensor[:, indices[i], :] in the partition group. If
         rank_mapping[i] != rank, communication is initiated to the remote rank.
 
@@ -373,7 +419,7 @@ class MPIBackendEngine(BackendEngine):
             torch.Tensor: The scattered tensor. Shape (1, E, F)
         """
         assert (
-            indices.type == torch.long or indices.type == torch.int
+            indices.dtype == torch.long or indices.dtype == torch.int
         ), f"Indices must be long or int, found {indices.type}"
         indices_shape = indices.shape
         b_size = indices_shape[0]
