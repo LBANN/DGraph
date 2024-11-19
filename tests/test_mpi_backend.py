@@ -18,6 +18,7 @@ def init_mpi_backend():
 
 @pytest.fixture(scope="module")
 def setup_gather_data():
+    torch.random.manual_seed(0)
     num_features = 64
     all_rank_input_data = torch.randn(1, 4, num_features)
 
@@ -41,6 +42,7 @@ def setup_gather_data():
 
 @pytest.fixture(scope="module")
 def setup_scatter_data():
+    torch.random.manual_seed(0)
     num_features = 4
     all_rank_input_data = torch.randn(1, 8, num_features)
     all_edge_coo = torch.tensor([[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]])
@@ -98,7 +100,7 @@ def test_mpi_backend_gather(init_mpi_backend, setup_gather_data):
     local_output_gt = all_rank_output[:, output_start_index:output_end_index]
     for i in range(2):
         local_output = comm.gather(
-            local_input_data, local_index[[0]], local_rank_mappings[[0]]
+            local_input_data, local_index[:, i], local_rank_mappings[0][[i], :]
         )
         assert (
             local_output.shape == local_output_gt[[i]].shape

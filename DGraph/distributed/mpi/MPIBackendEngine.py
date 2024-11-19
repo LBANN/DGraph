@@ -34,8 +34,8 @@ def _mpi_vector_get(
     num_features = send_tensor.shape[-1]
     rank_mapping = rank_mapping.view(-1)
     indices = indices.view(-1)
+    local_placement = local_placement.view(-1)
     data_type = MPI.FLOAT
-
     for _index, remote_rank, local_index in zip(indices, rank_mapping, local_placement):
         displacement = (_index.item() % num_local_send_rows) * num_features
         count = num_features
@@ -72,9 +72,10 @@ class MPIGatherFunction(Function):
     ):
         ctx.save_for_backward(send_tensor, indices)
         bs = send_tensor.shape[0]
+        num_input_rows = send_tensor.shape[1]
         num_features = send_tensor.shape[2]
         num_indices = indices.shape[1]
-        src_rank_mapping = src_rank_mapping.view(num_indices)
+        # src_rank_mapping = src_rank_mapping.view(num_indices)
 
         rank = MPIBackendEngine.get_local_rank()
         world_size = MPIBackendEngine.get_world_size()
@@ -89,9 +90,10 @@ class MPIGatherFunction(Function):
 
         # First do local gather
         if local_rank_src.any():
-            recv_tensor[:, local_rank_src, :] = RankLocalMaskedGather(
+            _local_indices = indices % num_input_rows
+            recv_tensor[:, local_rank_src[0], :] = RankLocalMaskedGather(
                 send_tensor,
-                indices,
+                _local_indices,
                 rank_mapping=src_rank_mapping,
                 rank=rank,
             )
@@ -99,13 +101,15 @@ class MPIGatherFunction(Function):
         non_local_rank = ~local_rank_src
         win.Fence()  # Start the Epoch for MPI RMA
         if non_local_rank.any():
-            local_placement = torch.where(src_rank_mapping == rank)[0]
+            local_placement = torch.where(src_rank_mapping.squeeze(0) != rank)[0]
+
             remote_rank_mapping = src_rank_mapping[non_local_rank]
+            remote_indices = indices[non_local_rank]
             recv_tensor = _mpi_vector_get(
                 send_tensor=attached_send_tensor,
                 recv_tensor=recv_tensor,
-                indices=indices,
-                local_placement=local_placement,
+                indices=remote_indices,
+                local_placement=local_placement.unsqueeze(0),
                 rank_mapping=remote_rank_mapping,
                 win=win,
             )
@@ -438,7 +442,9 @@ class MPIBackendEngine(BackendEngine):
             + "Maximize DDP distribution first."
         )
 
-        assert indices.shape == rank_mapping.shape
+        assert (
+            indices.shape == rank_mapping.shape
+        ), f"Expected {indices.shape} == {rank_mapping.shape}"
 
         out = MPIGatherFunction.apply(send_tensor, indices, rank_mapping)
 
