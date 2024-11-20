@@ -15,7 +15,12 @@ from typing import Optional
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
-from DGraph.distributed.RankLocalOps import RankLocalMaskedGather
+from DGraph.distributed.RankLocalOps import (
+    RankLocalMaskedGather,
+    RankLocalMaskedScatter,
+    RankLocalReNumbering,
+    RankLocalReNumberingWithRankMapping,
+)
 from mpi4py import MPI
 import warnings
 from torch.autograd import Function
@@ -29,13 +34,14 @@ def _mpi_vector_get(
     local_placement: torch.Tensor,
     rank_mapping: torch.Tensor,
     win: MPI.Win,
-):
+) -> torch.Tensor:
     num_local_send_rows = send_tensor.shape[1]
     num_features = send_tensor.shape[-1]
     rank_mapping = rank_mapping.view(-1)
     indices = indices.view(-1)
     local_placement = local_placement.view(-1)
     data_type = MPI.FLOAT
+
     for _index, remote_rank, local_index in zip(indices, rank_mapping, local_placement):
         displacement = (_index.item() % num_local_send_rows) * num_features
         count = num_features
@@ -50,15 +56,137 @@ def _mpi_vector_get(
     return recv_tensor
 
 
-def _mpi_vector_accumulate(send_tensor, indices, recv_tensor, win, rank, world_size):
-    num_indices = indices.shape[1]
-    bs = send_tensor.shape[0]
-    for j in range(num_indices):
-        win.Get(
-            [recv_tensor[i, j], MPI.FLOAT],
-            target_rank=indices[i, j] // world_size,
-            target=0,
+def _mpi_vector_accumulate(
+    send_tensor: torch.Tensor,
+    indices: torch.Tensor,
+    rank_mapping: torch.Tensor,
+    num_local_output_rows: int,
+    win: MPI.Win,
+) -> None:
+    num_features = send_tensor.shape[-1]
+    rank_mapping = rank_mapping.view(-1)
+    indices = indices.view(-1)
+    data_type = MPI.FLOAT
+
+    for i, (_index, remote_rank) in enumerate(zip(indices, rank_mapping)):
+        displacement = (_index.item() % num_local_output_rows) * num_features
+        count = num_features
+
+        target_spec = (displacement, count, data_type)
+        remote_rank = MPIBackendEngine.to_global_rank(int(remote_rank.item()))
+        win.Accumulate(
+            [send_tensor[0][i], MPI.FLOAT],
+            target_rank=remote_rank,
+            target=target_spec,
+            op=MPI.SUM,
         )
+
+
+def _mpi_gather_impl(
+    send_tensor: torch.Tensor, indices: torch.Tensor, src_rank_mapping: torch.Tensor
+):
+    bs = send_tensor.shape[0]
+    num_input_rows = send_tensor.shape[1]
+    num_features = send_tensor.shape[2]
+    num_indices = indices.shape[1]
+    device = send_tensor.device
+    # src_rank_mapping = src_rank_mapping.view(num_indices)
+
+    rank = MPIBackendEngine.get_local_rank()
+    world_size = MPIBackendEngine.get_world_size()
+
+    # Attach the send tensor to the window.
+    # TODO: his can potentially be done in parallel with the local gather
+    # as the local gather is read-only on the send_tensor. - S.Z
+    win, attached_send_tensor = MPIBackendEngine.Attach(send_tensor)
+
+    recv_tensor = torch.zeros(bs, num_indices, num_features, device=device)
+    local_rank_src = src_rank_mapping == rank
+
+    # First do local gather
+    if local_rank_src.any():
+        _local_indices = indices % num_input_rows
+        recv_tensor[:, local_rank_src[0], :] = RankLocalMaskedGather(
+            send_tensor,
+            _local_indices,
+            rank_mapping=src_rank_mapping,
+            rank=rank,
+        )
+
+    non_local_rank = ~local_rank_src
+    win.Fence()  # Start the Epoch for MPI RMA
+    if non_local_rank.any():
+        local_placement = torch.where(src_rank_mapping.squeeze(0) != rank)[0]
+
+        remote_rank_mapping = src_rank_mapping[non_local_rank]
+        remote_indices = indices[non_local_rank]
+        recv_tensor = _mpi_vector_get(
+            send_tensor=attached_send_tensor,
+            recv_tensor=recv_tensor,
+            indices=remote_indices,
+            local_placement=local_placement.unsqueeze(0),
+            rank_mapping=remote_rank_mapping,
+            win=win,
+        )
+    win.Fence()  # End the Epoch for MPI RMA
+    win.Free()  # Free the window
+    return recv_tensor
+
+
+def _mpi_scatter_add_impl(
+    send_tensor: torch.Tensor,
+    indices: torch.Tensor,
+    num_output_rows: int,
+    target_rank_mapping: torch.Tensor,
+):
+    bs = send_tensor.shape[0]
+
+    num_features = send_tensor.shape[2]
+    device = send_tensor.device
+    rank = MPIBackendEngine.get_local_rank()
+    local_message = target_rank_mapping == rank
+
+    recv_tensor = torch.zeros(bs, num_output_rows, num_features, device=device)
+
+    if local_message.any():
+        _local_indices = indices % num_output_rows
+        recv_tensor = RankLocalMaskedScatter(
+            send_tensor,
+            recv_tensor,
+            _local_indices.view(-1),
+            target_rank_mapping.view(-1),
+            rank,
+        )
+
+    non_local_messages = ~local_message
+
+    win, attached_recv_tensor = MPIBackendEngine.Attach(recv_tensor)
+
+    win.Fence()  # Start the Epoch for MPI RMA
+    if non_local_messages.any():
+        comm_indices = indices[non_local_messages]
+        comm_ranks = target_rank_mapping[non_local_messages]
+
+        renumbered_indices, original_locs, original_rank_mapping = (
+            RankLocalReNumberingWithRankMapping(comm_indices, comm_ranks)
+        )
+
+        num_remote_rows = len(original_locs)
+        buffer = torch.zeros(1, num_remote_rows, num_features, device=device)
+        buffer.scatter_add_(
+            1,
+            renumbered_indices.view(1, -1, 1).expand(1, -1, num_features),
+            send_tensor[:, non_local_messages.view(-1), :],
+        )
+        _mpi_vector_accumulate(
+            send_tensor=buffer,
+            indices=original_locs,
+            rank_mapping=original_rank_mapping,
+            num_local_output_rows=num_output_rows,
+            win=win,
+        )
+    win.Fence()  # End the Epoch for MPI RMA
+    win.Free()  # Free the window
     return recv_tensor
 
 
@@ -70,65 +198,22 @@ class MPIGatherFunction(Function):
         indices: torch.Tensor,
         src_rank_mapping: torch.Tensor,
     ):
-        ctx.save_for_backward(send_tensor, indices)
-        bs = send_tensor.shape[0]
         num_input_rows = send_tensor.shape[1]
-        num_features = send_tensor.shape[2]
-        num_indices = indices.shape[1]
-        # src_rank_mapping = src_rank_mapping.view(num_indices)
-
-        rank = MPIBackendEngine.get_local_rank()
-        world_size = MPIBackendEngine.get_world_size()
-
-        # Attach the send tensor to the window. T
-        # TODO: his can potentially be done in parallel with the local gather
-        # as the local gather is read-only on the send_tensor. - S.Z
-        win, attached_send_tensor = MPIBackendEngine.Attach(send_tensor)
-
-        recv_tensor = torch.zeros(bs, num_indices, num_features)
-        local_rank_src = src_rank_mapping == rank
-
-        # First do local gather
-        if local_rank_src.any():
-            _local_indices = indices % num_input_rows
-            recv_tensor[:, local_rank_src[0], :] = RankLocalMaskedGather(
-                send_tensor,
-                _local_indices,
-                rank_mapping=src_rank_mapping,
-                rank=rank,
-            )
-
-        non_local_rank = ~local_rank_src
-        win.Fence()  # Start the Epoch for MPI RMA
-        if non_local_rank.any():
-            local_placement = torch.where(src_rank_mapping.squeeze(0) != rank)[0]
-
-            remote_rank_mapping = src_rank_mapping[non_local_rank]
-            remote_indices = indices[non_local_rank]
-            recv_tensor = _mpi_vector_get(
-                send_tensor=attached_send_tensor,
-                recv_tensor=recv_tensor,
-                indices=remote_indices,
-                local_placement=local_placement.unsqueeze(0),
-                rank_mapping=remote_rank_mapping,
-                win=win,
-            )
-        win.Fence()  # End the Epoch for MPI RMA
-        win.Free()  # Free the window
-        return recv_tensor
+        ctx.save_for_backward(indices, src_rank_mapping)
+        ctx.num_grad_rows = num_input_rows
+        return _mpi_gather_impl(send_tensor, indices, src_rank_mapping)
 
     @staticmethod
     def backward(ctx, grad_output):
-        send_tensor, indices = ctx.saved_tensors
-        size = send_tensor.numel()
-        bs = send_tensor.shape[0]
-        num_nodes = send_tensor.shape[1]
-        feat_size = send_tensor.shape[2]
-        device = grad_output.device
-        win, grad_input = MPIBackendEngine.Malloc(size, device)
-        grad_input = grad_input.reshape(bs, num_nodes, feat_size)
-        win.Fence()
-        return grad_input, None
+        indices, target_rank_mapping = ctx.saved_tensors
+        num_output_rows = ctx.num_grad_rows
+        # From here on it is just scatter
+        input_grad = _mpi_scatter_add_impl(
+            grad_output, indices, num_output_rows, target_rank_mapping
+        )
+        indices_grad = None
+        src_rank_mapping_grad = None
+        return input_grad, indices_grad, src_rank_mapping_grad
 
 
 class MPIScatterFunction(Function):
@@ -138,41 +223,23 @@ class MPIScatterFunction(Function):
         send_tensor: torch.Tensor,
         indices: torch.LongTensor,
         num_output_rows: int,
-        rank_mapping: torch.LongTensor,
+        target_rank_mapping: torch.LongTensor,
     ):
 
         ctx.save_for_backward(indices)
         ctx.send_tensor_shape = send_tensor.shape
-        bs = send_tensor.shape[0]
-        send_size = send_tensor.shape[2]
-        num_indices = indices.shape[1]
 
-        win, attached_send_tensor = MPIBackendEngine.Attach(send_tensor)
-        recv_tensor = torch.zeros(bs, num_indices, send_size)
-        rank = MPIBackendEngine.get_rank()
-        world_size = MPIBackendEngine.get_world_size()
-
-        recv_tensor = _mpi_vector_accumulate(
-            attached_send_tensor, indices, recv_tensor, win, rank, world_size
+        recv_tensor = _mpi_scatter_add_impl(
+            send_tensor, indices, num_output_rows, target_rank_mapping
         )
+
         return recv_tensor
 
     @staticmethod
     def backward(ctx, grad_output):
-        indices = ctx.saved_tensors
-        send_tensor_shape = ctx.send_tensor_shape
-        size = reduce(lambda x, y: x * y, send_tensor_shape)
-
-        bs = send_tensor_shape.shape[0]
-        num_nodes = send_tensor_shape.shape[1]
-        feat_size = send_tensor_shape.shape[2]
-
-        device = grad_output.device
-        win, input_grad = MPIBackendEngine.Malloc(size, device)
-        win.Fence()
-        grad_input = input_grad.reshape(bs, num_nodes, feat_size)
-        win.Detach(grad_input)
-        win.Free()
+        indices, src_rank_mapping = ctx.saved_tensors
+        # From here on it is just gather
+        input_grad = _mpi_gather_impl(grad_output, indices, src_rank_mapping)
         indices_grad = None
         num_output_grad = None
         rank_mapping_grad = None
