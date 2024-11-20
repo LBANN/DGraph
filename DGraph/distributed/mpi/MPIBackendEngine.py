@@ -268,6 +268,15 @@ class MPIBackendEngine(BackendEngine):
 
             # Dist initialization is done by the user and handles
             # the collective operations need for SGD
+            if not MPI.Is_initialized():
+                # MPI is not initialized
+                ret_code = MPI.Init_thread()
+                if ret_code != MPI.THREAD_MULTIPLE:
+                    raise RuntimeError(
+                        "MPI_THREAD_MULTIPLE not supported. "
+                        + "Please recompile MPI with THREAD_MULTIPLE support "
+                        + "or intialize MPI with MPI.Init() outside of DGraph."
+                    )
             MPIBackendEngine._is_initialized = True
 
             self._comm = MPI.COMM_WORLD

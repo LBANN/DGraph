@@ -12,6 +12,7 @@ def init_mpi_backend():
     os.environ["MASTER_PORT"] = "29500"  # Random port
     # We are only testing the MPI backend, the Torch Dist does not need to be
     # in sync with the MPI backend for this test. So we can skip the NCCL assert
+    # Communicator with MPI store would make this a non-issue - S.Z
     comm = Comm.Communicator.init_process_group("mpi", SKIP_NCCL_ASSERT=True)
     return comm
 
@@ -83,6 +84,7 @@ def test_mpi_backend_gather(init_mpi_backend, setup_gather_data):
         setup_gather_data
     )
 
+    # Slice using the communicator
     local_input_data = comm.get_local_rank_slice(all_rank_input_data, dim=1)
     local_index = comm.get_local_rank_slice(all_edge_coo.unsqueeze(0))
     local_rank_mappings = comm.get_local_rank_slice(rank_mappings.unsqueeze(0))
