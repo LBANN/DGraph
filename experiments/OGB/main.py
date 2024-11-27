@@ -11,6 +11,7 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
+import sys
 from DGraph.data.datasets import DistributedOGBWrapper
 from DGraph.Communicator import CommunicatorBase, Communicator
 
@@ -49,16 +50,15 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
         self, tensor: torch.Tensor, src: torch.Tensor, rank_mappings, num_local_nodes
     ):
         # TODO: Wrap this in the datawrapper class
-        src = src.unsqueeze(-1).expand(-1, tensor.shape[-1])
-
-        out = torch.zeros(num_local_nodes, tensor.shape[1]).to(tensor.device)
-        out.scatter_add(0, src, tensor)
+        src = src.unsqueeze(-1).expand(1, -1, tensor.shape[-1])
+        out = torch.zeros(1, num_local_nodes, tensor.shape[-1]).to(tensor.device)
+        out.scatter_add(1, src, tensor)
         return out
 
     def gather(self, tensor, dst, rank_mappings):
         # TODO: Wrap this in the datawrapper class
-        dst = dst.unsqueeze(-1).expand(-1, tensor.shape[-1])
-        out = torch.gather(tensor, 0, dst)
+        dst = dst.unsqueeze(-1).expand(1, -1, tensor.shape[-1])
+        out = torch.gather(tensor, 1, dst)
         return out
 
     def __str__(self) -> str:
@@ -69,9 +69,23 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
         return device
 
 
-def _run_experiment(dataset, comm, lr, epochs, log_prefix):
-    model = GCN(in_channels=128, hidden_dims=256, num_classes=40, comm=comm)
+def _run_experiment(
+    dataset,
+    comm,
+    lr: float,
+    epochs: int,
+    log_prefix: str,
+    hidden_dims: int = 128,
+    num_classes: int = 40,
+):
+    torch.cuda.set_device(comm.get_rank())
+    device = torch.cuda.current_device()
+    model = GCN(
+        in_channels=128, hidden_dims=hidden_dims, num_classes=num_classes, comm=comm
+    )
     rank = comm.get_rank()
+    model = model.to(device)
+
     model = (
         DDP(model, device_ids=[rank], output_device=rank)
         if comm.get_world_size() > 1
@@ -86,26 +100,37 @@ def _run_experiment(dataset, comm, lr, epochs, log_prefix):
     start_time.record(stream)
     node_features, edge_indices, rank_mappings, labels = dataset[0]
 
-    device = comm.rank_cuda_device()
+    node_features = node_features.to(device).unsqueeze(0)
+    edge_indices = edge_indices.to(device)[:, :-1].unsqueeze(0)
+    labels = labels.to(device).unsqueeze(0)
+    rank_mappings = rank_mappings[:, :-1]
 
-    node_features = node_features.to(device)
-    edge_indices = edge_indices.to(device)
-    labels = labels.to(device)
-
+    if rank == 0:
+        print("*" * 80)
+    for i in range(comm.get_world_size()):
+        if i == rank:
+            print(f"Rank: {rank} Mapping: {rank_mappings.shape}")
+            print(f"Rank: {rank} Node Features: {node_features.shape}")
+            print(f"Rank: {rank} Edge Indices: {edge_indices.shape}")
+        dist.barrier()
     criterion = torch.nn.CrossEntropyLoss()
-
-    model = model.to(device)
 
     train_mask = dataset.graph_obj.get_local_mask("train")
     validation_mask = dataset.graph_obj.get_local_mask("val")
     training_loss_scores = []
     validation_loss_scores = []
     validation_accuracy_scores = []
+
+    print(f"Rank: {rank} training_mask: {train_mask.shape}")
+    print(f"Rank: {rank} validation_mask: {validation_mask.shape}")
+
     for i in range(epochs):
         optimizer.zero_grad()
         _output = model(node_features, edge_indices, rank_mappings)
-        output = _output[train_mask]
-        loss = criterion(output, labels[train_mask].squeeze())
+        # Must flatten along the batch dimension for the loss function
+        output = _output[:, train_mask].view(-1, num_classes)
+        gt = labels[:, train_mask].view(-1)
+        loss = criterion(output, gt)
         loss.backward()
         dist_print_ephemeral(f"Epoch {i} \t Loss: {loss.item()}", rank)
         optimizer.step()
@@ -115,8 +140,8 @@ def _run_experiment(dataset, comm, lr, epochs, log_prefix):
 
         model.eval()
         with torch.no_grad():
-            validation_preds = _output[validation_mask]
-            label_validation = labels[validation_mask].squeeze()
+            validation_preds = _output[:, validation_mask].view(-1, num_classes)
+            label_validation = labels[:, validation_mask].view(-1)
             validation_score = criterion(
                 validation_preds,
                 label_validation,
@@ -145,8 +170,9 @@ def _run_experiment(dataset, comm, lr, epochs, log_prefix):
 
     with torch.no_grad():
         test_idx = dataset.graph_obj.get_local_mask("test")
-        test_labels = labels[test_idx].squeeze()
-        test_preds = model(node_features, edge_indices, rank_mappings)[test_idx]
+        test_labels = labels[:, test_idx].view(-1)
+        test_preds = model(node_features, edge_indices, rank_mappings)[:, test_idx]
+        test_preds = test_preds.view(-1, num_classes)
         test_loss = criterion(test_preds, test_labels)
         test_preds = torch.log_softmax(test_preds, dim=1)
         test_accuracy = calculate_accuracy(test_preds, test_labels)

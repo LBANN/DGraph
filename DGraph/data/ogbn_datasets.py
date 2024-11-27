@@ -42,6 +42,9 @@ def process_homogenous_data(
     # For bidirectional graphs the number of edges are double counted
     num_edges = edge_index.shape[1]
 
+    train_nodes = torch.from_numpy(split_idx["train"])
+    valid_nodes = torch.from_numpy(split_idx["valid"])
+    test_nodes = torch.from_numpy(split_idx["test"])
     graph_obj = DistributedGraph(
         node_features=node_features,
         edge_index=edge_index,
@@ -50,9 +53,9 @@ def process_homogenous_data(
         rank=rank,
         world_size=world_Size,
         labels=labels,
-        train_mask=split_idx["train"],
-        val_mask=split_idx["valid"],
-        test_mask=split_idx["test"],
+        train_mask=train_nodes,
+        val_mask=valid_nodes,
+        test_mask=test_nodes,
     )
     return graph_obj
 

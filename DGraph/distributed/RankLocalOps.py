@@ -83,6 +83,24 @@ def RankLocalReNumbering(_indices):
     return renumbered_indices, unique_indices
 
 
+def RankLocalRenumberingWithMapping(_indices, _mapping):
+    """
+    This function removes duplicates from the indices tensor.
+    """
+
+    # TODO: Optimize this code. This is a naive implementation and the current
+    # bottleneck in the code. - S.Z
+    unique_indices = torch.unique(_indices).to(_mapping.device)
+    _mapping = _mapping.to(_indices.device)
+    renumbered_indices = torch.zeros_like(_indices)
+    new_mapping = torch.zeros_like(unique_indices)
+
+    for i, idx in enumerate(unique_indices):
+        renumbered_indices[_indices == idx] = i
+        new_mapping[i] = _mapping[_indices == idx][0]
+    return renumbered_indices, unique_indices, new_mapping
+
+
 def RankLocalGather(
     _src: torch.Tensor, indices: torch.Tensor, rank_mapping: torch.Tensor, rank: int
 ) -> torch.Tensor:

@@ -16,6 +16,16 @@ The arguments are as follows:
 
 All runs are on the full graph. The script saves the logs in the `log_dir` directory. The logs contain the training and validation loss and accuracy for each run. The script also saves the model with the best validation accuracy.
 
+### Distributed Training
+
+DGraph supports distributed training using the `nccl`, `nvshmem`, and `mpi` backends. 
+
+In order to run the experiments with the `nccl` backend, run the following command:
+
+```bash
+torchrun --nnodes <nodes> --nproc-per-node <gpus> main.py --backend nccl --lr lr --epochs epochs --runs runs --log_dir log-dir
+```
+
 ### Additional Notes
 The experiments use some additional libraries. Use the [ogb] option
 when installing with pip.

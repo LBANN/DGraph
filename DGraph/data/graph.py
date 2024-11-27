@@ -25,7 +25,7 @@ class DistributedGraph:
     def __init__(
         self,
         node_features: torch.Tensor,
-        edge_index: torch.LongTensor,
+        edge_index: torch.Tensor,
         labels: torch.Tensor,
         num_nodes: int,
         num_edges: int,
@@ -50,15 +50,15 @@ class DistributedGraph:
         self.graph_labels = graph_labels
         self.rank = rank
         self.world_size = world_size
-        self._nodes_per_rank = num_nodes // world_size
-        self._edges_per_rank = num_edges // world_size
+        self._nodes_per_rank = (num_nodes + world_size - 1) // world_size
+        self._edges_per_rank = (num_edges + world_size - 1) // world_size
         self.rank_mappings = None
         if pre_calculate_mapping:
             self._precalculate_index_rank_mappings(edge_index)
         self._make_push_graph_data()
 
     def _get_local_shape(self, dim: int) -> int:
-        return dim // self.world_size
+        return (dim + self.world_size) // self.world_size
 
     def _get_padded_shape(self, dim: int) -> int:
         return self._get_local_shape(dim) * self.world_size
@@ -74,7 +74,7 @@ class DistributedGraph:
         Returns the global shape of the node features tensor
         """
         node_feature_shape = self.node_features.shape
-        padded_shape = (node_feature_shape[0] // self.world_size) * self.world_size
+        padded_shape = self._nodes_per_rank * self.world_size
         return (padded_shape, *node_feature_shape[1:])
 
     def get_local_node_feature_shape(self) -> tuple:
@@ -90,7 +90,7 @@ class DistributedGraph:
         Returns the global shape of the edge index tensor
         """
         edge_index_shape = self.edge_index.shape
-        padded_shape = (edge_index_shape[0] // self.world_size) * self.world_size
+        padded_shape = self._edges_per_rank * self.world_size
         return (padded_shape, *edge_index_shape[1:])
 
     def get_local_edge_index_shape(self) -> tuple:
@@ -124,11 +124,33 @@ class DistributedGraph:
     def get_local_node_features(self):
         """"""
 
-        global_node_feature_shape = self.get_local_node_feature_shape()
+        global_node_feature_shape = self.get_global_node_feature_shape()
+        gt_shape = self.node_features.shape
+
+        print(
+            f"Rank {self.rank}: global_node_feature_shape {global_node_feature_shape}"
+            + f" gt_shape {gt_shape}"
+        )
         _start_index = self._get_global_start_index(global_node_feature_shape[0])
         _end_index = self._get_global_end_index(global_node_feature_shape[0])
 
-        return self._get_local_slice(self.node_features, _start_index, _end_index)
+        _end_index = min(_end_index, gt_shape[0])
+        local_slice = self._get_local_slice(
+            self.node_features, _start_index, _end_index
+        )
+
+        if local_slice.shape[0] < self._nodes_per_rank:
+            local_slice = torch.cat(
+                [
+                    local_slice,
+                    torch.zeros(
+                        self._nodes_per_rank - local_slice.shape[0],
+                        *local_slice.shape[1:],
+                    ),
+                ],
+                dim=0,
+            )
+        return local_slice
 
     def get_global_node_features(self):
         """"""
@@ -145,7 +167,8 @@ class DistributedGraph:
         return self._get_global_slice(self.edge_index)
 
     def get_global_rank_mappings(self):
-
+        if self.rank_mappings is None:
+            self._precalculate_index_rank_mappings(self.edge_index)
         return self.rank_mappings
 
     def get_local_rank_mappings(self):
@@ -165,20 +188,30 @@ class DistributedGraph:
     def get_global_labels(self):
         return self._get_global_slice(self.labels)
 
+    def _slice_by_value(self, tensor, start, end):
+        _mask = (tensor >= start) & (tensor < end)
+        return torch.nonzero(_mask).squeeze()
+
     def get_local_mask(self, mask):
+        local_node_start = self.rank * self._nodes_per_rank
+        local_node_end = (self.rank + 1) * self._nodes_per_rank
+
         if mask == "train":
             assert self.train_mask is not None, "Train mask not found"
-            return self._get_local_slice(self.train_mask, 0, self._nodes_per_rank)
-
+            _mask = self.train_mask
         elif mask == "val":
             assert self.val_mask is not None, "Val mask not found"
-            return self._get_local_slice(self.val_mask, 0, self._nodes_per_rank)
-
+            _mask = self.val_mask
         elif mask == "test":
             assert self.test_mask is not None, "Test mask not found"
-            return self._get_local_slice(self.test_mask, 0, self._nodes_per_rank)
+            _mask = self.test_mask
         else:
             raise ValueError(f"Invalid mask {mask}")
+
+        return (
+            self._slice_by_value(_mask, local_node_start, local_node_end)
+            % self._nodes_per_rank
+        )
 
     def _make_push_graph_data(self):
         """Two-sided communication backends (NCCL) can only do push operations.

@@ -39,10 +39,7 @@ def setup_gather_data(init_nccl_backend):
     all_edge_coo = torch.tensor([[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]])
 
     rank_mappings = torch.tensor(
-        [
-            [[0, 0, 0, 0, 0, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]],
-            [[0, 1, 1, 0, 1, 0, 1, 0], [0, 0, 0, 0, 1, 1, 1, 1]],
-        ]
+        [[0, 0, 0, 0, 0, 1, 1, 1], [0, 1, 1, 0, 1, 0, 1, 0]],
     )
 
     all_rank_output = torch.zeros(2, 8, 64)
@@ -62,10 +59,7 @@ def setup_scatter_data():
         [[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]]
     )
     rank_mappings = torch.tensor(
-        [
-            [[0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 0, 1, 1, 1]],
-            [[0, 0, 0, 0, 1, 1, 1, 1], [0, 1, 1, 0, 1, 0, 1, 0]],
-        ]
+        [[0, 0, 0, 0, 0, 1, 1, 1], [0, 1, 1, 0, 1, 0, 1, 0]],
     )
 
     all_rank_output_0 = torch.zeros(1, 4, num_features)
@@ -115,7 +109,7 @@ def test_nccl_backend_gather(setup_gather_data):
 
     assert local_input_data.shape == (1, 2, 64)
     assert torch.allclose(local_input_data, local_input_data_gt)
-    assert rank_mappings.shape == (2, 2, 8)
+    assert rank_mappings.shape == (2, 8)
     assert all_rank_output.shape == (2, 8, 64)
     assert local_output_data_gt.shape == (2, 4, 64)
     assert all_edge_coo.shape == (2, 8)

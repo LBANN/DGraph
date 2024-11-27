@@ -3,14 +3,14 @@ import torch.distributed as dist
 
 
 def _nccl_alltoall_v(
-    local_send_tensor,
-    local_recv_tensor,
-    indices,
-    local_rank_mapping,
-    src_ranks,
-    dest_ranks,
-    rank,
-    world_size,
+    local_send_tensor: torch.Tensor,
+    local_recv_tensor: torch.Tensor,
+    indices: torch.Tensor,
+    local_rank_mapping: torch.Tensor,
+    src_ranks: torch.Tensor,
+    dest_ranks: torch.Tensor,
+    rank: int,
+    world_size: int,
 ):
     num_features = local_send_tensor.shape[2]
     num_src_rows = local_send_tensor.shape[1]
@@ -19,6 +19,7 @@ def _nccl_alltoall_v(
     # These ranks will send a message
     comm_senders = src_ranks[all_comm_mask]
     # These ranks will recieve a message
+    # Current rank will send to these ranks
     comm_receivers = dest_ranks[all_comm_mask]
 
     # Current rank will send to these ranks
@@ -26,9 +27,8 @@ def _nccl_alltoall_v(
 
     # Current rank will receive from these ranks
     receive_from_ranks = comm_senders[comm_receivers == rank]
-
-    recv_comm_vector = torch.bincount(receive_from_ranks, minlength=world_size).long()
     send_comm_vector = torch.bincount(send_to_ranks, minlength=world_size).long()
+    recv_comm_vector = torch.bincount(receive_from_ranks, minlength=world_size).long()
     recv_buffer_dict = {}
     recv_local_placement = {}
     send_local_placement = {}
@@ -44,7 +44,10 @@ def _nccl_alltoall_v(
             local_send_tensor.device
         )
         recv_buffer_dict[i] = recv_buffer
-        _local_placement_indices = torch.where(local_rank_mapping == i)[0]
+        _local_placement_indices = torch.argwhere(local_rank_mapping == i)
+        assert (
+            _local_placement_indices.shape[0] == num_messages
+        ), f"{i} {(local_rank_mapping == i).sum()} {_local_placement_indices.shape} {num_messages} {local_rank_mapping.shape}"
         recv_local_placement[i] = _local_placement_indices
 
     for i, num_messages in enumerate(send_comm_vector):
@@ -92,7 +95,10 @@ def _nccl_alltoall_v(
             req.wait()
 
     for key, recv_buffer in recv_buffer_dict.items():
-        local_recv_tensor[:, recv_local_placement[key], :] = recv_buffer
+
+        local_recv_tensor[:, recv_local_placement[key].view(-1), :] = (
+            recv_buffer.unsqueeze(0)
+        )
 
     return local_recv_tensor
 
