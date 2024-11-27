@@ -33,7 +33,6 @@ DGraph requires the following packages:
 - NumPy
 - pytest
 - mpi4py
-- cupy
 
 For the full list of requirements, see `requirements.txt`.
 
