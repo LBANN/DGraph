@@ -4,11 +4,11 @@
 #include "nvshmemx.h"
 
 /**
- * 
+ *
  * This file houses all the kernels that we use for NVSHMEM communication.
  * Currently all the kernels are in the NVSHMEM namespace and in the same file, but
  * we can split this up in the future if needed for better organization.
- * 
+ *
  */
 
 namespace NVSHMEM
@@ -91,32 +91,6 @@ namespace NVSHMEM
           }
         }
       }
-    }
-  }
-
-  __device__ int Global_IDx_3D()
-  {
-    int blockId = blockIdx.x + blockIdx.y * gridDim.x + gridDim.x * gridDim.y * blockIdx.z;
-    int threadId = blockId * (blockDim.x * blockDim.y * blockDim.z) + (threadIdx.z * (blockDim.x * blockDim.y)) + (threadIdx.y * blockDim.x) + threadIdx.x;
-
-    return threadId;
-  }
-
-
-  __global__ void P2P_Scatter_Kernel(
-      const float *__restrict__ values,
-      const float *__restrict__ indices,
-      float *__restrict__ symmetric_buffer,
-      const int &cur_pe,
-      const int &num_ranks)
-  {
-    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
-
-    for (auto peer = 1; peer < num_ranks; ++peer)
-    {
-      const int next_peer = (cur_pe + peer) % num_ranks;
-
-      __syncthreads();
     }
   }
 

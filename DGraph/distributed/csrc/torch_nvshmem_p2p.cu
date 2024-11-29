@@ -205,3 +205,4 @@ void deregister_memory(torch::Tensor tensor)
   {
     throw std::runtime_error("Tensor is not on CUDA device");
   }
+}
