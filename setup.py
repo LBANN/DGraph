@@ -110,4 +110,5 @@ setup(
     install_requires=["torch", "numpy", "ninja", "mpi4py>=3.1.4"],
     extras_require=EXTRAS_REQUIRE,
     cmdclass={"build_ext": BuildExtension},
-    **
+    **kwargs
+)
