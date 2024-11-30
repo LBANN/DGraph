@@ -115,6 +115,28 @@ def _get_local_unique_recv_placement(
     rank: int,
     world_size: int,
 ) -> Dict[int, torch.Tensor]:
+    """Returns the unique indices that will be received from each rank. As aggregation
+    is done locally before sending the data, the destination rank will only receive
+    unique indices from the source rank. This function returns the placement of
+    these unique indices in the destination rank, to be called
+    by the destination rank. This is used to allocate the receive buffer.
+
+    Args:
+        indices (torch.Tensor): The indices tensor
+        src_ranks (torch.Tensor): The source ranks of the messages
+        receive_from_mask (torch.Tensor): The mask of the messages to be received.
+                                          Element i is True if
+                                          src_ranks[i] != dest_ranks[i] and
+                                          dest_ranks[i] == rank
+        num_local_output_rows (int): The number of rows in the output tensor of the
+                                     scattered data
+        rank (int): The current rank (destination rank)
+        world_size (int): The total number of ranks
+    Returns:
+        Dict[int, torch.Tensor]: A dictionary with the rank as the key and the
+                                local scatter location of the received data
+                                from that rank as the value.
+    """
     send_local_placement: Dict[int, torch.Tensor] = {}
     if torch.any(receive_from_mask):
         receive_from_ranks = src_ranks[receive_from_mask]
