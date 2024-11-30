@@ -12,10 +12,12 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import sys
+from typing import Optional
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
 from DGraph.distributed.nccl._indices_utils import _generate_local_rank_mapping
+from DGraph.distributed.nccl._nccl_cache import NCCLScatterCache
 from DGraph.distributed.nccl.alltoallv_impl import (
     _nccl_alltoall_v,
     _nccl_alltoallv_with_dict,
@@ -225,7 +227,9 @@ class ScatterFunction(Function):
         num_local_output_rows: int,
         rank: int,
         world_size: int,
+        scatter_cache: Optional[NCCLScatterCache] = None,
     ) -> torch.Tensor:
+
         ctx.save_for_backward(
             indices,
             send_ranks,
@@ -235,6 +239,13 @@ class ScatterFunction(Function):
             torch.tensor(world_size),
         )
 
+        use_cache = scatter_cache is not None
+        if use_cache:
+            ctx.scatter_cache = scatter_cache
+            ctx.has_cache = True
+        else:
+            ctx.has_cache = False
+
         num_features = send_tensor.shape[-1]
         device = send_tensor.device
 
@@ -242,7 +253,7 @@ class ScatterFunction(Function):
             device
         )
 
-        indices = indices.squeeze(0)
+        indices = indices.view(-1)
         # Start local only scatter. Maybe a better way to do this - S.Z
         _start_index = (indices.shape[0] // world_size) * rank
         _end_index = (indices.shape[0] // world_size) * (rank + 1)
@@ -260,48 +271,61 @@ class ScatterFunction(Function):
             rank,
         )
 
-        local_comm_mask = local_dest_ranks != rank
+        if use_cache:
+            send_comm_vector = scatter_cache.send_comm_vector
+            recv_comm_vector = scatter_cache.recv_comm_vector
+            send_local_placement = scatter_cache.send_local_placement
+            recv_local_placement = scatter_cache.recv_local_placement
+            local_comm_mask = scatter_cache.local_comm_mask
+        else:
+            local_comm_mask = local_dest_ranks != rank
 
-        all_comm_mask = send_ranks != recv_ranks
-        reciever_mask = recv_ranks == rank
+            all_comm_mask = send_ranks != recv_ranks
+            reciever_mask = recv_ranks == rank
 
-        receive_from_remote_mask = all_comm_mask & reciever_mask
+            receive_from_remote_mask = all_comm_mask & reciever_mask
 
-        send_buffer_dict = {}
-
-        receive_from_ranks = torch.bincount(
-            send_ranks[receive_from_remote_mask], minlength=world_size
-        )
+            send_buffer_dict = {}
 
         if torch.any(local_comm_mask):
-            # These rows need to be sent to other ranks
-            # First aggregate these into a single buffer
 
-            local_comm_indices = local_indices_slice[local_comm_mask]
-            local_remote_dest_mappings = local_dest_ranks[local_comm_mask]
+            if use_cache:
+                num_remote_rows = scatter_cache.num_remote_rows
+                remapped_ranks = scatter_cache.local_remapped_ranks
+                renumbered_indices = scatter_cache.local_renumbered_indices
 
-            # TODO: This is very slow, look into a better way to do this - S.Z
-            # Next update will be to cache this - S.Z
-            renumbered_indices, unique_indices, remapped_ranks = (
-                RankLocalRenumberingWithMapping(
-                    local_comm_indices, local_remote_dest_mappings
+            else:
+                # These rows need to be sent to other ranks
+                # First aggregate these into a single buffer
+                local_comm_indices = local_indices_slice[local_comm_mask]
+                local_remote_dest_mappings = local_dest_ranks[local_comm_mask]
+                # TODO: This is very slow, look into a better way to do this - S.Z
+                # Uncached is slow, should look into augmenting torch functions
+                # to speed this up - S.Z
+                renumbered_indices, unique_indices, remapped_ranks = (
+                    RankLocalRenumberingWithMapping(
+                        local_comm_indices, local_remote_dest_mappings
+                    )
                 )
-            )
+                num_remote_rows = len(unique_indices)
+                receving_ranks = torch.unique(local_dest_ranks[local_comm_mask])
 
-            num_remote_rows = len(unique_indices)
             buffer = torch.zeros(1, num_remote_rows, num_features).to(device)
             buffer.scatter_add_(
                 1,
                 renumbered_indices.view(1, -1, 1).expand(1, -1, num_features),
                 send_tensor[:, local_comm_mask, :],
             )
-            receving_ranks = torch.unique(local_dest_ranks[local_comm_mask])
+
             for _recv_rank in receving_ranks:
                 _recv_indices = remapped_ranks == _recv_rank
                 send_buffer_dict[_recv_rank.item()] = buffer[:, _recv_indices, :]
 
         recv_buffer_dict = {}
         recv_placement = {}
+        receive_from_ranks = torch.bincount(
+            send_ranks[receive_from_remote_mask], minlength=world_size
+        )
         if torch.any(receive_from_remote_mask):
             receive_from_ranks = send_ranks[receive_from_remote_mask]
 
@@ -381,6 +405,7 @@ class ScatterFunction(Function):
         num_local_output_rows_grad = None
         rank_grad = None
         world_size_grad = None
+        scatter_cache_grad = None
 
         return (
             send_tensor_grad,
@@ -390,6 +415,7 @@ class ScatterFunction(Function):
             num_local_output_rows_grad,
             rank_grad,
             world_size_grad,
+            scatter_cache_grad,
         )
 
 

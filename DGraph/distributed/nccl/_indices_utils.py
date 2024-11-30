@@ -134,6 +134,44 @@ def _get_local_recv_buffer_w_placement(
     return recv_buffer_dict, recv_local_placement
 
 
+def _get_local_recv_placement(
+    recv_comm_vector: torch.Tensor,
+    local_rank_mapping: torch.Tensor,
+    rank: int,
+) -> Dict[int, torch.Tensor]:
+    recv_local_placement: Dict[int, torch.Tensor] = {}
+    for i, num_messages in enumerate(recv_comm_vector):
+        if num_messages == 0:
+            continue
+
+        if i == rank:
+            continue
+
+        _local_placement_indices = torch.argwhere(local_rank_mapping == i)
+        recv_local_placement[i] = _local_placement_indices
+
+    return recv_local_placement
+
+
+def _allocate_local_recv_buffers(
+    recv_comm_vector: torch.Tensor,
+    num_features: int,
+    device: torch.device,
+) -> Dict[int, torch.Tensor]:
+    recv_buffer_dict: Dict[int, torch.Tensor] = {}
+    for i, num_messages in enumerate(recv_comm_vector):
+        if num_messages == 0:
+            continue
+
+        if i == rank:
+            continue
+
+        num_rows = int(num_messages.item())
+        recv_buffer = torch.zeros(1, num_rows, num_features).to(device)
+        recv_buffer_dict[i] = recv_buffer
+    return recv_buffer_dict
+
+
 def _generate_local_rank_mapping(
     _global_rank_mapping: torch.Tensor, world_size: int
 ) -> torch.Tensor:
