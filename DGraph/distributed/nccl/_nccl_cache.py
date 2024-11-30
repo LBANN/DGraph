@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import torch
+from DGraph.distributed.RankLocalOps import RankLocalRenumberingWithMapping
 from DGraph.distributed.nccl._indices_utils import (
     _get_local_recv_placement,
     _get_local_send_placement,
@@ -41,7 +42,6 @@ class NCCLScatterCache:
     local_renumbered_indices: torch.Tensor
     rank: int
     world_size: int
-    num_features: int
 
 
 def NCCLScatterCacheGenerator(
@@ -83,15 +83,21 @@ def NCCLScatterCacheGenerator(
 
     recv_local_placement = _get_local_recv_placement(recv_comm_vector, src_ranks, rank)
 
+    local_comm_indices = local_indices_slice[local_send_mask]
+    local_remote_dest_mappings = local_dest_ranks_slice[local_send_mask]
+
+    renumbered_indices, unique_indices, remapped_ranks = (
+        RankLocalRenumberingWithMapping(local_comm_indices, local_remote_dest_mappings)
+    )
+    num_remote_rows = unique_indices.shape[0]
     _cache = NCCLScatterCache(
         local_comm_mask=local_send_mask,
         send_local_placement=send_local_placement,
         recv_local_placement=recv_local_placement,
-        num_remote_rows=indices.shape[0],
-        local_remapped_ranks=local_dest_ranks_slice,
-        local_renumbered_indices=local_indices_slice,
+        num_remote_rows=num_remote_rows,
+        local_remapped_ranks=remapped_ranks,
+        local_renumbered_indices=renumbered_indices,
         rank=rank,
         world_size=world_size,
-        num_features=indices.shape[1],
     )
     return _cache
