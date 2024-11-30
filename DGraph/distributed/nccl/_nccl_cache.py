@@ -34,7 +34,7 @@ class NCCLScatterCache:
     """
 
     local_comm_mask: torch.Tensor
-    send_local_placement: torch.Tensor
+    send_local_placement: Dict[int, torch.Tensor]
     recv_local_placement: Dict[int, torch.Tensor]
     num_remote_rows: int
     local_remapped_ranks: torch.Tensor
@@ -44,14 +44,14 @@ class NCCLScatterCache:
     num_features: int
 
 
-def NCCLCacheGenerator(
+def NCCLScatterCacheGenerator(
     indices: torch.Tensor,
     src_ranks: torch.Tensor,
     dest_ranks: torch.Tensor,
     num_output_rows: int,
     rank: int,
     world_size: int,
-):
+) -> NCCLScatterCache:
     """
     This function generates the NCCL cache required for alltoallv operations.
     """
@@ -82,3 +82,16 @@ def NCCLCacheGenerator(
     )
 
     recv_local_placement = _get_local_recv_placement(recv_comm_vector, src_ranks, rank)
+
+    _cache = NCCLScatterCache(
+        local_comm_mask=local_send_mask,
+        send_local_placement=send_local_placement,
+        recv_local_placement=recv_local_placement,
+        num_remote_rows=indices.shape[0],
+        local_remapped_ranks=local_dest_ranks_slice,
+        local_renumbered_indices=local_indices_slice,
+        rank=rank,
+        world_size=world_size,
+        num_features=indices.shape[1],
+    )
+    return _cache
