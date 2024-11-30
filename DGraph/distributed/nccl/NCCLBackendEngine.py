@@ -15,6 +15,7 @@ import sys
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
+from DGraph.distributed.nccl._indices_utils import _generate_local_rank_mapping
 from DGraph.distributed.nccl.alltoallv_impl import (
     _nccl_alltoall_v,
     _nccl_alltoallv_with_dict,
@@ -464,21 +465,13 @@ class NCCLBackendEngine(BackendEngine):
         assert b_size == 1, "Multi-batch gather disabled for testing"
         assert len(send_tensor_shape) == 3, "Currently only support 3D tensors"
 
+        assert indices.shape[-1] == rank_mappings.shape[-1]
         if len(rank_mappings.shape) == 1:
             rank_mappings = rank_mappings.unsqueeze(0)
             # src ranks are not explicitly provided but they
             # are just the current rank
-            src_ranks = torch.zeros_like(rank_mappings).reshape(world_size, -1)
-            _fill_val = (
-                torch.arange(self.get_world_size())
-                .reshape(-1, 1)
-                .to(rank_mappings.device)
-            )
-            src_ranks = src_ranks + _fill_val
-            send_rank = src_ranks.reshape(-1)
+            send_rank = _generate_local_rank_mapping(rank_mappings, world_size)
             recv_rank = rank_mappings
-            rank_mappings = torch.cat([src_ranks, rank_mappings], dim=0)
-
         elif len(rank_mappings.shape) == 2:
             assert rank_mappings.shape[0] == 2
             send_rank = rank_mappings[0]
@@ -489,7 +482,6 @@ class NCCLBackendEngine(BackendEngine):
                 "Rank mappings shape is invalid. Exepcted either 1 or 2D array"
             )
 
-        assert indices.shape[-1] == rank_mappings.shape[-1]
         assert local_send_tensor.device.type == "cuda"
         assert output_size > 0, "Output size must be greater than 0"
         assert torch.max(indices) < world_size * output_size, (
