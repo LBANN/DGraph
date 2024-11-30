@@ -27,6 +27,7 @@ from DGraph.distributed.RankLocalOps import (
 )
 from torch.autograd import Function
 from DGraph.utils import largest_split
+import warnings
 
 
 class GatherFunction(Function):
@@ -76,12 +77,6 @@ class GatherFunction(Function):
         local_indices_slice = indices[0][_start_index:_end_index]
 
         local_rank_mapping = send_ranks[_start_index:_end_index]
-
-        local_recv_tensor = recv_ranks[_start_index:_end_index]
-
-        assert torch.all(local_recv_tensor == rank)
-
-        assert 2 * local_rank_mapping.shape[0] == indices.shape[1]
 
         local_indices = local_indices_slice % local_send_tensor.shape[1]
 
@@ -411,6 +406,8 @@ class NCCLBackendEngine(BackendEngine):
         if not NCCLBackendEngine._is_initialized:
             self.init_process_group(ranks_per_partition)
 
+        self._cache = {}
+
     def init_process_group(self, ranks_per_partition=-1, *args, **kwargs):
         if not dist.is_initialized():
             dist.init_process_group(backend="nccl", *args, **kwargs)
@@ -435,6 +432,10 @@ class NCCLBackendEngine(BackendEngine):
 
     def get_world_size(self) -> int:
         return dist.get_world_size()
+
+    def add_cache_rank_mapping(self, indices, rank_mappings, cache_key):
+        if cache_key in self._cache:
+            warnings.warn(f"Cache key: {cache_key} already exists, overwriting")
 
     def get_local_rank_slice(self, tensor: torch.Tensor) -> torch.Tensor:
         rank = self.get_rank()
@@ -465,7 +466,8 @@ class NCCLBackendEngine(BackendEngine):
 
         if len(rank_mappings.shape) == 1:
             rank_mappings = rank_mappings.unsqueeze(0)
-            # src ranks are not explicitly provided but they are just the current rank
+            # src ranks are not explicitly provided but they
+            # are just the current rank
             src_ranks = torch.zeros_like(rank_mappings).reshape(world_size, -1)
             _fill_val = (
                 torch.arange(self.get_world_size())
@@ -473,22 +475,28 @@ class NCCLBackendEngine(BackendEngine):
                 .to(rank_mappings.device)
             )
             src_ranks = src_ranks + _fill_val
-            src_ranks = src_ranks.reshape(1, -1)
-
+            send_rank = src_ranks.reshape(-1)
+            recv_rank = rank_mappings
             rank_mappings = torch.cat([src_ranks, rank_mappings], dim=0)
 
-        assert len(rank_mappings.shape) == 2
-        assert rank_mappings.shape[0] == 2
+        elif len(rank_mappings.shape) == 2:
+            assert rank_mappings.shape[0] == 2
+            send_rank = rank_mappings[0]
+            recv_rank = rank_mappings[1]
+
+        else:
+            raise ValueError(
+                "Rank mappings shape is invalid. Exepcted either 1 or 2D array"
+            )
+
         assert indices.shape[-1] == rank_mappings.shape[-1]
         assert local_send_tensor.device.type == "cuda"
-
         assert output_size > 0, "Output size must be greater than 0"
-        assert (
-            torch.max(indices) < world_size * output_size
-        ), f"Max index: {torch.max(indices)} is greater than world_size * output_size: {world_size * output_size}"
+        assert torch.max(indices) < world_size * output_size, (
+            f"Max index: {torch.max(indices)} is greater than"
+            + f"world_size * output_size: {world_size * output_size}"
+        )
 
-        send_rank = rank_mappings[0]
-        recv_rank = rank_mappings[1]
         output_tensor = ScatterFunction.apply(
             local_send_tensor,
             indices,
