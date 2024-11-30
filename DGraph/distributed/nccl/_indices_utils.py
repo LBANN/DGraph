@@ -107,6 +107,32 @@ def _get_local_send_placement(
     return send_local_placement
 
 
+def _get_local_unique_recv_placement(
+    indices: torch.Tensor,
+    src_ranks: torch.Tensor,
+    receive_from_mask: torch.Tensor,
+    num_local_output_rows: int,
+    rank: int,
+    world_size: int,
+) -> Dict[int, torch.Tensor]:
+    send_local_placement: Dict[int, torch.Tensor] = {}
+    if torch.any(receive_from_mask):
+        receive_from_ranks = src_ranks[receive_from_mask]
+        for _sender in range(world_size):
+            if _sender == rank:
+                continue
+            _mask = receive_from_ranks == _sender
+            if torch.any(_mask):
+                _send_mask = (src_ranks == _sender) & receive_from_mask
+                _send_indices = indices[_send_mask] % num_local_output_rows
+                _unique_indices = torch.unique(_send_indices, sorted=False)
+                send_local_placement[_sender] = _unique_indices
+    else:
+        return send_local_placement
+
+    return send_local_placement
+
+
 def _get_local_recv_buffer_w_placement(
     recv_comm_vector: torch.Tensor,
     local_rank_mapping: torch.Tensor,

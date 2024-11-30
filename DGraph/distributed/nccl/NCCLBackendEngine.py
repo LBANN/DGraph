@@ -16,7 +16,10 @@ from typing import Optional
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
-from DGraph.distributed.nccl._indices_utils import _generate_local_rank_mapping
+from DGraph.distributed.nccl._indices_utils import (
+    _generate_local_rank_mapping,
+    _get_local_unique_recv_placement,
+)
 from DGraph.distributed.nccl._nccl_cache import NCCLScatterCache
 from DGraph.distributed.nccl.alltoallv_impl import (
     _nccl_alltoall_v,
@@ -321,32 +324,23 @@ class ScatterFunction(Function):
         recv_placement = {}
         if use_cache:
             recv_placement = scatter_cache.recv_local_placement
-            for key, unique_send_indices in recv_placement.items():
-                num_elements = unique_send_indices.shape[0]
-                recv_buffer_dict[key] = torch.zeros(1, num_elements, num_features).to(
-                    device
-                )
-
         else:
-            receive_from_ranks = torch.bincount(
-                send_ranks[receive_from_remote_mask], minlength=world_size
+            recv_placement = _get_local_unique_recv_placement(
+                indices,
+                send_ranks,
+                receive_from_remote_mask,
+                num_local_output_rows,
+                rank,
+                world_size,
             )
-            if torch.any(receive_from_remote_mask):
-                receive_from_ranks = send_ranks[receive_from_remote_mask]
 
-                for _sender in range(world_size):
-                    if torch.any(receive_from_ranks == _sender):
-                        _send_mask = (send_ranks == _sender) & receive_from_remote_mask
-                        _send_indices = indices[_send_mask] % num_local_output_rows
-                        # TODO: This is brittle, look into a better way to do this - S.Z
-                        unique_send_indices = torch.unique(_send_indices, sorted=False)
-
-                        num_elements = unique_send_indices.shape[0]
-                        recv_buffer_dict[_sender] = torch.zeros(
-                            1, num_elements, num_features
-                        ).cuda()
-                        recv_placement[_sender] = unique_send_indices
-
+        # Allocate the receive buffers for the communication based on the
+        # size of the recv_placement indices.
+        for key, unique_send_indices in recv_placement.items():
+            num_elements = unique_send_indices.shape[0]
+            recv_buffer_dict[key] = torch.zeros(1, num_elements, num_features).to(
+                device
+            )
         recv_buffer_dict = _nccl_alltoallv_with_dict(
             send_buffer_dict, recv_buffer_dict, rank, world_size
         )
