@@ -23,3 +23,20 @@ To check if the necessary dependencies are installed, run the following command:
 ```shell
 python PreInstallCheck.py
 ```
+
+Note: This script currently only checks for the presence of the environment variables and libraries. It does not check the library or compiler versions and their compatibility with DGraph. 
+
+Since DGraph extends PyTorch with custom CUDA modules, the CUDA version used to compile PyTorch must match the CUDA version used to compile DGraph.
+
+You can check the CUDA version used to compile PyTorch by running the following command:
+
+```shell
+python -c "import torch; print(torch.version.cuda)"
+```
+
+NVSHMEM compilation information can be usually found by running the `nvshmem-info` command, usually located in the `bin` directory of the NVSHMEM installation.
+
+```shell
+$NVSHMEM_HOME/bin/nvshmem-info -b
+```
+
