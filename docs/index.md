@@ -16,11 +16,6 @@ and high-bandwidth parallel file systems.
 DGraph is deep learning library for training graph neural networks at scale that is built on top of PyTorch.
 
 
-To install DGraph, clone the repository and install with pip:
-```shell
-pip install -e .[ogb]
-```
-
 ### Running tests
 To run the tests, use the following command:
 ```shell
