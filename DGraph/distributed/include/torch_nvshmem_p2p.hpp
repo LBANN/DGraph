@@ -26,7 +26,7 @@ class NVSHMEMP2P
 {
 public:
   NVSHMEMP2P() {};
-  static void init(int rank, int world_size);
+  static void init();
   static void finalize();
   static void dist_put(torch::Tensor src,
                        torch::Tensor dst,
@@ -46,6 +46,9 @@ public:
 
   static void register_memory(torch::Tensor tensor);
   static void deregister_memory(torch::Tensor tensor);
+  static int get_rank();
+  static int get_world_size();
+  static void set_device(int device);
 
   static int m_rank;
   static int m_world_size;

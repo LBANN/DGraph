@@ -28,24 +28,26 @@ bool NVSHMEMP2P::m_initialized = false;
 int NVSHMEMP2P::m_rank = 0;
 int NVSHMEMP2P::m_world_size = 0;
 
-void NVSHMEMP2P::init(int rank, int world_size)
+void NVSHMEMP2P::init()
 {
-  MPI_Comm mpi_comm = MPI_COMM_WORLD;
-  nvshmemx_init_attr_t attr;
-  MPI_Init(NULL, NULL);
-  attr.mpi_comm = &mpi_comm;
-  nvshmemx_init_attr(NVSHMEMX_INIT_WITH_MPI_COMM, &attr);
+  // Initialize NVSHMEM and MPI
+  // No-op if already initialized
+  if (!m_initialized)
+  {
+    MPI_Comm mpi_comm = MPI_COMM_WORLD;
+    nvshmemx_init_attr_t attr;
+    MPI_Init(NULL, NULL);
+    attr.mpi_comm = &mpi_comm;
+    nvshmemx_init_attr(NVSHMEMX_INIT_WITH_MPI_COMM, &attr);
 
-  int mpi_rank, mpi_size = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    int mpi_rank, mpi_size = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
 
-  assert(mpi_rank == rank);
-  assert(mpi_size == world_size);
-
-  m_rank = rank;
-  m_world_size = world_size;
-  m_initialized = true;
+    m_rank = mpi_rank;
+    m_world_size = mpi_size;
+    m_initialized = true;
+  }
 }
 
 void NVSHMEMP2P::finalize()
@@ -58,6 +60,38 @@ void NVSHMEMP2P::finalize()
   MPICHECK(MPI_Finalize());
   m_initialized = false;
 }
+
+int
+NVSHMEMP2P::get_rank()
+{
+  if (!m_initialized)
+  {
+    throw std::runtime_error("NVSHMEMP2P is not initialized");
+  }
+  return m_rank;
+}
+
+int 
+NVSHMEMP2P::get_world_size()
+{
+  if (!m_initialized)
+  {
+    throw std::runtime_error("NVSHMEMP2P is not initialized");
+  }
+  return m_world_size;
+}
+
+void 
+NVSHMEMP2P::set_device(int device)
+{
+  if (!m_initialized)
+  {
+    throw std::runtime_error("NVSHMEMP2P is not initialized");
+  }
+  CUDA_CHECK(cudaSetDevice(device));
+}
+
+
 
 void NVSHMEMP2P::dist_put(torch::Tensor input,
                           torch::Tensor output,
@@ -107,7 +141,8 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
                                                              num_output_rows);
 }
 
-void NVSHMEMP2P::dist_get(torch::Tensor input,
+void 
+NVSHMEMP2P::dist_get(torch::Tensor input,
                           torch::Tensor output,
                           torch::Tensor indices,
                           const int mini_batches,
@@ -152,7 +187,8 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
                                                                  num_output_rows);
 }
 
-torch::Tensor NVSHMEMP2P::AllocateSymmetricMemory(const int size)
+torch::Tensor 
+NVSHMEMP2P::AllocateSymmetricMemory(const int size)
 {
   if (size <= 0)
   {
@@ -172,10 +208,16 @@ torch::Tensor NVSHMEMP2P::AllocateSymmetricMemory(const int size)
   };
   // See torch::from_blob for more details
   // https://pytorch.org/cppdocs/api/function_namespacetorch_1ad7fb2a7759ef8c9443b489ddde494787.html
+  
+  device_int device = torch::cuda::current_device();
+  torch::TensorOptions options = torch::TensorOptions()
+        .dtype(torch::kFloat32)
+        .device(torch::kCUDA);
   return torch::from_blob(ptr, {size}, {1}, deleter);
 }
 
-void register_memory(torch::Tensor tensor)
+void 
+NVSHMEMP2P::register_memory(torch::Tensor tensor)
 {
   if (!tensor.is_contiguous())
   {
@@ -194,7 +236,8 @@ void register_memory(torch::Tensor tensor)
   nvshmemx_buffer_register(ptr, size);
 }
 
-void deregister_memory(torch::Tensor tensor)
+void 
+NVSHMEMP2P::deregister_memory(torch::Tensor tensor)
 {
   if (!tensor.is_contiguous())
   {
