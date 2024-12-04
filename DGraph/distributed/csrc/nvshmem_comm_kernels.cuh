@@ -228,4 +228,78 @@ namespace NVSHMEM
     }
   }
 
+
+  /*
+  * This kernel is used to gather data from the shared buffer to the local output
+  * buffer. 
+  */
+  template <typename DataType>
+  __global__ void Gather_NVSHMEM_Kernel_Wrap_Rank(
+    const DataType * __restrict__ shared_input_buffer,
+    const long* __restrict__ indices,
+    const long* __restrict__ rank, 
+    DataType* __restrict__ local_output_buffer,
+    const int num_output_rows,
+    const int num_cols,){
+
+      constexpr int warp_size = 32;
+      const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+
+      const size_t nthreadsx = gridDim.x * blockDim.x;
+
+      for (size_t row = gidx; row < num_output_rows * warp_size; row += nthreadsx)
+      {
+        // Each set of warp_size threads will gather a single row
+        const auto dest_ind = row / warp_size;
+        const auto pe = rank[ind];
+        const auto src_ind = indices[ind];
+        if (pe > -1)
+        {
+          const auto output_data_offset = ind * num_cols;
+          const auto input_data_offset = src_ind * num_cols;
+          nvshmemx_getmem_nbi_warp(local_output_buffer + output_data_offset,
+                                   shared_input_buffer + input_data_offset,
+                                   num_cols * sizeof(DataType),
+                                   pe);
+        }
+      }
+  }
+
+  /*
+  * This kernel is used to perform a scatterv operation using NVSHMEM, where the 
+  * the sent data to an individual rank is not contiguous. 
+  */
+
+  template <typename DataType>
+  __global__ void ScatterV_NVSHMEM_Kernel_Wrap_Rank(
+    const DataType * __restrict__ local_input_buffer,
+    const long* __restrict__ indices,
+    const long* __restrict__ rank, 
+    DataType* __restrict__ shared_output_buffer,
+    const int num_input_rows,
+    const int num_cols,){
+
+      constexpr int warp_size = 32;
+      const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+
+      const size_t nthreadsx = gridDim.x * blockDim.x;
+
+      for (size_t row = gidx; row < num_input_rows * warp_size; row += nthreadsx)
+      {
+        // Each set of warp_size threads will gather a single row
+        const auto dest_ind = row / warp_size;
+        const auto pe = rank[ind];
+        const auto src_ind = indices[ind];
+        if (pe > -1)
+        {
+          const auto output_data_offset = ind * num_cols;
+          const auto input_data_offset = src_ind * num_cols;
+          nvshmemx_putmem_nbi_warp(shared_output_buffer + output_data_offset,
+                                   local_input_buffer + input_data_offset,
+                                   num_cols * sizeof(DataType),
+                                   pe);
+        }
+      }
+  }
+
 } // namespace NVSHMEM
