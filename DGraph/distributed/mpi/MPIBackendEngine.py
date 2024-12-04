@@ -18,8 +18,7 @@ from DGraph.distributed.Engine import BackendEngine
 from DGraph.distributed.RankLocalOps import (
     RankLocalMaskedGather,
     RankLocalMaskedScatter,
-    RankLocalReNumbering,
-    RankLocalReNumberingWithRankMapping,
+    RankLocalRenumberingWithMapping,
 )
 from mpi4py import MPI
 import warnings
@@ -168,7 +167,7 @@ def _mpi_scatter_add_impl(
         comm_ranks = target_rank_mapping[non_local_messages]
 
         renumbered_indices, original_locs, original_rank_mapping = (
-            RankLocalReNumberingWithRankMapping(comm_indices, comm_ranks)
+            RankLocalRenumberingWithMapping(comm_indices, comm_ranks)
         )
 
         num_remote_rows = len(original_locs)
