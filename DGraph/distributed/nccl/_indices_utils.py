@@ -224,7 +224,7 @@ def _generate_local_rank_mapping(
     _global_rank_mapping: torch.Tensor, world_size: int
 ) -> torch.Tensor:
 
-    local_rank_mapping = torch.zeros_like(_global_rank_mapping)
+    local_rank_mapping = torch.zeros_like(_global_rank_mapping).view(-1)
 
     _needs_padding = _global_rank_mapping.shape[0] % world_size != 0
 
