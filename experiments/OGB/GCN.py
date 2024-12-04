@@ -13,6 +13,7 @@
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 
 
 class ConvLayer(nn.Module):
@@ -43,13 +44,17 @@ class CommAwareGCN(nn.Module):
         self.comm = comm
 
     def forward(self, node_features, edge_index, rank_mapping):
-        num_local_nodes = node_features.size(0)
-        x = self.comm.gather(node_features, edge_index[1], rank_mapping)
+        num_local_nodes = node_features.size(1)
+        _src_indices = edge_index[:, 0, :]
+        _dst_indices = edge_index[:, 1, :]
+        _src_rank_mappings = rank_mapping[0]
+        _dst_rank_mappings = rank_mapping[1]
+        x = self.comm.gather(node_features, _dst_indices, _dst_rank_mappings)
         x = self.conv1(x)
-        x = self.comm.scatter(x, edge_index[0], rank_mapping, num_local_nodes)
-        x = self.comm.gather(x, edge_index[1], rank_mapping)
+        x = self.comm.scatter(x, _src_indices, _src_rank_mappings, num_local_nodes)
+        x = self.comm.gather(x, _dst_indices, _dst_rank_mappings)
         x = self.conv2(x)
-        x = self.comm.scatter(x, edge_index[0], rank_mapping, num_local_nodes)
+        x = self.comm.scatter(x, _src_indices, _src_rank_mappings, num_local_nodes)
         x = self.fc(x)
         # x = self.softmax(x)
         return x

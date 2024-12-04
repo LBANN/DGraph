@@ -11,51 +11,217 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
+import sys
+from typing import Optional
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
-from DGraph.distributed.nccl.gather_op_impl import _nccl_gather_op
-from DGraph.distributed.nccl.scatter_op_impl import _nccl_scatter_op
-from DGraph.distributed.RankLocalOps import RankLocalMaskedGather
+from DGraph.distributed.nccl._indices_utils import (
+    _generate_local_rank_mapping,
+    _get_local_unique_recv_placement,
+)
+from DGraph.distributed.nccl._nccl_cache import NCCLScatterCache
+from DGraph.distributed.nccl.alltoallv_impl import (
+    _nccl_alltoall_v,
+    _nccl_alltoallv_with_dict,
+)
+from DGraph.distributed.RankLocalOps import (
+    RankLocalMaskedGather,
+    RankLocalMaskedScatter,
+    RankLocalReNumbering,
+    RankLocalRenumberingWithMapping,
+)
 from torch.autograd import Function
+from DGraph.utils import largest_split
 
 
 class GatherFunction(Function):
     @staticmethod
     def forward(
         ctx,
-        send_tensor: torch.Tensor,
-        recv_tensor: torch.Tensor,
+        local_send_tensor: torch.Tensor,
         indices: torch.LongTensor,
-        global_rank_mapping: torch.LongTensor,
-        local_indices: torch.LongTensor,
-        local_rank_mapping: torch.LongTensor,
+        send_ranks: torch.Tensor,
+        recv_ranks: torch.Tensor,
         rank: int,
         world_size: int,
     ):
+        num_local_input_rows = local_send_tensor.shape[1]
+
         ctx.save_for_backward(
-            send_tensor,
-            recv_tensor,
             indices,
+            send_ranks,
+            recv_ranks,
+            torch.tensor(num_local_input_rows),
             torch.tensor(rank),
             torch.tensor(world_size),
         )
 
-        # do local gather
-        recv_tensor[local_rank_mapping == rank] = RankLocalMaskedGather(
-            send_tensor, local_indices, local_rank_mapping, rank
+        # Since NCCL is two-sided, we need to push from local rank and pull from
+        # remote rank to get the global gather
+
+        # TODO: One possible optmization is cache all these calculations
+        # and only do the gather when the cache is invalidated. Essentially
+        # if we are working with static graphs, the indices and distribution pattern
+        # will not change and we can cache the communication pattern. - S.Z
+
+        # We can also pre-compute this on the data ingestion side. Might
+        # be worth looking to some kind of cached communication pattern store
+        # that can be passed to the communicator. - S.Z
+
+        num_local_output_rows = largest_split(indices.shape[1], world_size)
+
+        batch_size = 1
+        num_features = local_send_tensor.shape[2]
+
+        recv_tensor = torch.zeros(batch_size, num_local_output_rows, num_features).to(
+            local_send_tensor.device
+        )
+        _start_index = num_local_output_rows * rank
+        _end_index = num_local_output_rows * (rank + 1)
+        local_indices_slice = indices[0][_start_index:_end_index]
+
+        local_rank_mapping = send_ranks[_start_index:_end_index]
+
+        local_recv_tensor = recv_ranks[_start_index:_end_index]
+
+        assert torch.all(local_recv_tensor == rank)
+
+        assert 2 * local_rank_mapping.shape[0] == indices.shape[1]
+
+        local_indices = local_indices_slice % local_send_tensor.shape[1]
+
+        if len(local_indices_slice) > 0:
+
+            recv_tensor[:, local_rank_mapping == rank, :] = RankLocalMaskedGather(
+                local_send_tensor, local_indices, local_rank_mapping, rank
+            )
+
+        recv_tensor = _nccl_alltoall_v(
+            local_send_tensor=local_send_tensor,
+            local_recv_tensor=recv_tensor,
+            indices=indices,
+            local_rank_mapping=local_rank_mapping,
+            src_ranks=send_ranks,
+            dest_ranks=recv_ranks,
+            rank=rank,
+            world_size=world_size,
         )
 
-        # do global gather
-        _nccl_gather_op(send_tensor, recv_tensor, indices, rank, world_size)
         return recv_tensor
 
     @staticmethod
     def backward(ctx, grad_output):
-        send_tensor, recv_tensor, indices, rank, world_size = ctx.saved_tensors
+        # We need to switch the send and recv ranks
+        indices, recv_ranks, send_ranks, num_local_input_rows, rank, world_size = (
+            ctx.saved_tensors
+        )
 
-        _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
-        return grad_output, None, None
+        num_local_output_rows = num_local_input_rows.item()
+        rank = rank.item()
+        world_size = world_size.item()
+        send_tensor = grad_output
+
+        # Now it's a scatter operation
+        num_features = send_tensor.shape[-1]
+        device = send_tensor.device
+        local_rank_output = torch.zeros(1, num_local_output_rows, num_features).to(
+            device
+        )
+
+        indices = indices.view(-1)
+
+        # Start local only scatter. Maybe a better way to do this - S.Z
+        _start_index = (indices.shape[0] // world_size) * rank
+        _end_index = (indices.shape[0] // world_size) * (rank + 1)
+
+        _end_index = min(_end_index, indices.shape[0])
+
+        local_indices_slice = indices[_start_index:_end_index]
+        local_dest_ranks = recv_ranks[_start_index:_end_index]
+
+        local_rank_output = RankLocalMaskedScatter(
+            send_tensor,
+            local_rank_output,
+            local_indices_slice,
+            local_dest_ranks,
+            rank,
+        )
+
+        local_comm_mask = local_dest_ranks != rank
+
+        send_buffer_dict = {}
+        send_buffer_dict = {}
+        if torch.any(local_comm_mask):
+            # These rows need to be sent to other ranks
+            # First aggregate these into a single buffer
+
+            local_comm_indices = local_indices_slice[local_comm_mask]
+            local_remote_dest_mappings = local_dest_ranks[local_comm_mask]
+
+            renumbered_indices, unique_indices, remapped_ranks = (
+                RankLocalRenumberingWithMapping(
+                    local_comm_indices, local_remote_dest_mappings
+                )
+            )
+
+            num_remote_rows = len(unique_indices)
+            buffer = torch.zeros(1, num_remote_rows, num_features).to(device)
+            buffer.scatter_add_(
+                1,
+                renumbered_indices.view(1, -1, 1).expand(1, -1, num_features),
+                send_tensor[:, local_comm_mask, :],
+            )
+            receving_ranks = torch.unique(local_dest_ranks[local_comm_mask])
+            for _recv_rank in receving_ranks:
+                _recv_indices = remapped_ranks == _recv_rank
+                send_buffer_dict[_recv_rank.item()] = buffer[:, _recv_indices, :]
+
+        all_comm_mask = send_ranks != recv_ranks
+        reciever_mask = recv_ranks == rank
+        receive_from_remote = all_comm_mask & reciever_mask
+
+        recv_buffer_dict = {}
+        recv_placement = {}
+        if torch.any(receive_from_remote):
+            receive_from_ranks = send_ranks[receive_from_remote]
+
+            for _sender in range(world_size):
+                if torch.any(receive_from_ranks == _sender):
+                    _send_mask = (send_ranks == _sender) & receive_from_remote
+                    _send_indices = indices[_send_mask] % num_local_output_rows
+                    # TODO: This is brittle, look into a better way to do this - S.Z
+                    unique_send_indices = torch.unique(_send_indices)
+                    num_elements = unique_send_indices.shape[0]
+                    recv_buffer_dict[_sender] = torch.zeros(
+                        1, num_elements, num_features
+                    ).cuda()
+                    recv_placement[_sender] = unique_send_indices
+        recv_buffer_dict = _nccl_alltoallv_with_dict(
+            send_buffer_dict, recv_buffer_dict, rank, world_size
+        )
+        for key, recv_buffer in recv_buffer_dict.items():
+            local_rank_output.scatter_add_(
+                1,
+                recv_placement[key].view(1, -1, 1).expand(1, -1, num_features),
+                recv_buffer,
+            )
+
+        send_tensor_grad = local_rank_output
+        indices_grad = None
+        send_ranks_grad = None
+        recv_ranks_grad = None
+        rank_grad = None
+        world_size_grad = None
+
+        return (
+            send_tensor_grad,
+            indices_grad,
+            send_ranks_grad,
+            recv_ranks_grad,
+            rank_grad,
+            world_size_grad,
+        )
 
 
 class ScatterFunction(Function):
@@ -63,54 +229,232 @@ class ScatterFunction(Function):
     def forward(
         ctx,
         send_tensor: torch.Tensor,
-        recv_tensor: torch.Tensor,
         indices: torch.Tensor,
-        global_rank_mapping: torch.Tensor,
-        local_indices: torch.Tensor,
-        local_rank_mapping: torch.Tensor,
+        send_ranks: torch.Tensor,
+        recv_ranks: torch.Tensor,
+        num_local_output_rows: int,
         rank: int,
         world_size: int,
+        scatter_cache: Optional[NCCLScatterCache] = None,
     ) -> torch.Tensor:
+
         ctx.save_for_backward(
-            send_tensor,
-            recv_tensor,
             indices,
+            send_ranks,
+            recv_ranks,
+            torch.tensor(num_local_output_rows),
             torch.tensor(rank),
             torch.tensor(world_size),
         )
-        recv_tensor.scatter_add_(0, local_indices, send_tensor)
-        _nccl_scatter_op(send_tensor, recv_tensor, indices, rank, world_size)
-        return recv_tensor
+
+        use_cache = scatter_cache is not None
+        if use_cache:
+            ctx.scatter_cache = scatter_cache
+            ctx.has_cache = True
+        else:
+            ctx.has_cache = False
+
+        num_features = send_tensor.shape[-1]
+        device = send_tensor.device
+
+        local_rank_output = torch.zeros(1, num_local_output_rows, num_features).to(
+            device
+        )
+
+        indices = indices.view(-1)
+        # Start local only scatter. Maybe a better way to do this - S.Z
+        _start_index = (indices.shape[0] // world_size) * rank
+        _end_index = (indices.shape[0] // world_size) * (rank + 1)
+
+        _end_index = min(_end_index, indices.shape[0])
+
+        local_indices_slice = indices[_start_index:_end_index]
+        local_dest_ranks = recv_ranks[_start_index:_end_index]
+
+        local_rank_output = RankLocalMaskedScatter(
+            send_tensor,
+            local_rank_output,
+            local_indices_slice,
+            local_dest_ranks,
+            rank,
+        )
+
+        if use_cache:
+            local_comm_mask = scatter_cache.local_comm_mask
+        else:
+            local_comm_mask = local_dest_ranks != rank
+
+            all_comm_mask = send_ranks != recv_ranks
+            reciever_mask = recv_ranks == rank
+
+            receive_from_remote_mask = all_comm_mask & reciever_mask
+
+            send_buffer_dict = {}
+
+        if torch.any(local_comm_mask):
+
+            if use_cache:
+                num_remote_rows = scatter_cache.num_remote_rows
+                remapped_ranks = scatter_cache.local_remapped_ranks
+                renumbered_indices = scatter_cache.local_renumbered_indices
+
+            else:
+                # These rows need to be sent to other ranks
+                # First aggregate these into a single buffer
+                local_comm_indices = local_indices_slice[local_comm_mask]
+                local_remote_dest_mappings = local_dest_ranks[local_comm_mask]
+                # TODO: This is very slow, look into a better way to do this - S.Z
+                # Uncached is slow, should look into augmenting torch functions
+                # to speed this up - S.Z
+                renumbered_indices, unique_indices, remapped_ranks = (
+                    RankLocalRenumberingWithMapping(
+                        local_comm_indices, local_remote_dest_mappings
+                    )
+                )
+                num_remote_rows = len(unique_indices)
+                receving_ranks = torch.unique(local_dest_ranks[local_comm_mask])
+
+            buffer = torch.zeros(1, num_remote_rows, num_features).to(device)
+            buffer.scatter_add_(
+                1,
+                renumbered_indices.view(1, -1, 1).expand(1, -1, num_features),
+                send_tensor[:, local_comm_mask, :],
+            )
+
+            for _recv_rank in receving_ranks:
+                _recv_indices = remapped_ranks == _recv_rank
+                send_buffer_dict[_recv_rank.item()] = buffer[:, _recv_indices, :]
+
+        recv_buffer_dict = {}
+        recv_placement = {}
+        if use_cache:
+            recv_placement = scatter_cache.recv_local_placement
+        else:
+            recv_placement = _get_local_unique_recv_placement(
+                indices,
+                send_ranks,
+                receive_from_remote_mask,
+                num_local_output_rows,
+                rank,
+                world_size,
+            )
+
+        # Allocate the receive buffers for the communication based on the
+        # size of the recv_placement indices.
+        for key, unique_send_indices in recv_placement.items():
+            num_elements = unique_send_indices.shape[0]
+            recv_buffer_dict[key] = torch.zeros(1, num_elements, num_features).to(
+                device
+            )
+        recv_buffer_dict = _nccl_alltoallv_with_dict(
+            send_buffer_dict, recv_buffer_dict, rank, world_size
+        )
+        for key, recv_buffer in recv_buffer_dict.items():
+            local_rank_output.scatter_add_(
+                1,
+                recv_placement[key].view(1, -1, 1).expand(1, -1, num_features),
+                recv_buffer,
+            )
+        return local_rank_output
 
     @staticmethod
     def backward(ctx, grad_output):
-        send_tensor, recv_tensor, indices = ctx.saved_tensors
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-        _nccl_scatter_op(grad_output, send_tensor, indices, rank, world_size)
-        return grad_output, None, None
+        # We need to switch the send and recv ranks
+        indices, recv_ranks, send_ranks, _, rank, world_size = ctx.saved_tensors
 
+        rank = rank.item()
+        world_size = world_size.item()
 
-def scatter(
-    send_tensor: torch.Tensor, recv_tensor: torch.Tensor, indices: torch.Tensor
-) -> torch.Tensor:
-    return ScatterFunction.apply(send_tensor, recv_tensor, indices)  # type: ignore
+        indices = indices.view(1, -1)
 
+        # Now it's a gather operation
+        num_local_output_rows = largest_split(indices.shape[1], world_size)
 
-def gather(send_tensor, recv_tensor, indices) -> torch.Tensor:
-    return GatherFunction.apply(send_tensor, recv_tensor, indices)  # type: ignore
+        batch_size = 1
+        num_features = grad_output.shape[2]
+
+        recv_tensor = torch.zeros(batch_size, num_local_output_rows, num_features).to(
+            grad_output.device
+        )
+        _start_index = num_local_output_rows * rank
+        _end_index = num_local_output_rows * (rank + 1)
+        local_indices_slice = indices[0][_start_index:_end_index]
+
+        local_rank_mapping = send_ranks[_start_index:_end_index]
+
+        local_indices = local_indices_slice % grad_output.shape[1]
+
+        if len(local_indices_slice) > 0:
+
+            recv_tensor[:, local_rank_mapping == rank, :] = RankLocalMaskedGather(
+                grad_output, local_indices, local_rank_mapping, rank
+            )
+
+        recv_tensor = _nccl_alltoall_v(
+            local_send_tensor=grad_output,
+            local_recv_tensor=recv_tensor,
+            indices=indices,
+            local_rank_mapping=local_rank_mapping,
+            src_ranks=send_ranks,
+            dest_ranks=recv_ranks,
+            rank=rank,
+            world_size=world_size,
+        )
+        # NOTE: even if the inputs are non-tensors, the number of backward outputs
+        # must be the same as the number of inputs.
+        send_tensor_grad = recv_tensor
+        indices_grad = None
+        send_ranks_grad = None
+        recv_ranks_grad = None
+        num_local_output_rows_grad = None
+        rank_grad = None
+        world_size_grad = None
+        scatter_cache_grad = None
+
+        return (
+            send_tensor_grad,
+            indices_grad,
+            send_ranks_grad,
+            recv_ranks_grad,
+            num_local_output_rows_grad,
+            rank_grad,
+            world_size_grad,
+            scatter_cache_grad,
+        )
 
 
 class NCCLBackendEngine(BackendEngine):
-    def __init__(self, *args, **kwargs):
-        # check if already initialized
-        self._initialized = dist.is_initialized()
+    _is_initialized = False
+    _rank = -1
+    _world_size = -1
+    _ranks_per_partition = -1
+    _partition_rank = -1
+    _partition_id = -1
 
-    def init_process_group(self, *args, **kwargs):
+    def __init__(self, ranks_per_partition=-1, *args, **kwargs):
+        # check if already initialized
+        # self._initialized = dist.is_initialized()
+        if not NCCLBackendEngine._is_initialized:
+            self.init_process_group(ranks_per_partition)
+
+    def init_process_group(self, ranks_per_partition=-1, *args, **kwargs):
         if not dist.is_initialized():
             dist.init_process_group(backend="nccl", *args, **kwargs)
 
-        self._initialized = True
+        NCCLBackendEngine._is_initialized = True
+        NCCLBackendEngine._rank = dist.get_rank()
+        NCCLBackendEngine._world_size = dist.get_world_size()
+        if ranks_per_partition == -1:
+            NCCLBackendEngine._ranks_per_partition = NCCLBackendEngine._world_size
+        else:
+            assert (
+                NCCLBackendEngine._world_size % ranks_per_partition == 0
+            ), "Invalid ranks per partition"
+            NCCLBackendEngine._ranks_per_partition = ranks_per_partition
+        NCCLBackendEngine._partition_rank = (
+            NCCLBackendEngine._rank % ranks_per_partition
+        )
+        NCCLBackendEngine._partition_id = NCCLBackendEngine._rank // ranks_per_partition
 
     def get_rank(self) -> int:
         return dist.get_rank()
@@ -128,39 +472,131 @@ class NCCLBackendEngine(BackendEngine):
         end_index = start_index + local_size
         return tensor[:, start_index:end_index]
 
-    def scatter(self, *args, **kwargs) -> torch.Tensor:
-        input_tensor: torch.Tensor = args[0]
-        indices: torch.Tensor = args[1]
-        local_size: int = args[2]
-        batch_size: int = input_tensor.shape[0]
-        feature_size: int = input_tensor.shape[2]
+    def scatter(
+        self,
+        local_send_tensor: torch.Tensor,
+        indices: torch.Tensor,
+        rank_mappings: torch.Tensor,
+        output_size: int,
+        *args,
+        **kwargs,
+    ) -> torch.Tensor:
+        send_tensor_shape = local_send_tensor.shape
+        b_size = send_tensor_shape[0]
 
-        output_tensor: torch.Tensor = torch.zeros(
-            (
-                batch_size,
-                local_size,
-                feature_size,
-            )
-        )
-        return scatter(input_tensor, output_tensor, indices)
-
-    def gather(self, *args, **kwargs) -> torch.Tensor:
-        input_tensor = args[0]
-        indices = args[1]
-        rank_mappings = args[2]
-        indices_shape = indices.shape
-        b_size = indices_shape[0]
-
+        world_size = self.get_world_size()
+        rank = self.get_rank()
         assert b_size == 1, "Multi-batch gather disabled for testing"
-        n = indices_shape[1]
-        feature_size = input_tensor.shape[2]
-        output_tensor = torch.zeros(b_size, n, feature_size, device=input_tensor.device)
+        assert len(send_tensor_shape) == 3, "Currently only support 3D tensors"
 
-        # do local gather
+        assert indices.shape[-1] == rank_mappings.shape[-1]
+        if len(rank_mappings.shape) == 1:
+            # src ranks are not explicitly provided but they
+            # are just the current rank
+            send_rank = _generate_local_rank_mapping(rank_mappings, world_size)
+            recv_rank = rank_mappings
+        elif len(rank_mappings.shape) == 2:
+            assert rank_mappings.shape[0] == 2
+            send_rank = rank_mappings[0]
+            recv_rank = rank_mappings[1]
 
-        local_indices = self.get_local_rank_slice(indices)
-        local_rank_mapping = self.get_local_rank_slice(rank_mappings)
+        else:
+            raise ValueError(
+                "Rank mappings shape is invalid. Exepcted either 1 or 2D array"
+            )
+
+        assert local_send_tensor.device.type == "cuda"
+
+        assert output_size > 0, "Output size must be greater than 0"
+        assert (
+            torch.max(indices) < world_size * output_size
+        ), f"Max index: {torch.max(indices)} is greater than world_size * output_size: {world_size * output_size}"
+
+        output_tensor = ScatterFunction.apply(
+            local_send_tensor,
+            indices,
+            send_rank,
+            recv_rank,
+            output_size,
+            rank,
+            world_size,
+        )
+
         return output_tensor
+
+    def gather(
+        self,
+        local_send_tensor: torch.Tensor,
+        indices: torch.Tensor,
+        rank_mappings: torch.Tensor,
+        **kwargs,
+    ) -> torch.Tensor:
+        """Gather the distributed tensor across all ranks according to the indices
+
+        Performs the operation:
+
+        output_tensor[i] = local_send_tensor[indices[i]]
+
+        if rank_mappings[indices[i]] == RankOf(output_tensor[i]). Otherwise, communication
+        is needed such that, send_rank = rank_mappings[indices[i]] and
+        recv_rank = RankOf(output_tensor[i]), and
+
+        # on send_rank
+        Send(local_send_tensor[indices[i]]) to recv_rank
+
+        # on recv_rank
+        output_tensor[i] = Recv(local_send_tensor[indices[i]]) from send_rank
+
+        Args:
+            local_send_tensor (torch.Tensor): The local slice of the tensor to
+                be gathered by all ranks
+            indices (torch.Tensor): The indices for the gather operation
+            rank_mappings: The rank mappings for the gather operation.
+        """
+
+        send_tensor_shape = local_send_tensor.shape
+        b_size = send_tensor_shape[0]
+        world_size = self.get_world_size()
+        rank = self.get_rank()
+        assert b_size == 1, "Multi-batch gather disabled for testing"
+        assert len(send_tensor_shape) == 3, "Currently only support 3D tensors"
+
+        if rank_mappings is None:
+            raise ValueError("Rank mappings cannot be None for NCCL backend")
+
+        if len(rank_mappings.shape) == 1:
+            rank_mappings = rank_mappings.unsqueeze(0)
+
+            # Assume that destination ranks are just the current rank
+            recv_rank = torch.zeros_like(rank_mappings).reshape(world_size, -1)
+            _fill_val = torch.arange(world_size).reshape(-1, 1).to(rank_mappings.device)
+            recv_rank = recv_rank + _fill_val
+            recv_rank = recv_rank.reshape(1, -1)
+
+            rank_mappings = torch.cat([rank_mappings, recv_rank], dim=0)
+        assert (
+            len(rank_mappings.shape) == 2
+        ), f"Rank mappings shape: {rank_mappings.shape} expected 2-D."
+        assert (
+            rank_mappings.shape[0] == 2
+        ), f"Rank mappings shape[0]: {rank_mappings.shape[0]} is expected be 2."
+        assert indices.shape[-1] == rank_mappings.shape[-1]
+        assert local_send_tensor.device.type == "cuda"
+
+        send_rank = rank_mappings[0]
+        recv_rank = rank_mappings[1]
+
+        output_tensor = GatherFunction.apply(
+            local_send_tensor,
+            indices,
+            send_rank,
+            recv_rank,
+            rank,
+            world_size,
+        )
+
+        dist.barrier()
+        return output_tensor  # type: ignore
 
     def destroy(self) -> None:
         if self._initialized:

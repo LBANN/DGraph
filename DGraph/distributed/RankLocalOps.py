@@ -26,8 +26,8 @@ def RankLocalMaskedGather(
     """
     local_indices = indices[rank_mapping == rank]
     num_features = _src.shape[-1]
-    local_indices = local_indices.view(-1, 1).expand(-1, num_features)
-    local_gathered_data = torch.gather(_src, 0, local_indices)
+    local_indices = local_indices.view(1, -1, 1).expand(1, -1, num_features)
+    local_gathered_data = torch.gather(_src, 1, local_indices)
     return local_gathered_data
 
 
@@ -45,15 +45,28 @@ def OutOfPlaceRankLocalMaskedGather(
 def RankLocalMaskedScatter(
     _src: torch.Tensor,
     _output: torch.Tensor,
-    indices: torch.Tensor,
-    rank_mapping: torch.Tensor,
+    local_indices_slice: torch.Tensor,
+    local_dest_ranks: torch.Tensor,
     rank: int,
 ) -> torch.Tensor:
     """
     This function scatters the data from the source rank to the destination rank.
     """
-    local_indices = indices[rank_mapping == rank]  # Masked local indices
-    _output.scatter_(0, local_indices, _src)
+    local_comm_mask = local_dest_ranks == rank
+    num_features = _src.shape[-1]
+    num_local_output_rows = _output.shape[1]
+
+    if torch.any(local_comm_mask):
+        local_scatter_indices = local_indices_slice[local_comm_mask]
+        local_scatter_indices = local_scatter_indices.view(1, -1, 1).expand(
+            1, -1, num_features
+        )
+
+        _output.scatter_add_(
+            1,
+            local_scatter_indices % num_local_output_rows,
+            _src[:, local_comm_mask, :],
+        )
     return _output
 
 
@@ -70,6 +83,24 @@ def RankLocalReNumbering(_indices):
     return renumbered_indices, unique_indices
 
 
+def RankLocalRenumberingWithMapping(_indices, _mapping):
+    """
+    This function removes duplicates from the indices tensor.
+    """
+
+    # TODO: Optimize this code. This is a naive implementation and the current
+    # bottleneck in the code. - S.Z
+    unique_indices = torch.unique(_indices).to(_mapping.device)
+    _mapping = _mapping.to(_indices.device)
+    renumbered_indices = torch.zeros_like(_indices)
+    new_mapping = torch.zeros_like(unique_indices)
+
+    for i, idx in enumerate(unique_indices):
+        renumbered_indices[_indices == idx] = i
+        new_mapping[i] = _mapping[_indices == idx][0]
+    return renumbered_indices, unique_indices, new_mapping
+
+
 def RankLocalGather(
     _src: torch.Tensor, indices: torch.Tensor, rank_mapping: torch.Tensor, rank: int
 ) -> torch.Tensor:
@@ -79,3 +110,46 @@ def RankLocalGather(
     local_indices = indices[rank_mapping == rank]
     local_gathered_data = torch.gather(_src, 0, local_indices)
     return local_gathered_data
+
+
+def LocalAggregateWithRemapping(
+    global_data: torch.Tensor,
+    global_indices: torch.Tensor,
+    global_mapping: torch.Tensor,
+    num_features: int,
+    device: torch.device,
+):
+    """
+    This function aggregates the global_data such that rows with the same
+    global_indices are aggregated. The global_mapping is used to map the
+    global_indices to the local indices. Mathematically,
+
+    local_aggregated_data[local_mapping[global_indices[i]] += global_data[i]
+
+    Also returns the new_mapping tensor which maps the local indices to the
+    appropriate global rank. Mathematically,
+
+    new_mapping[k] = global_mapping[torch.argwhere(local_mapping == k)[0]]
+
+    Args:
+        global_data (torch.Tensor): The global data tensor
+        global_indices (torch.Tensor): The global indices tensor
+        global_mapping (torch.Tensor): The global mapping tensor
+        num_features (int): The number of features in the global_data
+        device (torch.device): The device to use
+    returns:
+        local_aggregated_data (torch.Tensor): The locally aggregated data tensor
+        new_mapping (torch.Tensor): The new mapping tensor
+    """
+    renumbered_indices, unique_indices, new_mapping = RankLocalRenumberingWithMapping(
+        global_indices, global_mapping
+    )
+
+    num_unique_indices = unique_indices.shape[0]
+
+    local_aggregated_data = torch.zeros(1, num_unique_indices, num_features).to(device)
+
+    renumbered_indices = renumbered_indices.view(1, -1, 1).expand(1, -1, num_features)
+    local_aggregated_data.scatter_add_(1, renumbered_indices, global_data)
+
+    return local_aggregated_data, new_mapping
