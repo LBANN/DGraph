@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
+from DGraph.distributed.mpi import MPIBackendEngine
 from DGraph.distributed.nccl import NCCLBackendEngine
 from DGraph.CommunicatorBase import CommunicatorBase
 
@@ -35,6 +36,8 @@ class Communicator(CommunicatorBase):
         # self.__backend_engine
         if backend == "nccl":
             self.__backend_engine = NCCLBackendEngine()
+        elif backend == "mpi":
+            self.__backend_engine = MPIBackendEngine(**kwargs)
         else:
             raise NotImplementedError(f"Backend {backend} not implemented")
         Communicator._is_initialized = True
@@ -55,9 +58,9 @@ class Communicator(CommunicatorBase):
         self.__check_init()
         return self.__backend_engine.get_world_size()
 
-    def get_local_rank_slice(self, tensor: torch.Tensor) -> torch.Tensor:
+    def get_local_rank_slice(self, tensor: torch.Tensor, dim: int = -1) -> torch.Tensor:
         self.__check_init()
-        return self.__backend_engine.get_local_rank_slice(tensor)
+        return self.__backend_engine.get_local_rank_slice(tensor, dim)
 
     def scatter(self, *args, **kwargs) -> torch.Tensor:
         self.__check_init()
