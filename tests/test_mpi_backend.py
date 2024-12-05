@@ -74,6 +74,7 @@ def test_mpi_backend_init(init_mpi_backend):
     assert rank > -1
     assert world_size > 0
     assert rank < world_size
+    assert world_size == 2, "This test requires exactly 2 ranks"
 
 
 def test_mpi_backend_gather(init_mpi_backend, setup_gather_data):
@@ -129,8 +130,8 @@ def test_mpi_backend_scatter(init_mpi_backend, setup_scatter_data):
         setup_scatter_data
     )
 
-    _input_split_start_index = (all_rank_input_data.shape[1] // 2) * rank
-    _input_split_end_index = (all_rank_input_data.shape[1] // 2) * (rank + 1)
+    _input_split_start_index = (all_rank_input_data.shape[1] // world_size) * rank
+    _input_split_end_index = (all_rank_input_data.shape[1] // world_size) * (rank + 1)
 
     # Split the input tensor
     local_input_split_gt = all_rank_input_data[
@@ -138,8 +139,8 @@ def test_mpi_backend_scatter(init_mpi_backend, setup_scatter_data):
     ]
 
     # Split the indices tensor
-    _indices_split_start_index = (all_edge_coo.shape[-1] // 2) * rank
-    _indices_split_end_index = (all_edge_coo.shape[-1] // 2) * (rank + 1)
+    _indices_split_start_index = (all_edge_coo.shape[-1] // world_size) * rank
+    _indices_split_end_index = (all_edge_coo.shape[-1] // world_size) * (rank + 1)
 
     local_indices_split_gt = all_edge_coo[
         :, _indices_split_start_index:_indices_split_end_index
@@ -149,7 +150,7 @@ def test_mpi_backend_scatter(init_mpi_backend, setup_scatter_data):
         :, _indices_split_start_index:_indices_split_end_index
     ]
 
-    num_local_output_rows = all_rank_output_gt.shape[1] // 2
+    num_local_output_rows = all_rank_output_gt.shape[1] // world_size
 
     # Split the expected output tensor
     local_rank_output_gt = all_rank_output_gt[
