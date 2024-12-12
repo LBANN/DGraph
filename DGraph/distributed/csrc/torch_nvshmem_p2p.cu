@@ -129,13 +129,15 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x;
 
   // Launch the kernel
+  const auto current_rank = NVSHMEMP2P::m_rank;
   NVSHMEM::Scatter_NVSHMEM_Kernel<<<grid_dims, block_dims>>>(input_ptr,
                                                              indices_ptr,
                                                              dst_ranks_ptr,
                                                              output_ptr,
                                                              num_input_rows,
                                                              num_cols,
-                                                             num_output_rows);
+                                                             num_output_rows,
+                                                             current_rank);
 }
 
 void NVSHMEMP2P::dist_get(torch::Tensor input,
@@ -166,6 +168,7 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
   // Get the pointers to the data
   const float *input_ptr = input.data_ptr<float>();
   const long *indices_ptr = indices.data_ptr<long>();
+  const long* src_ranks_ptr = src_ranks.data_ptr<long>();
   float *output_ptr = output.data_ptr<float>();
   dim3 block_dims, grid_dims;
 
@@ -178,8 +181,8 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
   // // Launch the kernel
   NVSHMEM::Gather_NVSHMEM_Kernel_Wrap_Rank<<<grid_dims, block_dims>>>(input_ptr,
                                                                       indices_ptr,
+                                                                      src_ranks_ptr,
                                                                       output_ptr,
-                                                                      mini_batches,
                                                                       num_input_rows,
                                                                       num_cols,
                                                                       num_output_rows);
