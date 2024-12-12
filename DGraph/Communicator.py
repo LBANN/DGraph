@@ -14,6 +14,7 @@
 import torch
 from DGraph.distributed.mpi import MPIBackendEngine
 from DGraph.distributed.nccl import NCCLBackendEngine
+from DGraph.distributed.nvshmem import NVSHMEMBackendEngine
 from DGraph.CommunicatorBase import CommunicatorBase
 
 SUPPORTED_BACKENDS = ["nccl", "mpi", "nvshmem"]
@@ -38,6 +39,8 @@ class Communicator(CommunicatorBase):
             self.__backend_engine = NCCLBackendEngine()
         elif backend == "mpi":
             self.__backend_engine = MPIBackendEngine(**kwargs)
+        elif backend == "nvshmem":
+            self.__backend_engine = NVSHMEMBackendEngine()
         else:
             raise NotImplementedError(f"Backend {backend} not implemented")
         Communicator._is_initialized = True

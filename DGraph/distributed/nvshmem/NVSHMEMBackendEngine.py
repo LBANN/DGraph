@@ -19,64 +19,80 @@ import warnings
 from torch.autograd import Function
 
 
-def _nvshmmem_gather(send_tensor, indices, gathered_tensor):
+def _nvshmmem_gather(send_tensor, indices, rank_mappings):
+
+    bs = send_tensor.shape[0]
+    num_input_rows = send_tensor.shape[1]
+    num_output_rows = indices.shape[1]
+    num_features = send_tensor.shape[2]
+
+    gathered_tensor = torch.zeros((bs, num_output_rows, num_features)).to(
+        send_tensor.device
+    )
     # Gather the tensors
-    gathered_tensors = [
-        torch.zeros_like(send_tensor) for _ in range(nvshmem.get_world_size())
-    ]
-    gathered_tensors[nvshmem.get_rank()] = send_tensor
-    dist.all_gather(gathered_tensors, send_tensor)
 
-    # Gather the indices
-    gathered_indices = [
-        torch.zeros_like(indices) for _ in range(nvshmem.get_world_size())
-    ]
-    gathered_indices[nvshmem.get_rank()] = indices
-    dist.all_gather(gathered_indices, indices)
-
-    return gathered_tensors
+    nvshmem.NVSHMEMP2P.dist_get(
+        send_tensor,
+        gathered_tensor,
+        indices,
+        rank_mappings,
+        num_input_rows,
+        num_features,
+        num_output_rows,
+    )
+    return gathered_tensor
 
 
-def _nvshmem_scatter(input_tensor, indices, scattered_tensor):
+def _nvshmem_scatter(input_tensor, indices, rank_mappings, num_output_rows):
     # Scatter the tensors
-    scattered_tensors = [
-        torch.zeros_like(input_tensor) for _ in range(nvshmem.get_world_size())
-    ]
-    scattered_tensors[nvshmem.get_rank()] = input_tensor
-    dist.all_gather(scattered_tensors, input_tensor)
+    bs = input_tensor.shape[0]
+    num_input_rows = input_tensor.shape[1]
+    num_features = input_tensor.shape[2]
+    device = input_tensor.device
 
-    # Scatter the indices
-    scattered_indices = [
-        torch.zeros_like(indices) for _ in range(nvshmem.get_world_size())
-    ]
-    scattered_indices[nvshmem.get_rank()] = indices
-    dist.all_gather(scattered_indices, indices)
+    scattered_tensor = torch.zeros((bs, num_output_rows, num_features)).to(device)
+    cur_rank = nvshmem.NVSHMEMP2P.get_rank()
+    indices = indices % num_output_rows
+    local_send_tensor = input_tensor[rank_mappings == cur_rank]
+    local_indices = indices[rank_mappings == cur_rank]
+    scattered_tensor.scatter_add_(
+        1, local_indices.unsqueeze(-1).expand_as(local_send_tensor), local_send_tensor
+    )
 
-    return scattered_tensors
+    nvshmem.NVSHMEMP2P.dist_put(
+        scattered_tensor,
+        input_tensor,
+        indices,
+        rank_mappings,
+        num_input_rows,
+        num_features,
+        num_output_rows,
+    )
+
+    return scattered_tensor
 
 
 class NVSHMEMGatherFunction(Function):
     @staticmethod
-    def forward(ctx, send_tensor, indices):
+    def forward(ctx, send_tensor, indices, rank_mappings):
         # Register the send tensor
-        ctx.save_for_backward(indices, torch.tensor(send_tensor.shape))
-        nvshmem.register_memory(send_tensor)
-        bs = send_tensor.shape[0]
+        ctx.save_for_backward(indices, rank_mappings)
         num_rows = indices.shape[1]
-        num_features = send_tensor.shape[2]
+        ctx.num_rows = num_rows
+        nvshmem.NVSHMEMP2P.register_memory(send_tensor)
 
-        gathered_tensor = torch.zeros((bs, num_rows, num_features)).to(
-            send_tensor.device
-        )
-        gathered_tensors = _nvshmmem_gather(send_tensor, indices, gathered_tensor)
-        nvshmem.deregister_memory(send_tensor)
+        gathered_tensors = _nvshmmem_gather(send_tensor, indices, rank_mappings)
+        nvshmem.NVSHMEMP2P.deregister_memory(send_tensor)
         return gathered_tensors
 
     @staticmethod
     def backward(ctx, grad_output):
         indices, shape = ctx.saved_tensors
 
-        num_elements = torch.cumprod(shape, dim=0)[-1].item()
+        num_output_rows = ctx.num_rows
+        num_features = grad_output.shape[-1]
+
+        num_elements = num_output_rows * num_features
 
         scattered_grad_tensor = nvshmem.AllocateSymmetricMemory(num_elements).reshape(
             shape
@@ -84,7 +100,9 @@ class NVSHMEMGatherFunction(Function):
 
         _nvshmem_scatter(grad_output, indices, scattered_grad_tensor)
 
-        return scattered_grad_tensor, None
+        indices_grad = None
+        rank_mappings_grad = None
+        return scattered_grad_tensor, indices_grad, rank_mappings_grad
 
 
 class NVSHMEMScatterFunction(Function):
@@ -116,38 +134,62 @@ class NVSHMEMBackendEngine(BackendEngine):
 
     def __init__(self, *args, **kwargs):
         # check if already initialized
-        NVSHMEMBackendEngine._initialized = dist.is_initialized()
+        if not NVSHMEMBackendEngine._is_initialized:
+            self.init_process_group(*args, **kwargs)
 
     def init_process_group(self, *args, **kwargs):
-        if not self._initialized:
-            nvshmem.init()
-
-            dist.init_process_group(backend="nccl", *args, **kwargs)
-
-            NVSHMEMBackendEngine._rank = nvshmem.get_rank()
-            NVSHMEMBackendEngine._world_size = nvshmem.get_world_size()
+        if not NVSHMEMBackendEngine._is_initialized:
+            nvshmem.NVSHMEMP2P.init()
+            NVSHMEMBackendEngine._is_initialized = True
+            NVSHMEMBackendEngine._rank = nvshmem.NVSHMEMP2P.get_rank()
+            NVSHMEMBackendEngine._world_size = nvshmem.NVSHMEMP2P.get_world_size()
             NVSHMEMBackendEngine._ranks_per_graph = NVSHMEMBackendEngine._world_size
 
-            dist.init_process_group(
-                backend="nccl",
-                rank=NVSHMEMBackendEngine._rank,
-                world_size=NVSHMEMBackendEngine._world_size,
-                *args,
-                **kwargs,
-            )
-            NVSHMEMBackendEngine._initialized = True
-            NVSHMEMBackendEngine._nvshmem_p2p_obj = nvshmem.NVSHMEMP2P()
+            NVSHMEMBackendEngine._nvshmem_p2p_obj = nvshmem.NVSHMEMP2P
 
     def get_rank(self) -> int:
-        return nvshmem.get_rank()
+        return NVSHMEMBackendEngine._rank
 
     def get_world_size(self) -> int:
-        return nvshmem.get_world_size()
+        return NVSHMEMBackendEngine._world_size
 
     def gather(self, input_tensor, indices, rank_mappings):
-        gathered_tensors = NVSHMEMGatherFunction.apply(input_tensor, indices)
+        assert (
+            len(input_tensor.shape) == 3
+        ), "Input tensor must be 3D of shape (bs, N, F)"
+        assert len(indices.shape) == 2, "Indices tensor must be 2D of shape (bs, E)"
+
+        assert (
+            input_tensor.shape[0] == indices.shape[0]
+        ), "Batch size of input tensor and indices tensor must match"
+
+        bs = input_tensor.shape[0]
+        assert bs == 1, "Batch size must be 1"
+        assert rank_mappings.shape == indices.shape, "Rank mappings shape mismatch"
+
+        # Check if on CUDA
+        assert input_tensor.is_cuda, "Input tensor must be on CUDA"
+        assert indices.is_cuda, "Indices tensor must be on CUDA"
+        assert rank_mappings.is_cuda, "Rank mappings tensor must be on CUDA"
+
+        gathered_tensors = NVSHMEMGatherFunction.apply(
+            input_tensor, indices, rank_mappings
+        )
         return gathered_tensors
 
-    def scatter(self, input_tensor, indices, rank_mappings):
-        scattered_tensors = NVSHMEMScatterFunction.apply(input_tensor, indices)
+    def scatter(self, input_tensor, indices, rank_mappings, num_output_rows):
+        assert (
+            len(input_tensor.shape) == 3
+        ), "Input tensor must be 3D of shape (bs, N, F)"
+        assert len(indices.shape) == 2, "Indices tensor must be 2D of shape (bs, E)"
+        bs = input_tensor.shape[0]
+        assert bs == 1, "Batch size must be 1"
+        assert (
+            input_tensor.shape[0] == indices.shape[0]
+        ), "Batch size of input tensor and indices tensor must match"
+        assert rank_mappings.shape == indices.shape, "Rank mappings shape mismatch"
+
+        scattered_tensors = NVSHMEMScatterFunction.apply(
+            input_tensor, indices, rank_mappings, num_output_rows
+        )
         return scattered_tensors
