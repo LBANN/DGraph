@@ -61,8 +61,7 @@ void NVSHMEMP2P::finalize()
   m_initialized = false;
 }
 
-int
-NVSHMEMP2P::get_rank()
+int NVSHMEMP2P::get_rank()
 {
   if (!m_initialized)
   {
@@ -71,8 +70,7 @@ NVSHMEMP2P::get_rank()
   return m_rank;
 }
 
-int 
-NVSHMEMP2P::get_world_size()
+int NVSHMEMP2P::get_world_size()
 {
   if (!m_initialized)
   {
@@ -81,21 +79,19 @@ NVSHMEMP2P::get_world_size()
   return m_world_size;
 }
 
-void 
-NVSHMEMP2P::set_device(int device)
+void NVSHMEMP2P::set_device(int device)
 {
   if (!m_initialized)
   {
     throw std::runtime_error("NVSHMEMP2P is not initialized");
   }
-  CUDA_CHECK(cudaSetDevice(device));
+  CUDACHECK(cudaSetDevice(device));
 }
-
-
 
 void NVSHMEMP2P::dist_put(torch::Tensor input,
                           torch::Tensor output,
                           torch::Tensor indices,
+                          torch::Tensor dst_ranks,
                           const int mini_batches,
                           const int num_input_rows,
                           const int num_cols,
@@ -108,9 +104,11 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   TORCH_CHECK(input.is_contiguous());
   TORCH_CHECK(output.is_contiguous());
   TORCH_CHECK(indices.is_contiguous());
+  TORCH_CHECK(dst_ranks.is_contiguous());
   TORCH_INTERNAL_ASSERT(input.device().type() == at::DeviceType::CUDA);
   TORCH_INTERNAL_ASSERT(output.device().type() == at::DeviceType::CUDA);
   TORCH_INTERNAL_ASSERT(indices.device().type() == at::DeviceType::CUDA);
+  TORCH_INTERNAL_ASSERT(dst_ranks.device().type() == at::DeviceType::CUDA);
 
   if (!m_initialized)
   {
@@ -120,31 +118,30 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   // Get the pointers to the data
   const float *input_ptr = input.data_ptr<float>();
   const long *indices_ptr = indices.data_ptr<long>();
+  const long *dst_ranks_ptr = dst_ranks.data_ptr<long>();
   float *output_ptr = output.data_ptr<float>();
 
   dim3 block_dims, grid_dims;
-  block_dims.x = 1;
+  block_dims.x = 32;
   block_dims.y = 16;
-  block_dims.z = 1;
 
-  grid_dims.z = (mini_batches + block_dims.x - 1) / block_dims.z;
   grid_dims.y = (num_output_rows + block_dims.y - 1) / block_dims.y;
   grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x;
 
   // Launch the kernel
   NVSHMEM::Scatter_NVSHMEM_Kernel<<<grid_dims, block_dims>>>(input_ptr,
                                                              indices_ptr,
+                                                             dst_ranks_ptr,
                                                              output_ptr,
-                                                             mini_batches,
                                                              num_input_rows,
                                                              num_cols,
                                                              num_output_rows);
 }
 
-void 
-NVSHMEMP2P::dist_get(torch::Tensor input,
+void NVSHMEMP2P::dist_get(torch::Tensor input,
                           torch::Tensor output,
                           torch::Tensor indices,
+                          torch::Tensor src_ranks,
                           const int mini_batches,
                           const int num_input_rows,
                           const int num_cols,
@@ -156,9 +153,11 @@ NVSHMEMP2P::dist_get(torch::Tensor input,
   TORCH_CHECK(input.is_contiguous());
   TORCH_CHECK(output.is_contiguous());
   TORCH_CHECK(indices.is_contiguous());
+  TORCH_CHECK(src_ranks.is_contiguous());
   TORCH_INTERNAL_ASSERT(input.device().type() == at::DeviceType::CUDA);
   TORCH_INTERNAL_ASSERT(output.device().type() == at::DeviceType::CUDA);
   TORCH_INTERNAL_ASSERT(indices.device().type() == at::DeviceType::CUDA);
+  TORCH_INTERNAL_ASSERT(src_ranks.device().type() == at::DeviceType::CUDA);
   if (!m_initialized)
   {
     throw std::runtime_error("NVSHMEMP2P is not initialized");
@@ -170,25 +169,24 @@ NVSHMEMP2P::dist_get(torch::Tensor input,
   float *output_ptr = output.data_ptr<float>();
   dim3 block_dims, grid_dims;
 
-  block_dims.x = 1;
+  block_dims.x = 32;
   block_dims.y = 16;
-  block_dims.z = 1;
 
-  grid_dims.z = (mini_batches + block_dims.x - 1) / block_dims.z;
   grid_dims.y = (num_output_rows + block_dims.y - 1) / block_dims.y;
   grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x;
-  // Launch the kernel
-  NVSHMEM::Gather_NVSHMEM_Kernel_Warp<<<grid_dims, block_dims>>>(input_ptr,
-                                                                 indices_ptr,
-                                                                 output_ptr,
-                                                                 mini_batches,
-                                                                 num_input_rows,
-                                                                 num_cols,
-                                                                 num_output_rows);
+
+  // // Launch the kernel
+  NVSHMEM::Gather_NVSHMEM_Kernel_Wrap_Rank<<<grid_dims, block_dims>>>(input_ptr,
+                                                                      indices_ptr,
+                                                                      output_ptr,
+                                                                      mini_batches,
+                                                                      num_input_rows,
+                                                                      num_cols,
+                                                                      num_output_rows);
 }
 
-torch::Tensor 
-NVSHMEMP2P::AllocateSymmetricMemory(const int size)
+torch::Tensor
+NVSHMEMP2P::AllocateSymmetricMemory(const int size, const int device_ordinal)
 {
   if (size <= 0)
   {
@@ -208,16 +206,20 @@ NVSHMEMP2P::AllocateSymmetricMemory(const int size)
   };
   // See torch::from_blob for more details
   // https://pytorch.org/cppdocs/api/function_namespacetorch_1ad7fb2a7759ef8c9443b489ddde494787.html
-  
-  device_int device = torch::cuda::current_device();
-  torch::TensorOptions options = torch::TensorOptions()
-        .dtype(torch::kFloat32)
-        .device(torch::kCUDA);
+
+  // The Torch device get / set functions are not great, the following
+  // does not work.
+  // device_int device = torch::cuda::current_device();
+
+  auto device = torch::Device(torch::kCUDA, device_ordinal);
+
+  auto options = torch::TensorOptions()
+                     .dtype(torch::kFloat32)
+                     .device(device);
   return torch::from_blob(ptr, {size}, {1}, deleter);
 }
 
-void 
-NVSHMEMP2P::register_memory(torch::Tensor tensor)
+void NVSHMEMP2P::register_memory(torch::Tensor tensor)
 {
   if (!tensor.is_contiguous())
   {
@@ -236,8 +238,7 @@ NVSHMEMP2P::register_memory(torch::Tensor tensor)
   nvshmemx_buffer_register(ptr, size);
 }
 
-void 
-NVSHMEMP2P::deregister_memory(torch::Tensor tensor)
+void NVSHMEMP2P::deregister_memory(torch::Tensor tensor)
 {
   if (!tensor.is_contiguous())
   {
@@ -248,4 +249,6 @@ NVSHMEMP2P::deregister_memory(torch::Tensor tensor)
   {
     throw std::runtime_error("Tensor is not on CUDA device");
   }
+
+  nvshmemx_buffer_unregister(tensor.data_ptr());
 }

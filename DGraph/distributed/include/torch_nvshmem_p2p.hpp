@@ -31,6 +31,7 @@ public:
   static void dist_put(torch::Tensor src,
                        torch::Tensor dst,
                        torch::Tensor indices,
+                       torch::Tensor destination_ranks,
                        const int mini_batches,
                        const int num_input_rows,
                        const int cols,
@@ -38,11 +39,13 @@ public:
   static void dist_get(torch::Tensor src,
                        torch::Tensor dst,
                        torch::Tensor indices,
+                       torch::Tensor src_ranks,
                        const int mini_batches,
                        const int num_input_rows,
                        const int cols,
                        const int num_output_rows);
-  static torch::Tensor AllocateSymmetricMemory(const int size);
+  static torch::Tensor AllocateSymmetricMemory(const int size,
+                                               const int device_ordinal);
 
   static void register_memory(torch::Tensor tensor);
   static void deregister_memory(torch::Tensor tensor);

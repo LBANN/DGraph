@@ -51,45 +51,96 @@ namespace NVSHMEM
     return __longlong_as_double(old);
   }
 
+  /** Copy between two device buffers, using all threads in a warp. */
+  __device__ __forceinline__ float *
+  memcpy_warp(float *__restrict__ dest, const float *__restrict__ src, int n)
+  {
+    constexpr int warp_size = 32;
+    for (int i = threadIdx.x; i < n; i += warp_size)
+    {
+      dest[i] = src[i];
+    }
+    __syncwarp();
+    return dest;
+  }
+
+  /** Copy between two device buffer using all threads in a warp while also performing
+   * a ReLU operation. 
+   **/
+  __device__ __forceinline__ float *
+  memcpy_relu_warp(float *__restrict__ dest, const float *__restrict__ src, int n)
+  {
+    constexpr int warp_size = 32;
+    for (int i = threadIdx.x; i < n; i += warp_size)
+    {
+      dest[i] = src[i] > 0 ? src[i] : 0;
+    }
+    __syncwarp();
+    return dest;
+  }
+
+  
   template <typename DataType>
   __global__ void Scatter_NVSHMEM_Kernel(
       const DataType *__restrict__ values,
       const long *__restrict__ indices,
+      const long* __restrict__ target_rank,
       DataType *__restrict__ outputs,
-      const int mini_batch_size,
       const int num_local_values_rows,
       const int num_cols,
-      const int num_local_output_rows)
+      const int num_local_output_rows,
+      const int cur_rank)
   {
     // Indices
     const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
-    const size_t gidz = threadIdx.z + blockIdx.z * blockDim.z;
     const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
 
     const size_t nthreadsx = gridDim.x * blockDim.x;
     const size_t nthreadsy = gridDim.y * blockDim.y;
-    const size_t nthreadsz = gridDim.z * blockDim.z;
-
-    for (size_t mb_i = gidz; mb_i < mini_batch_size; mb_i += nthreadsz)
+    for (size_t row = gidy; row < num_local_values_rows; row += nthreadsy)
     {
-      const auto values_offset = mb_i * num_local_values_rows * num_cols;
-      const auto output_offset = mb_i * num_local_output_rows * num_cols;
-      const auto indices_offset = mb_i * num_local_values_rows;
-
-      for (size_t row = gidy; row < num_local_values_rows; row += nthreadsy)
+      // Figure out which rank to send the vector
+      const auto ind = indices[row];
+      const auto target_pe = target_rank[row];
+      if (ind > -1 && target_pe != cur_rank)
       {
-        // Figure out which rank to send the vector
-        const auto ind = __float2int_rd(indices[indices_offset + row]);
-        if (ind > -1)
+        const int local_ind = ind % num_local_output_rows;
+        for (size_t i = gidx; i < num_cols; i += nthreadsx)
         {
-          const int pe = (ind) / num_local_output_rows;
-          const int local_ind = ind % num_local_output_rows;
-          for (size_t i = gidx; i < num_cols; i += nthreadsx)
-          {
-            const auto val = values[values_offset + row * num_cols + i];
-            atomic_add(outputs + output_offset + local_ind * num_cols + i, val, pe);
-          }
+          const auto val = values[values_offset + row * num_cols + i];
+          atomic_add(outputs + local_ind * num_cols + i, val, target_pe);
         }
+      }
+    }
+  }
+
+  __global__ void ScatterV_NVSHMEM_Kernel_Warp(
+      const float *__restrict__ input,
+      const long *__restrict__ indices,
+      const long *__restrict__ target_rank,
+      float *__restrict__ shared_mem_output,
+      const int num_local_input_rows,
+      const int num_cols,
+      const int num_local_output_rows)
+  {
+    constexpr int warp_size = 32;
+    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t nthreadsx = gridDim.x * blockDim.x;
+
+    for (auto row = gidx; row < num_local_input_rows * warp_size; row += nthreadsx)
+    {
+      const auto thread_row = row / warp_size;
+      const auto target_pe = target_rank[thread_row];
+      const auto target_row = indices[thread_row];
+
+      if (target_pe > -1)
+      {
+        const auto input_offset = thread_row * num_cols;
+        const auto output_offset = target_row * num_cols;
+        nvshmemx_putmem_nbi_warp(shared_mem_output + output_offset,
+                                 input + input_offset,
+                                 num_cols * sizeof(float),
+                                 target_pe);
       }
     }
   }
@@ -228,78 +279,91 @@ namespace NVSHMEM
     }
   }
 
-
   /*
-  * This kernel is used to gather data from the shared buffer to the local output
-  * buffer. 
-  */
+   * This kernel is used to gather data from the shared buffer to the local output
+   * buffer.
+   */
   template <typename DataType>
   __global__ void Gather_NVSHMEM_Kernel_Wrap_Rank(
-    const DataType * __restrict__ shared_input_buffer,
-    const long* __restrict__ indices,
-    const long* __restrict__ rank, 
-    DataType* __restrict__ local_output_buffer,
-    const int num_output_rows,
-    const int num_cols,){
+      const DataType *__restrict__ shared_input_buffer,
+      const long *__restrict__ indices,
+      const long *__restrict__ src_ranks,
+      DataType *__restrict__ local_output_buffer,
+      const int num_output_rows,
+      const int num_cols,
+      const int cur_rank)
+  {
 
-      constexpr int warp_size = 32;
-      const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+    constexpr int warp_size = 32;
 
-      const size_t nthreadsx = gridDim.x * blockDim.x;
+    const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
 
-      for (size_t row = gidx; row < num_output_rows * warp_size; row += nthreadsx)
+    const size_t nthreadsx = gridDim.x * blockDim.x;
+
+    for (size_t row = gidy; row < num_output_rows * warp_size; row += nthreadsx)
+    {
+      // Each set of warp_size threads will gather a single row
+      const auto dest_ind = row / warp_size;
+      const auto pe = src_ranks[dest_ind];
+      const auto src_ind = indices[dest_ind] % num_output_rows;
+      if (pe > -1)
       {
-        // Each set of warp_size threads will gather a single row
-        const auto dest_ind = row / warp_size;
-        const auto pe = rank[ind];
-        const auto src_ind = indices[ind];
-        if (pe > -1)
+        const auto output_data_offset = dest_ind * num_cols;
+        const auto input_data_offset = src_ind * num_cols;
+        if (pe == cur_rank)
         {
-          const auto output_data_offset = ind * num_cols;
-          const auto input_data_offset = src_ind * num_cols;
+          
+          memcpy_warp(local_output_buffer + output_data_offset,
+                      shared_input_buffer + input_data_offset,
+                      num_cols);
+        }
+        else
+        {
           nvshmemx_getmem_nbi_warp(local_output_buffer + output_data_offset,
                                    shared_input_buffer + input_data_offset,
                                    num_cols * sizeof(DataType),
                                    pe);
         }
       }
+    }
   }
 
   /*
-  * This kernel is used to perform a scatterv operation using NVSHMEM, where the 
-  * the sent data to an individual rank is not contiguous. 
-  */
+   * This kernel is used to perform a scatterv operation using NVSHMEM, where the
+   * the sent data to an individual rank is not contiguous.
+   */
 
   template <typename DataType>
   __global__ void ScatterV_NVSHMEM_Kernel_Wrap_Rank(
-    const DataType * __restrict__ local_input_buffer,
-    const long* __restrict__ indices,
-    const long* __restrict__ rank, 
-    DataType* __restrict__ shared_output_buffer,
-    const int num_input_rows,
-    const int num_cols,){
+      const DataType *__restrict__ local_input_buffer,
+      const long *__restrict__ indices,
+      const long *__restrict__ rank,
+      DataType *__restrict__ shared_output_buffer,
+      const int num_input_rows,
+      const int num_cols)
+  {
 
-      constexpr int warp_size = 32;
-      const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+    constexpr int warp_size = 32;
+    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
 
-      const size_t nthreadsx = gridDim.x * blockDim.x;
+    const size_t nthreadsx = gridDim.x * blockDim.x;
 
-      for (size_t row = gidx; row < num_input_rows * warp_size; row += nthreadsx)
+    for (size_t row = gidx; row < num_input_rows * warp_size; row += nthreadsx)
+    {
+      // Each set of warp_size threads will gather a single row
+      const auto dest_ind = row / warp_size;
+      const auto pe = rank[dest_ind];
+      const auto src_ind = indices[dest_ind];
+      if (pe > -1)
       {
-        // Each set of warp_size threads will gather a single row
-        const auto dest_ind = row / warp_size;
-        const auto pe = rank[ind];
-        const auto src_ind = indices[ind];
-        if (pe > -1)
-        {
-          const auto output_data_offset = ind * num_cols;
-          const auto input_data_offset = src_ind * num_cols;
-          nvshmemx_putmem_nbi_warp(shared_output_buffer + output_data_offset,
-                                   local_input_buffer + input_data_offset,
-                                   num_cols * sizeof(DataType),
-                                   pe);
-        }
+        const auto output_data_offset = dest_ind * num_cols;
+        const auto input_data_offset = src_ind * num_cols;
+        nvshmemx_putmem_nbi_warp(shared_output_buffer + output_data_offset,
+                                 local_input_buffer + input_data_offset,
+                                 num_cols * sizeof(DataType),
+                                 pe);
       }
+    }
   }
 
 } // namespace NVSHMEM
