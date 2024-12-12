@@ -50,7 +50,11 @@ def _nvshmem_scatter(input_tensor, indices, rank_mappings, num_output_rows):
     num_features = input_tensor.shape[2]
     device = input_tensor.device
 
-    scattered_tensor = torch.zeros((bs, num_output_rows, num_features)).to(device)
+    num_elem = num_output_rows * num_features
+
+    scattered_tensor = nvshmem.NVSHMEMP2P.AllocateSymmetricMemory(
+        num_elem, device
+    ).reshape((bs, num_output_rows, num_features))
     cur_rank = nvshmem.NVSHMEMP2P.get_rank()
     indices = indices % num_output_rows
     local_send_tensor = input_tensor[rank_mappings == cur_rank]
@@ -87,42 +91,46 @@ class NVSHMEMGatherFunction(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        indices, shape = ctx.saved_tensors
+        indices, rank_mappings = ctx.saved_tensors
 
         num_output_rows = ctx.num_rows
-        num_features = grad_output.shape[-1]
 
-        num_elements = num_output_rows * num_features
-
-        scattered_grad_tensor = nvshmem.AllocateSymmetricMemory(num_elements).reshape(
-            shape
+        input_grad = _nvshmem_scatter(
+            grad_output, indices, rank_mappings, num_output_rows
         )
-
-        _nvshmem_scatter(grad_output, indices, scattered_grad_tensor)
 
         indices_grad = None
         rank_mappings_grad = None
-        return scattered_grad_tensor, indices_grad, rank_mappings_grad
+        return input_grad, indices_grad, rank_mappings_grad
 
 
 class NVSHMEMScatterFunction(Function):
     @staticmethod
-    def forward(ctx, input_tensor, indices):
+    def forward(ctx, input_tensor, indices, rank_mappings, num_output_rows):
         # Allocate buffer
-        ctx.save_for_backward(indices)
+        ctx.save_for_backward(indices, rank_mappings)
         _size = input_tensor.numel()
         _put_buffer = nvshmem.AllocateSymmetricMemory(_size).reshape(input_tensor.shape)
 
-        scattered_tensors = _nvshmem_scatter(input_tensor, indices, _put_buffer)
+        scattered_tensors = _nvshmem_scatter(
+            input_tensor,
+            indices,
+            rank_mappings,
+            num_output_rows,
+        )
         return scattered_tensors
 
     @staticmethod
     def backward(ctx, grad_output):
+
         nvshmem.register_memory(grad_output)
-        indices = ctx.saved_tensors[0]
-        scattered_tensor = torch.zeros_like(grad_output)
+        indices, rank_mappings = ctx.saved_tensors
+        input_grad = _nvshmmem_gather(grad_output, indices, rank_mappings)
         nvshmem.deregister_memory(grad_output)
-        return grad_output, None
+        indices_grad = None
+        rank_mappings_grad = None
+        num_output_rows_grad = None
+        return input_grad, indices_grad, rank_mappings_grad, num_output_rows_grad
 
 
 class NVSHMEMBackendEngine(BackendEngine):
