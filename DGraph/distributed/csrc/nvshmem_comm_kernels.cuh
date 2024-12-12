@@ -107,7 +107,7 @@ namespace NVSHMEM
         const int local_ind = ind % num_local_output_rows;
         for (size_t i = gidx; i < num_cols; i += nthreadsx)
         {
-          const auto val = values[values_offset + row * num_cols + i];
+          const auto val = values[row * num_cols + i];
           atomic_add(outputs + local_ind * num_cols + i, val, target_pe);
         }
       }
