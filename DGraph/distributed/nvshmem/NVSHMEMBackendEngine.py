@@ -31,8 +31,10 @@ def _nvshmmem_gather(send_tensor, indices, rank_mappings):
     )
     # Gather the tensors
 
+    nvshmem_send_tensor = nvshmem.NVSHMEMP2P.clone_tensor(send_tensor)
+
     nvshmem.NVSHMEMP2P.dist_get(
-        send_tensor,
+        nvshmem_send_tensor,
         gathered_tensor,
         indices,
         rank_mappings,
@@ -84,9 +86,7 @@ class NVSHMEMGatherFunction(Function):
         ctx.save_for_backward(indices, rank_mappings)
         num_rows = indices.shape[1]
         ctx.num_rows = num_rows
-        gathered_tensors = torch.zeros_like(send_tensor)
-        nvshmem_send_tensor = nvshmem.NVSHMEMP2P.clone_tensor(send_tensor)
-        gathered_tensors = _nvshmmem_gather(nvshmem_send_tensor, indices, rank_mappings)
+        gathered_tensors = _nvshmmem_gather(send_tensor, indices, rank_mappings)
         return gathered_tensors
 
     @staticmethod
