@@ -31,6 +31,10 @@ def setup_gather_data(init_nvshmem_backend):
     comm = init_nvshmem_backend
     rank = comm.get_rank()
     world_size = comm.get_world_size()
+
+    torch.cuda.set_device(rank % torch.cuda.device_count())
+    torch.manual_seed(0)
+
     num_features = 64
     all_rank_input_data = torch.randn(1, 4, 64)
 
@@ -58,7 +62,15 @@ def setup_gather_data(init_nvshmem_backend):
 
 
 @pytest.fixture(scope="module")
-def setup_scatter_data():
+def setup_scatter_data(init_nvshmem_backend):
+
+    comm = init_nvshmem_backend
+    rank = comm.get_rank()
+    world_size = comm.get_world_size()
+
+    torch.cuda.set_device(rank % torch.cuda.device_count())
+    torch.manual_seed(0)
+
     all_rank_input_data = torch.randn(1, 4, 64)
     all_edge_coo = torch.tensor([[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]])
     rank_mappings = torch.tensor([[0, 0, 0, 0, 0, 1, 1, 1], [0, 1, 1, 0, 1, 0, 1, 0]])
