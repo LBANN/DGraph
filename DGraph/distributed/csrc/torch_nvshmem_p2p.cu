@@ -191,8 +191,14 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
 
   const auto current_rank = NVSHMEMP2P::m_rank;
 
-  // // Launch the kernel
-  NVSHMEM::Gather_NVSHMEM_Kernel_Wrap_Rank<<<grid_dims, block_dims>>>(input_ptr,
+  // Get the default stream for the current device
+  
+  at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(input.device().index());
+  
+  // const cudaStream_t stream = defaultStream; (There is an implicit conversion)
+
+  // Launch the kernel
+  NVSHMEM::Gather_NVSHMEM_Kernel_Wrap_Rank<<<grid_dims, block_dims, 0, defaultStream>>>(input_ptr,
                                                                       indices_ptr,
                                                                       src_ranks_ptr,
                                                                       output_ptr,
@@ -200,6 +206,10 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
                                                                       num_cols,
                                                                       num_output_rows,
                                                                       current_rank);
+
+  // Wait for the kernel to finish
+  nvshmemx_quiet_on_stream(stream);
+  CUDACHECK(cudaStreamSynchronize(stream));
 }
 
 torch::Tensor
