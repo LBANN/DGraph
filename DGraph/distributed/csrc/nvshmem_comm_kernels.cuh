@@ -65,7 +65,7 @@ namespace NVSHMEM
   }
 
   /** Copy between two device buffer using all threads in a warp while also performing
-   * a ReLU operation. 
+   * a ReLU operation.
    **/
   __device__ __forceinline__ float *
   memcpy_relu_warp(float *__restrict__ dest, const float *__restrict__ src, int n)
@@ -79,12 +79,11 @@ namespace NVSHMEM
     return dest;
   }
 
-  
   template <typename DataType>
   __global__ void Scatter_NVSHMEM_Kernel(
       const DataType *__restrict__ values,
       const long *__restrict__ indices,
-      const long* __restrict__ target_rank,
+      const long *__restrict__ target_rank,
       DataType *__restrict__ outputs,
       const int num_local_values_rows,
       const int num_cols,
@@ -189,53 +188,6 @@ namespace NVSHMEM
   }
 
   template <typename DataType>
-  __global__ void Comm_Aware_Gather_NVSHMEM_Kernel(
-      const DataType *__restrict__ values,
-      const DataType *__restrict__ indices,
-      DataType *__restrict__ shared_buffer,
-      const int mini_batch_size,
-      const int num_local_values_rows,
-      const int num_local_cols,
-      const int num_local_output_rows,
-      const int rank)
-  {
-
-    // Indice
-    const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
-    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
-
-    const size_t nthreadsy = gridDim.y * blockDim.y;
-    const size_t nthreadsx = gridDim.x * blockDim.x;
-
-    const int n_pes = nvshmem_n_pes();
-
-    for (size_t mb_i = gidy; mb_i < mini_batch_size; mb_i += nthreadsy)
-    {
-      // Figure out which rank to send the vector
-      const auto mb_offset = mb_i * num_local_cols * num_local_output_rows;
-      const auto values_offest = mb_i * num_local_cols * num_local_values_rows;
-      const auto ind_offset = mb_i * num_local_output_rows;
-
-      for (size_t row = gidx; row < num_local_output_rows; row += nthreadsx)
-      {
-        const auto ind = __float2int_rd(indices[ind_offset + row]);
-        if (ind > -1)
-        {
-          const int pe = (ind) / num_local_values_rows;
-          if (pe != rank)
-          {
-            const int local_ind = ind % num_local_values_rows;
-            nvshmem_getmem_nbi(shared_buffer + mb_offset + row * num_local_cols,
-                               values + values_offest + local_ind * num_local_cols,
-                               num_local_cols * sizeof(DataType),
-                               pe);
-          }
-        }
-      }
-    }
-  }
-
-  template <typename DataType>
   __global__ void Gather_NVSHMEM_Kernel_Warp(
       const DataType *__restrict__ values,
       const long *__restrict__ indices,
@@ -310,18 +262,18 @@ namespace NVSHMEM
         const auto input_data_offset = src_ind * num_cols;
         if (pe == cur_rank)
         {
-          
+
           memcpy_warp(local_output_buffer + output_data_offset,
                       shared_input_buffer + input_data_offset,
                       num_cols);
         }
-        // else
-        // {
-        //   nvshmemx_getmem_nbi_warp(local_output_buffer + output_data_offset,
-        //                            shared_input_buffer + input_data_offset,
-        //                            num_cols * sizeof(DataType),
-        //                            pe);
-        // }
+        else
+        {
+          nvshmemx_getmem_nbi_warp(local_output_buffer + output_data_offset,
+                                   shared_input_buffer + input_data_offset,
+                                   num_cols * sizeof(DataType),
+                                   pe);
+        }
       }
     }
   }
