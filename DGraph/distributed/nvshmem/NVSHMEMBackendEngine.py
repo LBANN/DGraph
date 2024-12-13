@@ -33,6 +33,7 @@ def _nvshmmem_gather(send_tensor, indices, rank_mappings):
 
     nvshmem_send_tensor = nvshmem.NVSHMEMP2P.clone_tensor(send_tensor)
 
+    print(f"NVSHMEM Send Tensor\n", nvshmem_send_tensor)
     nvshmem.NVSHMEMP2P.dist_get(
         nvshmem_send_tensor,
         gathered_tensor,
