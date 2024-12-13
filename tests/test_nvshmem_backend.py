@@ -27,7 +27,11 @@ def init_nvshmem_backend():
 
 
 @pytest.fixture(scope="module")
-def setup_gather_data():
+def setup_gather_data(init_nvshmem_backend):
+    comm = init_nvshmem_backend
+    rank = comm.get_rank()
+    world_size = comm.get_world_size()
+    num_features = 64
     all_rank_input_data = torch.randn(1, 4, 64)
 
     all_edge_coo = torch.tensor([[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]])
@@ -36,8 +40,19 @@ def setup_gather_data():
     all_rank_output = torch.zeros(2, 8, 64)
 
     for k in range(2):
-        for i in range(8):
-            all_rank_output[k][i] = all_rank_input_data[:, all_edge_coo[k, i]]
+        _indices = all_edge_coo[k].view(1, -1, 1).expand(1, -1, num_features)
+        output_data = torch.gather(all_rank_input_data, 1, _indices)
+        all_rank_output[k] = output_data.squeeze(0)
+
+    input_slice_start = (all_rank_input_data.shape[1] // world_size) * rank
+    input_slice_end = (all_rank_input_data.shape[1] // world_size) * (rank + 1)
+
+    edge_slice_start = (all_edge_coo.shape[1] // world_size) * rank
+    edge_slice_end = (all_edge_coo.shape[1] // world_size) * (rank + 1)
+
+    local_input_data = all_rank_input_data[:, input_slice_start:input_slice_end, :]
+    local_edge_coo = all_edge_coo[:, edge_slice_start:edge_slice_end]
+    local_rank_mappings = rank_mappings[:, edge_slice_start:edge_slice_end]
 
     return all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output
 
@@ -69,25 +84,27 @@ def test_nvshmem_backend_gather(init_nvshmem_backend, setup_gather_data):
         setup_gather_data
     )
 
+    rank = comm.get_rank()
+    world_size = comm.get_world_size()
+
+    input_slice_start = (all_rank_input_data.shape[1] // world_size) * rank
+    input_slice_end = (all_rank_input_data.shape[1] // world_size) * (rank + 1)
+
+    edge_slice_start = (all_edge_coo.shape[1] // world_size) * rank
+    edge_slice_end = (all_edge_coo.shape[1] // world_size) * (rank + 1)
+
+    local_input_data_gt = all_rank_input_data[:, input_slice_start:input_slice_end, :]
+    local_index_gt = all_edge_coo[:, edge_slice_start:edge_slice_end]
+    local_rank_mappings_gt = rank_mappings[:, edge_slice_start:edge_slice_end]
+
     local_input_data = comm.get_local_rank_slice(all_rank_input_data)
     local_index = comm.get_local_rank_slice(all_edge_coo)
     local_rank_mappings = comm.get_local_rank_slice(rank_mappings)
-
-    local_output = comm.gather(local_input_data, local_index, local_rank_mappings)
-
-    rank = comm.get_rank()
-    world_size = comm.get_world_size()
-    input_start_index = (all_rank_input_data.shape[1] // world_size) * rank
-    input_end_index = (all_rank_input_data.shape[1] // world_size) * (rank + 1)
-    local_input_data_gt = all_rank_input_data[:, input_start_index:input_end_index]
-    local_index_gt = all_edge_coo[:, input_start_index:input_end_index]
-    local_rank_mappings_gt = rank_mappings[:, input_start_index:input_end_index]
 
     # Check if the local slicing is correct
     assert torch.allclose(local_input_data, local_input_data_gt)
     assert torch.allclose(local_index.squeeze(0), local_index_gt)
     assert torch.allclose(local_rank_mappings.squeeze(0), local_rank_mappings_gt)
-    assert torch.allclose(local_output, all_rank_output)
 
     # Check if the gather is correct
     output_start_index = (all_rank_output.shape[1] // world_size) * rank
@@ -95,7 +112,19 @@ def test_nvshmem_backend_gather(init_nvshmem_backend, setup_gather_data):
 
     local_output_gt = all_rank_output[:, output_start_index:output_end_index]
 
-    assert torch.allclose(local_output, local_output_gt)
+    for i in range(2):
+        _indices = local_index[[i], :]
+        _rank_mapping = local_rank_mappings[[i], :]
+        print(
+            local_input_data.shape,
+            _indices.shape,
+            _rank_mapping.shape,
+        )
+        gathered_tensor = comm.gather(
+            local_input_data.cuda(), _indices.cuda(), _rank_mapping.cuda()
+        )
+
+        assert torch.allclose(gathered_tensor, local_output_gt[[i]])
 
 
 def test_nvshmem_backend_scatter(init_mpi_backend, setup_scatter_data):

@@ -101,11 +101,13 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   CHECK_INPUT(input);
   CHECK_INPUT(output);
   CHECK_INPUT(indices);
+  CHECK_INPUT(dst_ranks);
 
   TORCH_CHECK(input.is_contiguous());
   TORCH_CHECK(output.is_contiguous());
   TORCH_CHECK(indices.is_contiguous());
   TORCH_CHECK(dst_ranks.is_contiguous());
+
   TORCH_INTERNAL_ASSERT(input.device().type() == at::DeviceType::CUDA);
   TORCH_INTERNAL_ASSERT(output.device().type() == at::DeviceType::CUDA);
   TORCH_INTERNAL_ASSERT(indices.device().type() == at::DeviceType::CUDA);
@@ -114,6 +116,11 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   if (!m_initialized)
   {
     throw std::runtime_error("NVSHMEMP2P is not initialized");
+  }
+
+  if (mini_batches != 1)
+  {
+    throw std::runtime_error("mini_batches > 1 is not supported");
   }
 
   // Get the pointers to the data
@@ -126,19 +133,28 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   block_dims.x = 32;
   block_dims.y = 16;
 
-  grid_dims.y = (num_output_rows + block_dims.y - 1) / block_dims.y;
+  // Capture this into a standalone utility function
+  const auto num_grids_needed = (num_output_rows + block_dims.y - 1) / block_dims.y;
+  grid_dims.y = num_grids_needed < 65535 ? num_grids_needed : 65535;
+
   grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x;
+
+  // Get the default stream for the current device
+  at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(input.device().index());
 
   // Launch the kernel
   const auto current_rank = NVSHMEMP2P::m_rank;
-  NVSHMEM::Scatter_NVSHMEM_Kernel<<<grid_dims, block_dims>>>(input_ptr,
-                                                             indices_ptr,
-                                                             dst_ranks_ptr,
-                                                             output_ptr,
-                                                             num_input_rows,
-                                                             num_cols,
-                                                             num_output_rows,
-                                                             current_rank);
+  NVSHMEM::Scatter_NVSHMEM_Kernel<<<grid_dims, block_dims, 0, defaultStream>>>(input_ptr,
+                                                                                indices_ptr,
+                                                                                dst_ranks_ptr,
+                                                                                output_ptr,
+                                                                                num_input_rows,
+                                                                                num_cols,
+                                                                                num_output_rows,
+                                                                                current_rank);
+  // Wait for the kernel to finish
+  nvshmemx_quiet_on_stream(defaultStream);
+  CUDACHECK(cudaStreamSynchronize(defaultStream));
 }
 
 void NVSHMEMP2P::dist_get(torch::Tensor input,
@@ -186,30 +202,30 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
   block_dims.x = 32;
   block_dims.y = 16;
 
-  grid_dims.y = (num_output_rows + block_dims.y - 1) / block_dims.y;
-  grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x;
+  // Capture this into a standalone utility function
+  const auto num_grids_needed = (num_output_rows + block_dims.y - 1) / block_dims.y;
+  grid_dims.y = num_grids_needed < 65535 ? num_grids_needed : 65535;
 
+  // grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x;
+  grid_dims.x = 1;
   const auto current_rank = NVSHMEMP2P::m_rank;
 
   // Get the default stream for the current device
-  
   at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(input.device().index());
-  
-  // const cudaStream_t stream = defaultStream; (There is an implicit conversion)
 
   // Launch the kernel
   NVSHMEM::Gather_NVSHMEM_Kernel_Wrap_Rank<<<grid_dims, block_dims, 0, defaultStream>>>(input_ptr,
-                                                                      indices_ptr,
-                                                                      src_ranks_ptr,
-                                                                      output_ptr,
-                                                                      num_input_rows,
-                                                                      num_cols,
-                                                                      num_output_rows,
-                                                                      current_rank);
+                                                                                        indices_ptr,
+                                                                                        src_ranks_ptr,
+                                                                                        output_ptr,
+                                                                                        num_input_rows,
+                                                                                        num_cols,
+                                                                                        num_output_rows,
+                                                                                        current_rank);
 
   // Wait for the kernel to finish
-  nvshmemx_quiet_on_stream(stream);
-  CUDACHECK(cudaStreamSynchronize(stream));
+  nvshmemx_quiet_on_stream(defaultStream);
+  CUDACHECK(cudaStreamSynchronize(defaultStream));
 }
 
 torch::Tensor
