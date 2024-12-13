@@ -233,7 +233,7 @@ NVSHMEMP2P::AllocateSymmetricMemory(const int size, const int device_ordinal)
   auto options = torch::TensorOptions()
                      .dtype(torch::kFloat32)
                      .device(device);
-  return torch::from_blob(ptr, {size}, {1}, deleter);
+  return torch::from_blob(ptr, {size}, {1}, deleter, options);
 }
 
 void NVSHMEMP2P::register_memory(torch::Tensor tensor)
@@ -269,10 +269,10 @@ torch::Tensor NVSHMEMP2P::clone_tensor(torch::Tensor src)
     nvshmem_free(ptr);
   };
 
-  auto tensor = torch::from_blob(ptr, {size}, {1}, deleter);
+  auto tensor = torch::from_blob(ptr, {size}, {1}, deleter, options);
 
   // Copy the data
-  tensor.copy_(src);
+  tensor.copy_(src.flatten());
   return tensor;
 }
 
