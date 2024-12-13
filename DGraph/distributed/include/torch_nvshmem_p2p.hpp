@@ -44,9 +44,12 @@ public:
                        const int num_input_rows,
                        const int cols,
                        const int num_output_rows);
+
+  static void barrier();
+  static void barrier_stream(const int device_ordinal);
   static torch::Tensor AllocateSymmetricMemory(const int size,
                                                const int device_ordinal);
-
+  static torch::Tensor clone_tensor(torch::Tensor tensor);
   static void register_memory(torch::Tensor tensor);
   static void deregister_memory(torch::Tensor tensor);
   static int get_rank();
