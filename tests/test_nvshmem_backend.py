@@ -20,7 +20,6 @@ import torch
 
 @pytest.fixture(scope="module")
 def init_nvshmem_backend():
-    dist.init_process_group(backend="nvshmem")
 
     comm = Comm.Communicator.init_process_group("nvshmem")
     return comm
@@ -47,16 +46,6 @@ def setup_gather_data(init_nvshmem_backend):
         _indices = all_edge_coo[k].view(1, -1, 1).expand(1, -1, num_features)
         output_data = torch.gather(all_rank_input_data, 1, _indices)
         all_rank_output[k] = output_data.squeeze(0)
-
-    input_slice_start = (all_rank_input_data.shape[1] // world_size) * rank
-    input_slice_end = (all_rank_input_data.shape[1] // world_size) * (rank + 1)
-
-    edge_slice_start = (all_edge_coo.shape[1] // world_size) * rank
-    edge_slice_end = (all_edge_coo.shape[1] // world_size) * (rank + 1)
-
-    local_input_data = all_rank_input_data[:, input_slice_start:input_slice_end, :]
-    local_edge_coo = all_edge_coo[:, edge_slice_start:edge_slice_end]
-    local_rank_mappings = rank_mappings[:, edge_slice_start:edge_slice_end]
 
     return all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output
 
@@ -109,15 +98,6 @@ def test_nvshmem_backend_gather(init_nvshmem_backend, setup_gather_data):
     local_index_gt = all_edge_coo[:, edge_slice_start:edge_slice_end]
     local_rank_mappings_gt = rank_mappings[:, edge_slice_start:edge_slice_end]
 
-    local_input_data = comm.get_local_rank_slice(all_rank_input_data)
-    local_index = comm.get_local_rank_slice(all_edge_coo)
-    local_rank_mappings = comm.get_local_rank_slice(rank_mappings)
-
-    # Check if the local slicing is correct
-    assert torch.allclose(local_input_data, local_input_data_gt)
-    assert torch.allclose(local_index.squeeze(0), local_index_gt)
-    assert torch.allclose(local_rank_mappings.squeeze(0), local_rank_mappings_gt)
-
     # Check if the gather is correct
     output_start_index = (all_rank_output.shape[1] // world_size) * rank
     output_end_index = (all_rank_output.shape[1] // world_size) * (rank + 1)
@@ -125,18 +105,22 @@ def test_nvshmem_backend_gather(init_nvshmem_backend, setup_gather_data):
     local_output_gt = all_rank_output[:, output_start_index:output_end_index]
 
     for i in range(2):
-        _indices = local_index[[i], :]
-        _rank_mapping = local_rank_mappings[[i], :]
-        print(
-            local_input_data.shape,
-            _indices.shape,
-            _rank_mapping.shape,
-        )
+        local_indices_gt = local_index_gt[[i], :]
+        local_indices = comm.get_local_rank_slice(all_edge_coo[[i]], dim=1)
+        assert torch.allclose(local_indices, local_indices_gt)
+
+        local_rank_mapping_gt = local_rank_mappings_gt[[i], :]
+        local_rank_mapping = comm.get_local_rank_slice(rank_mappings[[i]], dim=1)
+        assert torch.allclose(local_rank_mapping, local_rank_mapping_gt)
+
+        local_input_data = comm.get_local_rank_slice(all_rank_input_data, dim=1)
+        assert torch.allclose(local_input_data, local_input_data_gt)
+
         gathered_tensor = comm.gather(
-            local_input_data.cuda(), _indices.cuda(), _rank_mapping.cuda()
+            local_input_data.cuda(), local_indices.cuda(), local_rank_mapping.cuda()
         )
 
-        assert torch.allclose(gathered_tensor, local_output_gt[[i]])
+        assert torch.allclose(gathered_tensor, local_output_gt[[i]].cuda())
 
 
 def test_nvshmem_backend_scatter(init_mpi_backend, setup_scatter_data):
