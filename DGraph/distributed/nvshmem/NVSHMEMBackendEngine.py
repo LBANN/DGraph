@@ -33,7 +33,6 @@ def _nvshmmem_gather(send_tensor, indices, rank_mappings):
 
     nvshmem_send_tensor = nvshmem.NVSHMEMP2P.clone_tensor(send_tensor)
 
-    print(f"NVSHMEM Send Tensor\n", nvshmem_send_tensor)
     nvshmem.NVSHMEMP2P.dist_get(
         nvshmem_send_tensor,
         gathered_tensor,
@@ -205,5 +204,34 @@ class NVSHMEMBackendEngine(BackendEngine):
         return scattered_tensors
 
     def barrier(self):
+        assert NVSHMEMBackendEngine._is_initialized, "NVSHMEM not initialized"
+        assert NVSHMEMBackendEngine._nvshmem_p2p_obj is not None, "NVSHMEM P2P obj None"
         NVSHMEMBackendEngine._nvshmem_p2p_obj.barrier()
         return
+
+    def destroy(self):
+        assert NVSHMEMBackendEngine._is_initialized, "NVSHMEM not initialized"
+        assert NVSHMEMBackendEngine._nvshmem_p2p_obj is not None, "NVSHMEM P2P obj None"
+        NVSHMEMBackendEngine._nvshmem_p2p_obj.finalize()
+        NVSHMEMBackendEngine._is_initialized = False
+        NVSHMEMBackendEngine._rank = -1
+        NVSHMEMBackendEngine._world_size = -1
+        NVSHMEMBackendEngine._ranks_per_graph = -1
+        NVSHMEMBackendEngine._nvshmem_p2p_obj = None
+        return
+
+    def get_local_rank_slice(self, tensor: torch.Tensor, dim: int = -1) -> torch.Tensor:
+        assert NVSHMEMBackendEngine._is_initialized, "NVSHMEM not initialized"
+        assert NVSHMEMBackendEngine._nvshmem_p2p_obj is not None, "NVSHMEM P2P obj None"
+        rank = NVSHMEMBackendEngine._rank
+        world_size = NVSHMEMBackendEngine._world_size
+
+        tensor_shape = tensor.shape
+        tensor_size = tensor_shape[dim]
+        assert tensor_size % world_size == 0, "Tensor size not divisible by world size"
+        local_size = tensor_size // world_size
+        start_index = rank * local_size
+        end_index = start_index + local_size
+        length = end_index - start_index
+        slice_tensor = tensor.narrow(dim, start_index, length)
+        return slice_tensor
