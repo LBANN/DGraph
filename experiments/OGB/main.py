@@ -112,8 +112,7 @@ def _run_experiment(
             print(f"Rank: {rank} Mapping: {rank_mappings.shape}")
             print(f"Rank: {rank} Node Features: {node_features.shape}")
             print(f"Rank: {rank} Edge Indices: {edge_indices.shape}")
-        if comm.get_world_size() > 1:
-            dist.barrier()
+        dist.barrier()
     criterion = torch.nn.CrossEntropyLoss()
 
     train_mask = dataset.graph_obj.get_local_mask("train")
@@ -213,7 +212,7 @@ def main(
         "mpi",
     ], "Invalid backend"
 
-    assert dataset in ["arxiv", "products"], "Invalid dataset"
+    assert dataset in ["arxiv"], "Invalid dataset"
 
     if _communicator.lower() == "single":
         # Dummy communicator for single process testing
