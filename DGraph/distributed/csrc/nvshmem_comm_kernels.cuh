@@ -289,23 +289,21 @@ namespace NVSHMEM
       const long *__restrict__ indices,
       const long *__restrict__ src_ranks,
       DataType *__restrict__ local_output_buffer,
-      const int num_output_rows,
+      const int num_input_rows,
       const int num_cols,
+      const int num_output_rows,
       const int cur_rank)
   {
-
-    constexpr int warp_size = 32;
-
     const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
 
-    const size_t nthreadsx = gridDim.x * blockDim.x;
+    const size_t nthreadsy = gridDim.y * blockDim.y;
 
-    for (size_t row = gidy; row < num_output_rows * warp_size; row += nthreadsx)
+    for (size_t row = gidy; row < num_output_rows; row += nthreadsy)
     {
       // Each set of warp_size threads will gather a single row
-      const auto dest_ind = row / warp_size;
+      const auto dest_ind = row;
       const auto pe = src_ranks[dest_ind];
-      const auto src_ind = indices[dest_ind] % num_output_rows;
+      const auto src_ind = indices[dest_ind] % num_input_rows;
       if (pe > -1)
       {
         const auto output_data_offset = dest_ind * num_cols;
@@ -317,13 +315,13 @@ namespace NVSHMEM
                       shared_input_buffer + input_data_offset,
                       num_cols);
         }
-        else
-        {
-          nvshmemx_getmem_nbi_warp(local_output_buffer + output_data_offset,
-                                   shared_input_buffer + input_data_offset,
-                                   num_cols * sizeof(DataType),
-                                   pe);
-        }
+        // else
+        // {
+        //   nvshmemx_getmem_nbi_warp(local_output_buffer + output_data_offset,
+        //                            shared_input_buffer + input_data_offset,
+        //                            num_cols * sizeof(DataType),
+        //                            pe);
+        // }
       }
     }
   }

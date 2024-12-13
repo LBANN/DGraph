@@ -14,6 +14,7 @@
  * SPDX-License-Identifier: (Apache-2.0)
  */
 #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
 #include "torch_nvshmem_p2p.hpp"
 #include "mpi.h"
 #include "macros.hpp"
@@ -152,10 +153,13 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
   CHECK_INPUT(input);
   CHECK_INPUT(output);
   CHECK_INPUT(indices);
+  CHECK_INPUT(src_ranks);
+
   TORCH_CHECK(input.is_contiguous());
   TORCH_CHECK(output.is_contiguous());
   TORCH_CHECK(indices.is_contiguous());
   TORCH_CHECK(src_ranks.is_contiguous());
+
   TORCH_INTERNAL_ASSERT(input.device().type() == at::DeviceType::CUDA);
   TORCH_INTERNAL_ASSERT(output.device().type() == at::DeviceType::CUDA);
   TORCH_INTERNAL_ASSERT(indices.device().type() == at::DeviceType::CUDA);
@@ -165,11 +169,18 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
     throw std::runtime_error("NVSHMEMP2P is not initialized");
   }
 
-  // Get the pointers to the data
+  if (mini_batches != 1)
+  {
+    throw std::runtime_error("mini_batches > 1 is not supported");
+  }
+
+  // TODO: Should be we use packed accessors intead? - S.Z.
+  //  Get the pointers to the data
   const float *input_ptr = input.data_ptr<float>();
   const long *indices_ptr = indices.data_ptr<long>();
-  const long* src_ranks_ptr = src_ranks.data_ptr<long>();
+  const long *src_ranks_ptr = src_ranks.data_ptr<long>();
   float *output_ptr = output.data_ptr<float>();
+
   dim3 block_dims, grid_dims;
 
   block_dims.x = 32;
@@ -178,6 +189,8 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
   grid_dims.y = (num_output_rows + block_dims.y - 1) / block_dims.y;
   grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x;
 
+  const auto current_rank = NVSHMEMP2P::m_rank;
+
   // // Launch the kernel
   NVSHMEM::Gather_NVSHMEM_Kernel_Wrap_Rank<<<grid_dims, block_dims>>>(input_ptr,
                                                                       indices_ptr,
@@ -185,7 +198,8 @@ void NVSHMEMP2P::dist_get(torch::Tensor input,
                                                                       output_ptr,
                                                                       num_input_rows,
                                                                       num_cols,
-                                                                      num_output_rows);
+                                                                      num_output_rows,
+                                                                      current_rank);
 }
 
 torch::Tensor
@@ -241,6 +255,27 @@ void NVSHMEMP2P::register_memory(torch::Tensor tensor)
   nvshmemx_buffer_register(ptr, size);
 }
 
+torch::Tensor NVSHMEMP2P::clone_tensor(torch::Tensor src)
+{
+  auto device = src.device();
+  auto options = torch::TensorOptions()
+                     .dtype(torch::kFloat32)
+                     .device(device);
+
+  auto size = src.numel();
+  void *ptr = nvshmem_malloc((size_t)size * sizeof(float));
+  std::function<void(void *)> deleter = [](void *ptr)
+  {
+    nvshmem_free(ptr);
+  };
+
+  auto tensor = torch::from_blob(ptr, {size}, {1}, deleter);
+
+  // Copy the data
+  tensor.copy_(src);
+  return tensor;
+}
+
 void NVSHMEMP2P::deregister_memory(torch::Tensor tensor)
 {
   if (!tensor.is_contiguous())
@@ -254,4 +289,25 @@ void NVSHMEMP2P::deregister_memory(torch::Tensor tensor)
   }
 
   nvshmemx_buffer_unregister(tensor.data_ptr());
+}
+
+void NVSHMEMP2P::barrier()
+{
+  if (!m_initialized)
+  {
+    throw std::runtime_error("NVSHMEMP2P is not initialized");
+  }
+  nvshmem_barrier_all();
+}
+
+void NVSHMEMP2P::barrier_stream(const int device_ordinal)
+{
+  if (!m_initialized)
+  {
+    throw std::runtime_error("NVSHMEMP2P is not initialized");
+  }
+  // get the default CUDA stream on device 0
+  at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(device_ordinal);
+
+  nvshmemx_barrier_all_on_stream(defaultStream.stream());
 }

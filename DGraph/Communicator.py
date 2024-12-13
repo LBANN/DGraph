@@ -73,6 +73,10 @@ class Communicator(CommunicatorBase):
         self.__check_init()
         return self.__backend_engine.gather(*args, **kwargs)
 
+    def barrier(self) -> None:
+        self.__check_init()
+        self.__backend_engine.barrier()
+
     def destroy(self) -> None:
         """Destroys the process group and releases resources."""
         self.__check_init()

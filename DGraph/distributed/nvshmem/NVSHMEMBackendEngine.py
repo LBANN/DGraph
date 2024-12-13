@@ -36,6 +36,7 @@ def _nvshmmem_gather(send_tensor, indices, rank_mappings):
         gathered_tensor,
         indices,
         rank_mappings,
+        bs,
         num_input_rows,
         num_features,
         num_output_rows,
@@ -83,10 +84,9 @@ class NVSHMEMGatherFunction(Function):
         ctx.save_for_backward(indices, rank_mappings)
         num_rows = indices.shape[1]
         ctx.num_rows = num_rows
-        nvshmem.NVSHMEMP2P.register_memory(send_tensor)
-
-        gathered_tensors = _nvshmmem_gather(send_tensor, indices, rank_mappings)
-        nvshmem.NVSHMEMP2P.deregister_memory(send_tensor)
+        gathered_tensors = torch.zeros_like(send_tensor)
+        nvshmem_send_tensor = nvshmem.NVSHMEMP2P.clone_tensor(send_tensor)
+        gathered_tensors = _nvshmmem_gather(nvshmem_send_tensor, indices, rank_mappings)
         return gathered_tensors
 
     @staticmethod
@@ -123,6 +123,7 @@ class NVSHMEMScatterFunction(Function):
     @staticmethod
     def backward(ctx, grad_output):
 
+        # nvshmem_grad_output =
         nvshmem.register_memory(grad_output)
         indices, rank_mappings = ctx.saved_tensors
         input_grad = _nvshmmem_gather(grad_output, indices, rank_mappings)
@@ -201,3 +202,7 @@ class NVSHMEMBackendEngine(BackendEngine):
             input_tensor, indices, rank_mappings, num_output_rows
         )
         return scattered_tensors
+
+    def barrier(self):
+        NVSHMEMBackendEngine._nvshmem_p2p_obj.barrier()
+        return
