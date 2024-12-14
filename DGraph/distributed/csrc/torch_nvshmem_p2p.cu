@@ -128,23 +128,25 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   const long *indices_ptr = indices.data_ptr<long>();
   const long *dst_ranks_ptr = dst_ranks.data_ptr<long>();
   float *output_ptr = output.data_ptr<float>();
-
   dim3 block_dims, grid_dims;
   block_dims.x = 32;
   block_dims.y = 16;
-
+  block_dims.z = 1;
   // Capture this into a standalone utility function
-  const auto num_grids_needed = (num_output_rows + block_dims.y - 1) / block_dims.y;
+  const auto num_grids_needed = (num_input_rows + block_dims.y - 1) / block_dims.y;
   grid_dims.y = num_grids_needed < 65535 ? num_grids_needed : 65535;
-
   grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x;
-
   // Get the default stream for the current device
   at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(input.device().index());
 
+  // Sync the stream before launching the kernel in 
+  // the input tensor hasn't been locally updated and the 
+  // symmetric heap is allocated
+  nvshmemx_quiet_on_stream(defaultStream);
+
   // Launch the kernel
   const auto current_rank = NVSHMEMP2P::m_rank;
-  NVSHMEM::Scatter_NVSHMEM_Kernel<<<grid_dims, block_dims, 0, defaultStream>>>(input_ptr,
+  NVSHMEM::Scatter_NVSHMEM_Kernel<<<grid_dims, block_dims,  0, defaultStream>>>(input_ptr,
                                                                                 indices_ptr,
                                                                                 dst_ranks_ptr,
                                                                                 output_ptr,

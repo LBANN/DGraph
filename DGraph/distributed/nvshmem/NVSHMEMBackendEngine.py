@@ -55,22 +55,27 @@ def _nvshmem_scatter(input_tensor, indices, rank_mappings, num_output_rows):
 
     num_elem = num_output_rows * num_features
 
-    scattered_tensor = nvshmem.NVSHMEMP2P.AllocateSymmetricMemory(
-        num_elem, device
+    scattered_tensor = nvshmem.NVSHMEMP2P.allocate_symmetric_memory(
+        num_elem, device.index
     ).reshape((bs, num_output_rows, num_features))
     cur_rank = nvshmem.NVSHMEMP2P.get_rank()
     indices = indices % num_output_rows
-    local_send_tensor = input_tensor[rank_mappings == cur_rank]
-    local_indices = indices[rank_mappings == cur_rank]
-    scattered_tensor.scatter_add_(
-        1, local_indices.unsqueeze(-1).expand_as(local_send_tensor), local_send_tensor
+    local_send_tensor = input_tensor[rank_mappings == cur_rank].unsqueeze(0)
+    local_indices = (
+        indices[rank_mappings == cur_rank]
+        .unsqueeze(0)
+        .unsqueeze(-1)
+        .expand(1, -1, num_features)
     )
+    scattered_tensor.scatter_add_(1, local_indices, local_send_tensor)
 
+    print(f"rank {cur_rank}\n", indices, "\n", rank_mappings, flush=True)
     nvshmem.NVSHMEMP2P.dist_put(
-        scattered_tensor,
         input_tensor,
+        scattered_tensor,
         indices,
         rank_mappings,
+        bs,
         num_input_rows,
         num_features,
         num_output_rows,
@@ -109,9 +114,6 @@ class NVSHMEMScatterFunction(Function):
     def forward(ctx, input_tensor, indices, rank_mappings, num_output_rows):
         # Allocate buffer
         ctx.save_for_backward(indices, rank_mappings)
-        _size = input_tensor.numel()
-        _put_buffer = nvshmem.AllocateSymmetricMemory(_size).reshape(input_tensor.shape)
-
         scattered_tensors = _nvshmem_scatter(
             input_tensor,
             indices,

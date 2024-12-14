@@ -39,7 +39,7 @@ public:
   static void dist_get(torch::Tensor src,
                        torch::Tensor dst,
                        torch::Tensor indices,
-                       torch::Tensor src_ranks,
+                       torch::Tensor source_ranks,
                        const int mini_batches,
                        const int num_input_rows,
                        const int cols,
