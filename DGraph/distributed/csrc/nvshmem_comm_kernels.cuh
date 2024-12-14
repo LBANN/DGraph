@@ -2,6 +2,7 @@
 #include <cuda.h>
 #include "nvshmem.h"
 #include "nvshmemx.h"
+#include <stdio.h>
 
 /**
  *
@@ -91,12 +92,12 @@ namespace NVSHMEM
       const int cur_rank)
   {
     // Indices
-    const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
-    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+    const auto gidy = threadIdx.y + blockIdx.y * blockDim.y;
+    const auto gidx = threadIdx.x + blockIdx.x * blockDim.x;
 
-    const size_t nthreadsx = gridDim.x * blockDim.x;
-    const size_t nthreadsy = gridDim.y * blockDim.y;
-    for (size_t row = gidy; row < num_local_values_rows; row += nthreadsy)
+    const auto nthreadsx = gridDim.x * blockDim.x;
+    const auto nthreadsy = gridDim.y * blockDim.y;
+    for (auto row = gidy; row < num_local_values_rows; row += nthreadsy)
     {
       // Figure out which rank to send the vector
       const auto ind = indices[row];
@@ -104,10 +105,14 @@ namespace NVSHMEM
       if (ind > -1 && target_pe != cur_rank)
       {
         const int local_ind = ind % num_local_output_rows;
-        for (size_t i = gidx; i < num_cols; i += nthreadsx)
+        for (auto i = gidx; i < num_cols; i += nthreadsx)
         {
           const auto val = values[row * num_cols + i];
-          atomic_add(outputs + local_ind * num_cols + i, val, target_pe);
+          if (threadIdx.x == 0)
+          {
+            printf("Rank %d: Same Rank? %d, Target PE %d, Local Ind %d \n", cur_rank == target_pe, ind, target_pe, local_ind);
+          // atomic_add(outputs + local_ind * num_cols + i, val, target_pe);
+          }
         }
       }
     }
@@ -246,9 +251,9 @@ namespace NVSHMEM
       const int num_output_rows,
       const int cur_rank)
   {
-    const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
+    const auto gidy = threadIdx.y + blockIdx.y * blockDim.y;
 
-    const size_t nthreadsy = gridDim.y * blockDim.y;
+    const auto nthreadsy = gridDim.y * blockDim.y;
 
     for (size_t row = gidy; row < num_output_rows; row += nthreadsy)
     {
