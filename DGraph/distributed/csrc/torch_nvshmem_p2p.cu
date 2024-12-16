@@ -48,6 +48,10 @@ void NVSHMEMP2P::init()
     m_rank = mpi_rank;
     m_world_size = mpi_size;
     m_initialized = true;
+
+    int device_ordinal = 0;
+    device_ordinal = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE);
+    CUDACHECK(cudaSetDevice(device_ordinal));
   }
 }
 
@@ -141,9 +145,9 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
 
   // Sync the stream before launching the kernel in 
   // the input tensor hasn't been locally updated and the 
-  // symmetric heap is allocated
-  nvshmemx_quiet_on_stream(defaultStream);
-
+  // symmetric heap is allocated.
+  nvshmemx_quiet_on_stream(defaultStream); 
+  CUDACHECK(cudaStreamSynchronize(defaultStream));
   // Launch the kernel
   const auto current_rank = NVSHMEMP2P::m_rank;
   NVSHMEM::Scatter_NVSHMEM_Kernel<<<grid_dims, block_dims,  0, defaultStream>>>(input_ptr,
@@ -243,7 +247,7 @@ NVSHMEMP2P::AllocateSymmetricMemory(const int size, const int device_ordinal)
     throw std::runtime_error("NVSHMEMP2P is not initialized");
   }
 
-  void *ptr = nvshmem_malloc((size_t)size);
+  void *ptr = nvshmem_malloc((size_t)size * sizeof(float));
 
   std::function<void(void *)> deleter = [](void *ptr)
   {
@@ -261,7 +265,11 @@ NVSHMEMP2P::AllocateSymmetricMemory(const int size, const int device_ordinal)
   auto options = torch::TensorOptions()
                      .dtype(torch::kFloat32)
                      .device(device);
-  return torch::from_blob(ptr, {size}, {1}, deleter, options);
+  auto tensor = torch::from_blob(ptr, {size}, {1}, deleter, options);
+
+  CUDACHECK(cudaStreamSynchronize(0));
+  CUDACHECK(cudaGetLastError());
+  return tensor;
 }
 
 void NVSHMEMP2P::register_memory(torch::Tensor tensor)
@@ -301,6 +309,9 @@ torch::Tensor NVSHMEMP2P::clone_tensor(torch::Tensor src)
 
   // Copy the data
   tensor.copy_(src.flatten());
+
+  CUDACHECK(cudaStreamSynchronize(0));
+  CUDACHECK(cudaGetLastError());
   return tensor;
 }
 

@@ -14,10 +14,11 @@
 
 namespace NVSHMEM
 {
-  __device__ __forceinline__ float atomic_add(float *const __restrict__ address,
+  __device__ __forceinline__ float atomic_add(float* __restrict__ address,
                                               const float val,
                                               const int pe)
   {
+
 
     int *address_as_int = (int *)address;
     int assumed;
@@ -33,7 +34,7 @@ namespace NVSHMEM
     return __int_as_float(old);
   }
 
-  __device__ __forceinline__ double atomic_add(double *const __restrict__ address,
+  __device__ __forceinline__ double atomic_add(double* __restrict__ address,
                                                const double val,
                                                const int pe)
   {
@@ -108,11 +109,7 @@ namespace NVSHMEM
         for (auto i = gidx; i < num_cols; i += nthreadsx)
         {
           const auto val = values[row * num_cols + i];
-          if (threadIdx.x == 0)
-          {
-            printf("Rank %d: Same Rank? %d, Target PE %d, Local Ind %d \n", cur_rank == target_pe, ind, target_pe, local_ind);
-          // atomic_add(outputs + local_ind * num_cols + i, val, target_pe);
-          }
+          atomic_add(&outputs[(local_ind * num_cols) + i], val, target_pe);
         }
       }
     }

@@ -68,8 +68,6 @@ def _nvshmem_scatter(input_tensor, indices, rank_mappings, num_output_rows):
         .expand(1, -1, num_features)
     )
     scattered_tensor.scatter_add_(1, local_indices, local_send_tensor)
-
-    print(f"rank {cur_rank}\n", indices, "\n", rank_mappings, flush=True)
     nvshmem.NVSHMEMP2P.dist_put(
         input_tensor,
         scattered_tensor,
@@ -80,6 +78,8 @@ def _nvshmem_scatter(input_tensor, indices, rank_mappings, num_output_rows):
         num_features,
         num_output_rows,
     )
+
+    torch.cuda.synchronize()
 
     return scattered_tensor
 
