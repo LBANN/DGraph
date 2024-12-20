@@ -81,6 +81,13 @@ namespace NVSHMEM
     return dest;
   }
 
+  /*
+   * This kernel is used to scatter-add data from the shared buffer to the local output
+   * buffer.
+   * 
+   * y[indices[i], j] += x[i, j]
+   * 
+   */
   template <typename DataType>
   __global__ void Scatter_NVSHMEM_Kernel(
       const DataType *__restrict__ values,
@@ -92,6 +99,11 @@ namespace NVSHMEM
       const int num_local_output_rows,
       const int cur_rank)
   {
+    // Note that this kernel does NOT support mibibatch dimension or 
+    // mini-batch size > 1. The most expected use case is single batch
+    // gather operations with a single sample split across multiple ranks.
+    // TODO: Add support for mini-batch size > 1 if needed. - S.Z
+
     // Indices
     const auto gidy = threadIdx.y + blockIdx.y * blockDim.y;
     const auto gidx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -236,6 +248,9 @@ namespace NVSHMEM
   /*
    * This kernel is used to gather data from the shared buffer to the local output
    * buffer.
+   * 
+   * y[i, j] = x[indices[i], j]
+   * 
    */
   template <typename DataType>
   __global__ void Gather_NVSHMEM_Kernel_Wrap_Rank(
@@ -248,8 +263,11 @@ namespace NVSHMEM
       const int num_output_rows,
       const int cur_rank)
   {
+    // Note that this kernel does NOT support mibibatch dimension or 
+    // mini-batch size > 1. The most expected use case is single batch
+    // gather operations with a single sample split across multiple ranks.
+    // TODO: Add support for mini-batch size > 1 if needed. - S.Z
     const auto gidy = threadIdx.y + blockIdx.y * blockDim.y;
-
     const auto nthreadsy = gridDim.y * blockDim.y;
 
     for (size_t row = gidy; row < num_output_rows; row += nthreadsy)

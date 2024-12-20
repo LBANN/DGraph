@@ -127,8 +127,8 @@ def test_nvshmem_backend_gather(init_nvshmem_backend, setup_gather_data):
         assert torch.allclose(gathered_tensor, local_output_gt[[i]].cuda())
 
 
-def test_nvshmem_backend_scatter(init_mpi_backend, setup_scatter_data):
-    comm = init_mpi_backend
+def test_nvshmem_backend_scatter(init_nvshmem_backend, setup_scatter_data):
+    comm = init_nvshmem_backend
     rank = comm.get_rank()
     world_size = comm.get_world_size()
     all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output = (
