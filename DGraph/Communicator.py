@@ -14,6 +14,7 @@
 import torch
 from DGraph.distributed.mpi import MPIBackendEngine
 from DGraph.distributed.nccl import NCCLBackendEngine
+from DGraph.distributed.nvshmem import NVSHMEMBackendEngine
 from DGraph.CommunicatorBase import CommunicatorBase
 
 SUPPORTED_BACKENDS = ["nccl", "mpi", "nvshmem"]
@@ -38,6 +39,8 @@ class Communicator(CommunicatorBase):
             self.__backend_engine = NCCLBackendEngine()
         elif backend == "mpi":
             self.__backend_engine = MPIBackendEngine(**kwargs)
+        elif backend == "nvshmem":
+            self.__backend_engine = NVSHMEMBackendEngine()
         else:
             raise NotImplementedError(f"Backend {backend} not implemented")
         Communicator._is_initialized = True
@@ -69,6 +72,10 @@ class Communicator(CommunicatorBase):
     def gather(self, *args, **kwargs) -> torch.Tensor:
         self.__check_init()
         return self.__backend_engine.gather(*args, **kwargs)
+
+    def barrier(self) -> None:
+        self.__check_init()
+        self.__backend_engine.barrier()
 
     def destroy(self) -> None:
         """Destroys the process group and releases resources."""

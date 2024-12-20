@@ -21,7 +21,9 @@ from DGraph.distributed.RankLocalOps import (
     RankLocalRenumberingWithMapping,
 )
 import mpi4py
-mpi4py.rc.initialize = False 
+
+mpi4py.rc.initialize = False
+
 from mpi4py import MPI
 import warnings
 from torch.autograd import Function
