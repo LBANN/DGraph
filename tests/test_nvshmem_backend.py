@@ -161,3 +161,8 @@ def test_nvshmem_backend_scatter(init_nvshmem_backend, setup_scatter_data):
 
         local_input_data = comm.get_local_rank_slice(all_rank_input_data, dim=1)
         assert torch.allclose(local_input_data, local_input_data_gt)
+
+        scattered_tensor = comm.scatter(
+            local_input_data.cuda(), local_indices.cuda(), local_rank_mapping.cuda()
+        )
+        assert torch.allclose(scattered_tensor, local_output_data_gt[[i]].cuda())

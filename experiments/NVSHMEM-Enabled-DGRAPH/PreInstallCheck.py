@@ -33,11 +33,14 @@ def _check_mpi():
     print("Checking if MPI_HOME is set")
 
     error_signal = False
-    if "MPI_HOME" not in os.environ:
-        print("ERROR: MPI_HOME is not set\n")
+
+    usual_MPI_envs_names = ["MPI_HOME", "MPI_ROOT", "MPICH_HOME"]
+    if not any(env_name in os.environ for env_name in usual_MPI_envs_names):
+        print("ERROR: One of MPI_HOME, MPI_ROOT, or MPICH_HOME is not set\n")
         error_signal = True
     else:
-        print(f"MPI_HOME: {os.environ['MPI_HOME']}\n")
+        mpi_env_name = [x for x in usual_MPI_envs_names if x in os.environ][0]
+        print(f"{mpi_env_name}: {os.environ[mpi_env_name]}\n")
 
     return error_signal
 
