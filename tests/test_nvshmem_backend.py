@@ -60,8 +60,6 @@ def setup_scatter_data(init_nvshmem_backend):
 
     torch.manual_seed(0)
 
-    torch.manual_seed(0)
-
     num_features = 8
 
     all_rank_input_data = torch.randn(1, 8, num_features)
@@ -163,7 +161,6 @@ def test_nvshmem_backend_scatter(init_nvshmem_backend, setup_scatter_data):
     output_slice_end = (num_global_output_rows // world_size) * (rank + 1)
     local_output_data_gt = all_rank_output[:, output_slice_start:output_slice_end, :]
     num_output_rows = local_output_data_gt.shape[1]
-    num_output_rows = local_output_data_gt.shape[1]
 
     for i in range(2):
         local_indices_gt = local_edge_coo[[i], :]
@@ -184,4 +181,5 @@ def test_nvshmem_backend_scatter(init_nvshmem_backend, setup_scatter_data):
             local_rank_mapping.cuda(),
             num_output_rows,
         )
+
         assert torch.allclose(scattered_tensor, local_output_data_gt[[i]].cuda())
