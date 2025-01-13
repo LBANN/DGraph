@@ -55,9 +55,12 @@ def _nvshmem_scatter(input_tensor, indices, rank_mappings, num_output_rows):
 
     num_elem = num_output_rows * num_features
 
+    # TODO: Look into using calloc here to avoid zeroing out the tensor
     scattered_tensor = nvshmem.NVSHMEMP2P.allocate_symmetric_memory(
         num_elem, device.index
     ).reshape((bs, num_output_rows, num_features))
+    scattered_tensor.zero_()
+
     cur_rank = nvshmem.NVSHMEMP2P.get_rank()
     indices = indices % num_output_rows
     local_send_tensor = input_tensor[rank_mappings == cur_rank].unsqueeze(0)

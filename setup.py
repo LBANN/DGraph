@@ -44,8 +44,12 @@ if not disable_dgraph_nvshmem:
         raise EnvironmentError("NVSHMEM_HOME must be set to build DGraph")
 
     # TODO: Try to add the ability to input this path as an argument
-    if "MPI_HOME" not in os.environ:
+    usual_MPI_envs_names = ["MPI_HOME", "MPI_ROOT", "MPICH_HOME"]
+
+    if not any(env_name in os.environ for env_name in usual_MPI_envs_names):
         raise EnvironmentError("MPI_HOME must be set to build DGraph")
+
+    mpi_env_name = [x for x in usual_MPI_envs_names if x in os.environ][0]
 
     nvshmem_home = os.environ["NVSHMEM_HOME"]
     # print(f"Found NVSHMEM_HOME: {nvshmem_home}")
@@ -53,7 +57,7 @@ if not disable_dgraph_nvshmem:
     nvshmem_include = os.path.join(nvshmem_home, "include")
     nvshmem_lib = os.path.join(nvshmem_home, "lib")
 
-    mpi_home = os.environ["MPI_HOME"]
+    mpi_home = os.environ[mpi_env_name]
     # print(f"Found MPI_HOME: {mpi_home}")
     mpi_include = os.path.join(mpi_home, "include")
     mpi_lib = os.path.join(mpi_home, "lib")
