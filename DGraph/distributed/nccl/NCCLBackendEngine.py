@@ -69,25 +69,24 @@ class GatherFunction(Function):
         # be worth looking to some kind of cached communication pattern store
         # that can be passed to the communicator. - S.Z
 
-        num_local_output_rows = largest_split(indices.shape[1], world_size)
-
         batch_size = 1
         num_features = local_send_tensor.shape[2]
+
+        local_slice_mask = send_ranks == rank
+
+        num_local_output_rows = len(local_slice_mask)
 
         recv_tensor = torch.zeros(batch_size, num_local_output_rows, num_features).to(
             local_send_tensor.device
         )
-        _start_index = num_local_output_rows * rank
-        _end_index = num_local_output_rows * (rank + 1)
-        local_indices_slice = indices[0][_start_index:_end_index]
 
-        local_rank_mapping = send_ranks[_start_index:_end_index]
+        local_indices_slice = indices[local_slice_mask]
 
-        local_recv_tensor = recv_ranks[_start_index:_end_index]
+        local_rank_mapping = send_ranks[local_slice_mask]
+
+        local_recv_tensor = recv_ranks[local_slice_mask]
 
         assert torch.all(local_recv_tensor == rank)
-
-        assert 2 * local_rank_mapping.shape[0] == indices.shape[1]
 
         local_indices = local_indices_slice % local_send_tensor.shape[1]
 
@@ -431,35 +430,47 @@ class NCCLBackendEngine(BackendEngine):
     _partition_rank = -1
     _partition_id = -1
 
-    def __init__(self, ranks_per_partition=-1, *args, **kwargs):
+    def __init__(self, ranks_per_graph=-1, *args, **kwargs):
         # check if already initialized
         # self._initialized = dist.is_initialized()
         if not NCCLBackendEngine._is_initialized:
-            self.init_process_group(ranks_per_partition)
+            self.init_process_group(ranks_per_graph)
 
-    def init_process_group(self, ranks_per_partition=-1, *args, **kwargs):
+    def init_process_group(self, ranks_per_graph=-1, *args, **kwargs):
         if not dist.is_initialized():
             dist.init_process_group(backend="nccl", *args, **kwargs)
 
         NCCLBackendEngine._is_initialized = True
         NCCLBackendEngine._rank = dist.get_rank()
         NCCLBackendEngine._world_size = dist.get_world_size()
-        if ranks_per_partition == -1:
+        if ranks_per_graph == -1:
             NCCLBackendEngine._ranks_per_partition = NCCLBackendEngine._world_size
         else:
             assert (
-                NCCLBackendEngine._world_size % ranks_per_partition == 0
+                NCCLBackendEngine._world_size % ranks_per_graph == 0
             ), "Invalid ranks per partition"
-            NCCLBackendEngine._ranks_per_partition = ranks_per_partition
-        NCCLBackendEngine._partition_rank = (
-            NCCLBackendEngine._rank % ranks_per_partition
-        )
-        NCCLBackendEngine._partition_id = NCCLBackendEngine._rank // ranks_per_partition
+            NCCLBackendEngine._ranks_per_partition = ranks_per_graph
+        NCCLBackendEngine._partition_rank = NCCLBackendEngine._rank % ranks_per_graph
+        NCCLBackendEngine._partition_id = NCCLBackendEngine._rank // ranks_per_graph
 
-    def get_rank(self) -> int:
+    @staticmethod
+    def get_rank() -> int:
         return dist.get_rank()
 
-    def get_world_size(self) -> int:
+    @staticmethod
+    def get_local_rank() -> int:
+        return NCCLBackendEngine._partition_rank
+
+    @staticmethod
+    def get_partition_size() -> int:
+        return NCCLBackendEngine._ranks_per_partition
+
+    @staticmethod
+    def get_partition_id() -> int:
+        return NCCLBackendEngine._partition_id
+
+    @staticmethod
+    def get_world_size() -> int:
         return dist.get_world_size()
 
     def get_local_rank_slice(self, tensor: torch.Tensor, dim: int) -> torch.Tensor:
@@ -551,7 +562,7 @@ class NCCLBackendEngine(BackendEngine):
             local_send_tensor (torch.Tensor): The local slice of the tensor to
                 be gathered by all ranks
             indices (torch.Tensor): The indices for the gather operation
-            rank_mappings: The rank mappings for the gather operation.
+            rank_mappings (torch.Tensor): The rank mappings for the gather operation
         """
 
         send_tensor_shape = local_send_tensor.shape
@@ -564,22 +575,13 @@ class NCCLBackendEngine(BackendEngine):
         if rank_mappings is None:
             raise ValueError("Rank mappings cannot be None for NCCL backend")
 
-        if len(rank_mappings.shape) == 1:
-            rank_mappings = rank_mappings.unsqueeze(0)
-
-            # Assume that destination ranks are just the current rank
-            recv_rank = torch.zeros_like(rank_mappings).reshape(world_size, -1)
-            _fill_val = torch.arange(world_size).reshape(-1, 1).to(rank_mappings.device)
-            recv_rank = recv_rank + _fill_val
-            recv_rank = recv_rank.reshape(1, -1)
-
-            rank_mappings = torch.cat([rank_mappings, recv_rank], dim=0)
         assert (
             len(rank_mappings.shape) == 2
         ), f"Rank mappings shape: {rank_mappings.shape} expected 2-D."
         assert (
             rank_mappings.shape[0] == 2
         ), f"Rank mappings shape[0]: {rank_mappings.shape[0]} is expected be 2."
+
         assert indices.shape[-1] == rank_mappings.shape[-1]
         assert local_send_tensor.device.type == "cuda"
 

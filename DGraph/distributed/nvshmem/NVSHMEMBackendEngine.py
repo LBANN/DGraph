@@ -145,13 +145,16 @@ class NVSHMEMBackendEngine(BackendEngine):
     _world_size = -1
     _ranks_per_graph = -1
     _nvshmem_p2p_obj = None
+    _partition_size = -1
+    _local_rank = -1
+    _partition_num = -1
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, ranks_per_graph=-1, *args, **kwargs):
         # check if already initialized
         if not NVSHMEMBackendEngine._is_initialized:
-            self.init_process_group(*args, **kwargs)
+            self.init_process_group(ranks_per_graph=-1, *args, **kwargs)
 
-    def init_process_group(self, *args, **kwargs):
+    def init_process_group(self, ranks_per_graph=-1, *args, **kwargs):
         if not NVSHMEMBackendEngine._is_initialized:
             nvshmem.NVSHMEMP2P.init()
             NVSHMEMBackendEngine._is_initialized = True
@@ -161,11 +164,41 @@ class NVSHMEMBackendEngine(BackendEngine):
 
             NVSHMEMBackendEngine._nvshmem_p2p_obj = nvshmem.NVSHMEMP2P
 
-    def get_rank(self) -> int:
+            if ranks_per_graph > 0:
+                assert (
+                    NVSHMEMBackendEngine._world_size % ranks_per_graph == 0
+                ), "World size not divisible by ranks per graph"
+                NVSHMEMBackendEngine._ranks_per_graph = ranks_per_graph
+                NVSHMEMBackendEngine._partition_size = (
+                    NVSHMEMBackendEngine._world_size // ranks_per_graph
+                )
+                NVSHMEMBackendEngine._partition_num = (
+                    NVSHMEMBackendEngine._rank // NVSHMEMBackendEngine._partition_size
+                )
+            else:
+                NVSHMEMBackendEngine._partition_size = NVSHMEMBackendEngine._world_size
+                NVSHMEMBackendEngine._ranks_per_graph = NVSHMEMBackendEngine._world_size
+                NVSHMEMBackendEngine._partition_num = 0
+
+    @staticmethod
+    def get_rank() -> int:
         return NVSHMEMBackendEngine._rank
 
-    def get_world_size(self) -> int:
+    @staticmethod
+    def get_world_size() -> int:
         return NVSHMEMBackendEngine._world_size
+
+    @staticmethod
+    def get_local_rank() -> int:
+        return NVSHMEMBackendEngine._local_rank
+
+    @staticmethod
+    def get_partition_num() -> int:
+        return NVSHMEMBackendEngine._partition_num
+
+    @staticmethod
+    def get_partition_size() -> int:
+        return NVSHMEMBackendEngine._partition_size
 
     def gather(self, input_tensor, indices, rank_mappings):
         assert (
