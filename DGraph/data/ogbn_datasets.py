@@ -16,6 +16,8 @@ from torch.utils.data import Dataset
 from DGraph.Communicator import CommunicatorBase
 from ogb.nodeproppred import NodePropPredDataset
 from DGraph.data.graph import DistributedGraph
+import numpy as np
+import os
 
 SUPPORTED_DATASETS = datasets = [
     "ogbn-arxiv",
@@ -26,13 +28,13 @@ SUPPORTED_DATASETS = datasets = [
 
 
 def process_homogenous_data(
-    graph_data, labels, rank, world_Size, split_idx, *args, **kwargs
+    graph_data, labels, rank, world_Size, split_idx, partition_file, *args, **kwargs
 ) -> DistributedGraph:
     """For processing homogenous graph with node features, edge index and labels"""
     assert "node_feat" in graph_data, "Node features not found"
     assert "edge_index" in graph_data, "Edge index not found"
     assert "num_nodes" in graph_data, "Number of nodes not found"
-
+    assert os.path.exists(partition_file), f"Partition file {partition_file} not found"
     assert graph_data["edge_feat"] is None, "Edge features not supported"
 
     node_features = torch.Tensor(graph_data["node_feat"]).float()
@@ -45,6 +47,11 @@ def process_homogenous_data(
     train_nodes = torch.from_numpy(split_idx["train"])
     valid_nodes = torch.from_numpy(split_idx["valid"])
     test_nodes = torch.from_numpy(split_idx["test"])
+
+    partition_data = np.load(partition_file, allow_pickle=True)
+    node_rank_mapping = partition_data["node_rank_mapping"]
+    edge_rank_mapping = partition_data["edge_rank_mapping"]
+
     graph_obj = DistributedGraph(
         node_features=node_features,
         edge_index=edge_index,
@@ -62,12 +69,22 @@ def process_homogenous_data(
 
 class DistributedOGBWrapper(Dataset):
     def __init__(
-        self, dname: str, comm_object: CommunicatorBase, *args, **kwargs
+        self,
+        dname: str,
+        comm_object: CommunicatorBase,
+        cache_partitioning_file=None,
+        *args,
+        **kwargs,
     ) -> None:
         super().__init__()
         assert (
             dname in SUPPORTED_DATASETS
         ), f"Dataset {dname} not supported. Supported datasets: {SUPPORTED_DATASETS}"
+
+        assert comm_object._is_initialized, "Communicator not initialized"
+        assert (
+            cache_partitioning_file is not None
+        ), "Either run partitioning or provide a cache directory"
 
         self.dname = dname
         self.comm_object = comm_object
@@ -91,6 +108,7 @@ class DistributedOGBWrapper(Dataset):
             self._rank,
             self._world_size,
             self.split_idx,
+            partition_file=cache_partitioning_file,
             *args,
             **kwargs,
         )
