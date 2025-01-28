@@ -315,6 +315,30 @@ torch::Tensor NVSHMEMP2P::clone_tensor(torch::Tensor src)
   return tensor;
 }
 
+torch::Tensor NVSHMEMP2P::padded_clone_tensor(torch::Tensor src, const int padded_size)
+{
+  auto device = src.device();
+  auto options = torch::TensorOptions()
+                     .dtype(torch::kFloat32)
+                     .device(device);
+
+  auto size = padded_size;
+  void *ptr = nvshmem_malloc((size_t)size * sizeof(float));
+  std::function<void(void *)> deleter = [](void *ptr)
+  {
+    nvshmem_free(ptr);
+  };
+
+  auto tensor = torch::from_blob(ptr, {size}, {1}, deleter, options);
+
+  // Copy the data
+  tensor.copy_(src.flatten());
+
+  CUDACHECK(cudaStreamSynchronize(0));
+  CUDACHECK(cudaGetLastError());
+  return tensor;
+} 
+
 void NVSHMEMP2P::deregister_memory(torch::Tensor tensor)
 {
   if (!tensor.is_contiguous())
