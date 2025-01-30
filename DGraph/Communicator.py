@@ -12,9 +12,9 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
-from DGraph.distributed.mpi import MPIBackendEngine
+
 from DGraph.distributed.nccl import NCCLBackendEngine
-from DGraph.distributed.nvshmem import NVSHMEMBackendEngine
+
 from DGraph.CommunicatorBase import CommunicatorBase
 
 SUPPORTED_BACKENDS = ["nccl", "mpi", "nvshmem"]
@@ -38,8 +38,12 @@ class Communicator(CommunicatorBase):
         if backend == "nccl":
             self.__backend_engine = NCCLBackendEngine()
         elif backend == "mpi":
+            from DGraph.distributed.mpi import MPIBackendEngine
+
             self.__backend_engine = MPIBackendEngine(**kwargs)
         elif backend == "nvshmem":
+            from DGraph.distributed.nvshmem import NVSHMEMBackendEngine
+
             self.__backend_engine = NVSHMEMBackendEngine()
         else:
             raise NotImplementedError(f"Backend {backend} not implemented")

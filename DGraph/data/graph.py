@@ -27,6 +27,8 @@ class DistributedGraph:
         node_features: torch.Tensor,
         edge_index: torch.Tensor,
         labels: torch.Tensor,
+        node_loc: torch.Tensor,
+        edge_loc: torch.Tensor,
         num_nodes: int,
         num_edges: int,
         rank: int,
@@ -38,6 +40,43 @@ class DistributedGraph:
         graph_labels: Optional[torch.Tensor] = None,
         pre_calculate_mapping: bool = False,
     ):
+        """A Distributed Graph Object to store and keep track of a single graph
+        distributed across multiple ranks.
+
+        Args:
+            node_features (torch.Tensor): Node features tensor of
+                                          shape (num_nodes, num_node_features)
+            edge_index (torch.Tensor): Edge index tensor of shape (2, num_edges)
+            labels (torch.Tensor): Node labels tensor of shape (num_nodes,)
+            node_loc (torch.Tensor): Tensor representing rank mapping for each node
+                                    of shape (num_nodes,)
+            edge_loc (torch.Tensor): Tensor representing rank mapping for each edge
+                                    of shape (num_edges,)
+            num_nodes (int): Number of nodes in the graph
+            num_edges (int): Number of edges in the graph
+        """
+
+        assert node_features.dim() == 2, "Invalid node features shape. Expect 2D tensor"
+        assert edge_index.dim() == 2, "Invalid edge index shape. Expect 2D tensor"
+        assert node_loc.dim() == 1, "Invalid node_loc shape. Expect 1D tensor"
+        assert edge_loc.dim() == 1, "Invalid edge_loc shape. Expect 1D tensor"
+        assert node_features.shape[0] == num_nodes, (
+            "Invalid node features shape. "
+            + f"Expected shape: (num_nodes, num_node_features) got {node_features.shape}"
+        )
+        assert edge_index.shape[1] == num_edges, (
+            "Invalid edge index shape. "
+            + f"Expected shape: (2, num_edges) got {edge_index.shape}"
+        )
+        assert node_loc.shape[0] == num_nodes, (
+            "Invalid node_loc shape. "
+            + f"Expected shape: (num_nodes,) got {node_loc.shape}"
+        )
+        assert edge_loc.shape[0] == num_edges, (
+            "Invalid edge_loc shape. "
+            + f"Expected shape: (num_edges,) got {edge_loc.shape}"
+        )
+
         self.num_nodes = num_nodes
         self.num_edges = num_edges
         self.node_features = node_features
@@ -52,149 +91,147 @@ class DistributedGraph:
         self.world_size = world_size
         self._nodes_per_rank = (num_nodes + world_size - 1) // world_size
         self._edges_per_rank = (num_edges + world_size - 1) // world_size
-        self.rank_mappings = None
+        self.node_loc = node_loc
+        self.edge_loc = edge_loc
+
         if pre_calculate_mapping:
             self._precalculate_index_rank_mappings(edge_index)
-        self._make_push_graph_data()
+        self.max_node_per_rank = None
+        self.max_edge_per_rank = None
 
-    def _get_local_shape(self, dim: int) -> int:
-        return (dim + self.world_size) // self.world_size
+    def get_max_node_per_rank(self) -> int:
+        """Returns the maximum number of nodes per rank according to the rank mapping
 
-    def _get_padded_shape(self, dim: int) -> int:
-        return self._get_local_shape(dim) * self.world_size
-
-    def _get_global_start_index(self, dim: int) -> int:
-        return self._get_local_shape(dim) * self.rank
-
-    def _get_global_end_index(self, dim: int) -> int:
-        return self._get_local_shape(dim) * (self.rank + 1)
-
-    def get_global_node_feature_shape(self) -> tuple:
+        Returns:
+            int: Maximum number of nodes per rank
         """
-        Returns the global shape of the node features tensor
+
+        if self.max_node_per_rank is None:
+            nodes_per_rank = self.node_loc.bincount()
+            self.max_node_per_rank = int(nodes_per_rank.max().item())
+        return self.max_node_per_rank
+
+    def get_max_edge_per_rank(self) -> int:
+        """Returns the maximum number of edges per rank according to the rank mapping
+
+        Returns:
+            int: Maximum number of edges per rank
         """
-        node_feature_shape = self.node_features.shape
-        padded_shape = self._nodes_per_rank * self.world_size
-        return (padded_shape, *node_feature_shape[1:])
 
-    def get_local_node_feature_shape(self) -> tuple:
+        if self.max_edge_per_rank is None:
+            edges_per_rank = self.edge_loc.bincount()
+            self.max_edge_per_rank = int(edges_per_rank.max().item())
+        return self.max_edge_per_rank
+
+    def get_local_node_features(self) -> torch.Tensor:
         """
-        Returns the local shape of the node features tensor
+        Returns the local node features for the current rank based on the rank mapping
+
+        Returns:
+            torch.Tensor: Local node features tensor of shape
+                         (num_local_nodes, num_node_features)
         """
-        node_feature_shape = self.node_features.shape
-        padded_shape = node_feature_shape[0] // self.world_size
-        return (padded_shape, *node_feature_shape[1:])
 
-    def get_global_edge_index_shape(self) -> tuple:
+        rank = self.rank
+        rank_mask = self.node_loc == rank
+        local_node_features = self.node_features[rank_mask, :]
+        return local_node_features
+
+    def get_global_node_features(self) -> torch.Tensor:
         """
-        Returns the global shape of the edge index tensor
+        Returns the global node features
+
+        Returns:
+            torch.Tensor: Global node features tensor of
+                  shape (num_nodes, num_node_features)
         """
-        edge_index_shape = self.edge_index.shape
-        padded_shape = self._edges_per_rank * self.world_size
-        return (padded_shape, *edge_index_shape[1:])
+        return self.node_features
 
-    def get_local_edge_index_shape(self) -> tuple:
+    def get_local_edge_indices(self) -> torch.Tensor:
         """
-        Returns the local shape of the edge index tensor
+        Returns the local edge indices for the current rank based on the rank mapping
+
+        Returns:
+            torch.Tensor: Local edge indices tensor of shape (2, num_local_edges)
         """
-        edge_index_shape = self.edge_index.shape
-        padded_shape = edge_index_shape[0] // self.world_size
-        return (padded_shape, *edge_index_shape[1:])
 
-    def _get_local_slice(
-        self,
-        _tensor: torch.Tensor,
-        _start: int,
-        _end: int,
-    ) -> torch.Tensor:
-        # This looks useless now but can be useful in the future. The plan is to
-        # implement a distributed graph class for each backend (NCCL, MPI, etc.)
-        # and this method will be useful then.
-        return _tensor[_start:_end]
+        rank = self.rank
+        rank_mask = self.edge_loc == rank
+        local_edge_index = self.edge_index[:, rank_mask]
+        return local_edge_index
 
-    def _get_global_slice(
-        self,
-        _tensor: torch.Tensor,
-    ):
-        # This looks useless now but can be useful in the future. The plan is to
-        # implement a distributed graph class for each backend (NCCL, MPI, etc.)
-        # and this method will be useful then.
-        return _tensor
+    def get_global_edge_indices(self) -> torch.Tensor:
+        """
+        Returns the global edge indices in COO format
 
-    def get_local_node_features(self):
-        """"""
+        Returns:
+            torch.Tensor: Global edge indices tensor of shape (2, num_edges)
+        """
+        return self.edge_index
 
-        global_node_feature_shape = self.get_global_node_feature_shape()
-        gt_shape = self.node_features.shape
+    def get_global_rank_mappings(self) -> torch.Tensor:
+        """
+        Returns the global rank mappings for the edge indices in the form
+        (source_rank, destination_rank) for each edge.
 
-        print(
-            f"Rank {self.rank}: global_node_feature_shape {global_node_feature_shape}"
-            + f" gt_shape {gt_shape}"
-        )
-        _start_index = self._get_global_start_index(global_node_feature_shape[0])
-        _end_index = self._get_global_end_index(global_node_feature_shape[0])
-
-        _end_index = min(_end_index, gt_shape[0])
-        local_slice = self._get_local_slice(
-            self.node_features, _start_index, _end_index
-        )
-
-        if local_slice.shape[0] < self._nodes_per_rank:
-            local_slice = torch.cat(
-                [
-                    local_slice,
-                    torch.zeros(
-                        self._nodes_per_rank - local_slice.shape[0],
-                        *local_slice.shape[1:],
-                    ),
-                ],
-                dim=0,
-            )
-        return local_slice
-
-    def get_global_node_features(self):
-        """"""
-        return self._get_global_slice(self.node_features)
-
-    def get_local_edge_indices(self):
-        global_edge_index_shape = self.get_global_edge_index_shape()
-        _start_index = self._get_global_start_index(global_edge_index_shape[0])
-        _end_index = self._get_global_end_index(global_edge_index_shape[0])
-
-        return self._get_local_slice(self.edge_index, _start_index, _end_index)
-
-    def get_global_edge_indices(self):
-        return self._get_global_slice(self.edge_index)
-
-    def get_global_rank_mappings(self):
+        Returns:
+            torch.Tensor: Global rank mappings tensor of shape (2, num_edges)
+        """
         if self.rank_mappings is None:
             self._precalculate_index_rank_mappings(self.edge_index)
         return self.rank_mappings
 
-    def get_local_rank_mappings(self):
+    def get_local_rank_mappings(self) -> torch.Tensor:
+        """
+        Returns the rank mappings for local edges in this rank in the form
+        (source_rank, destination_rank) for each edge.
+
+        Returns:
+            torch.Tensor: Local rank mappings tensor of shape (2, num_local_edges)
+        """
+
+        local_edge_mask = self.edge_loc == self.rank
 
         if self.rank_mappings is None:
             self._precalculate_index_rank_mappings(self.edge_index)
-
         assert self.rank_mappings is not None, "Rank mappings not precalculated"
-        _start_index = self._get_global_start_index(self.rank_mappings.shape[0])
-        _end_index = self._get_global_end_index(self.rank_mappings.shape[0])
+        return self.rank_mappings[:, local_edge_mask]
 
-        return self._get_local_slice(self.rank_mappings, _start_index, _end_index)
+    def get_local_labels(self) -> torch.Tensor:
+        """
+        Returns the local labels for the current rank based on the rank mapping
 
-    def get_local_labels(self):
-        return self._get_local_slice(self.labels, 0, self._nodes_per_rank)
+        Returns:
+            torch.Tensor: Local labels tensor
+        """
+        rank = self.rank
+        rank_mask = self.node_loc == rank
+        local_labels = self.labels[rank_mask]
 
-    def get_global_labels(self):
-        return self._get_global_slice(self.labels)
+        return local_labels
 
-    def _slice_by_value(self, tensor, start, end):
-        _mask = (tensor >= start) & (tensor < end)
-        return torch.nonzero(_mask).squeeze()
+    def get_global_labels(self) -> torch.Tensor:
+        return self.labels
 
-    def get_local_mask(self, mask):
-        local_node_start = self.rank * self._nodes_per_rank
-        local_node_end = (self.rank + 1) * self._nodes_per_rank
+    def get_local_mask(self, mask: str) -> torch.Tensor:
+        """
+        Returns the local mask for the given mask type based on the rank mapping.
+        The local slice is calculated based on the range of nodes local to the
+        current rank.
+
+        Args:
+            mask (str): Mask type. Can be "train", "val", or "test"
+
+        Returns:
+            torch.Tensor: Local mask tensor
+        """
+
+        rank = self.rank
+
+        nodes_per_rank = self.node_loc.bincount()
+
+        local_node_start = 0 if rank == 0 else nodes_per_rank[:rank].sum().item()
+        local_node_end = nodes_per_rank[: rank + 1].sum().item()
 
         if mask == "train":
             assert self.train_mask is not None, "Train mask not found"
@@ -208,30 +245,16 @@ class DistributedGraph:
         else:
             raise ValueError(f"Invalid mask {mask}")
 
-        return (
-            self._slice_by_value(_mask, local_node_start, local_node_end)
-            % self._nodes_per_rank
-        )
+        _mask = _mask.int()
 
-    def _make_push_graph_data(self):
-        """Two-sided communication backends (NCCL) can only do push operations.
-        This method prepares the additional data for push operations."""
+        _mask_rank = _mask < local_node_end and _mask >= local_node_start
 
-        # We assume for the sake of simplicity that the graph data
-        # is contiguous and equally divided among the ranks.
-        # In the future, this can be made more general.
-        self.node_to_rank_mapping = (
-            torch.arange(0, self.num_nodes) // self._nodes_per_rank
-        )
-        self.edge_to_rank_mapping = (
-            torch.arange(0, self.num_edges) // self._edges_per_rank
-        )
-        self.local_node_mapping = torch.arange(0, self.num_nodes) % self._nodes_per_rank
-        self.local_edge_mapping = torch.arange(0, self.num_edges) % self._edges_per_rank
+        local_mask = _mask[_mask_rank] % self._nodes_per_rank
+        return local_mask
 
     def _get_index_to_rank_mapping(self, _indices):
         """Returns the rank mapping for the given indices"""
-        return self.node_to_rank_mapping[_indices.int()]
+        return self.node_loc[_indices.int()]
 
     def _precalculate_index_rank_mappings(self, _indices):
         """Precalculates the rank mappings for the given indices and caches them.
