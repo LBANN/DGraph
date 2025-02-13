@@ -20,7 +20,7 @@ from DGraph.distributed.nccl._indices_utils import (
     _generate_local_rank_mapping,
     _get_local_unique_recv_placement,
 )
-from DGraph.distributed.nccl._nccl_cache import NCCLScatterCache
+from DGraph.distributed.nccl._nccl_cache import NCCLGatherCache, NCCLScatterCache
 from DGraph.distributed.nccl.alltoallv_impl import (
     _nccl_alltoall_v,
     _nccl_alltoallv_with_dict,
@@ -41,17 +41,18 @@ class GatherFunction(Function):
         ctx,
         local_send_tensor: torch.Tensor,
         indices: torch.LongTensor,
-        send_ranks: torch.Tensor,
-        recv_ranks: torch.Tensor,
+        edge_src_ranks: torch.Tensor,
+        edge_dest_ranks: torch.Tensor,
         rank: int,
         world_size: int,
+        cache: Optional[NCCLScatterCache] = None,
     ):
         num_local_input_rows = local_send_tensor.shape[1]
 
         ctx.save_for_backward(
             indices,
-            send_ranks,
-            recv_ranks,
+            edge_src_ranks,
+            edge_dest_ranks,
             torch.tensor(num_local_input_rows),
             torch.tensor(rank),
             torch.tensor(world_size),
@@ -72,7 +73,8 @@ class GatherFunction(Function):
         batch_size = 1
         num_features = local_send_tensor.shape[2]
 
-        local_slice_mask = send_ranks == rank
+        # Get the edges that are local to the rank
+        local_slice_mask = edge_src_ranks == rank
 
         num_local_output_rows = len(local_slice_mask)
 
@@ -81,10 +83,8 @@ class GatherFunction(Function):
         )
 
         local_indices_slice = indices[local_slice_mask]
-
-        local_rank_mapping = send_ranks[local_slice_mask]
-
-        local_recv_tensor = recv_ranks[local_slice_mask]
+        local_rank_mapping = edge_src_ranks[local_slice_mask]
+        local_recv_tensor = edge_dest_ranks[local_slice_mask]
 
         assert torch.all(local_recv_tensor == rank)
 
@@ -101,8 +101,8 @@ class GatherFunction(Function):
             local_recv_tensor=recv_tensor,
             indices=indices,
             local_rank_mapping=local_rank_mapping,
-            src_ranks=send_ranks,
-            dest_ranks=recv_ranks,
+            src_ranks=edge_src_ranks,
+            dest_ranks=edge_dest_ranks,
             rank=rank,
             world_size=world_size,
         )
@@ -130,14 +130,9 @@ class GatherFunction(Function):
 
         indices = indices.view(-1)
 
-        # Start local only scatter. Maybe a better way to do this - S.Z
-        _start_index = (indices.shape[0] // world_size) * rank
-        _end_index = (indices.shape[0] // world_size) * (rank + 1)
-
-        _end_index = min(_end_index, indices.shape[0])
-
-        local_indices_slice = indices[_start_index:_end_index]
-        local_dest_ranks = recv_ranks[_start_index:_end_index]
+        local_slice_mask = send_ranks == rank
+        local_indices_slice = indices[local_slice_mask]
+        local_dest_ranks = recv_ranks[local_slice_mask]
 
         local_rank_output = RankLocalMaskedScatter(
             send_tensor,
@@ -212,6 +207,7 @@ class GatherFunction(Function):
         recv_ranks_grad = None
         rank_grad = None
         world_size_grad = None
+        cache_grad = None
 
         return (
             send_tensor_grad,
@@ -220,6 +216,7 @@ class GatherFunction(Function):
             recv_ranks_grad,
             rank_grad,
             world_size_grad,
+            cache_grad,
         )
 
 
@@ -229,8 +226,8 @@ class ScatterFunction(Function):
         ctx,
         send_tensor: torch.Tensor,
         indices: torch.Tensor,
-        send_ranks: torch.Tensor,
-        recv_ranks: torch.Tensor,
+        edge_src_ranks: torch.Tensor,
+        edge_dest_ranks: torch.Tensor,
         num_local_output_rows: int,
         rank: int,
         world_size: int,
@@ -239,8 +236,8 @@ class ScatterFunction(Function):
 
         ctx.save_for_backward(
             indices,
-            send_ranks,
-            recv_ranks,
+            edge_src_ranks,
+            edge_dest_ranks,
             torch.tensor(num_local_output_rows),
             torch.tensor(rank),
             torch.tensor(world_size),
@@ -261,14 +258,11 @@ class ScatterFunction(Function):
         )
 
         indices = indices.view(-1)
-        # Start local only scatter. Maybe a better way to do this - S.Z
-        _start_index = (indices.shape[0] // world_size) * rank
-        _end_index = (indices.shape[0] // world_size) * (rank + 1)
 
-        _end_index = min(_end_index, indices.shape[0])
+        local_edge_mask = edge_src_ranks == rank
 
-        local_indices_slice = indices[_start_index:_end_index]
-        local_dest_ranks = recv_ranks[_start_index:_end_index]
+        local_indices_slice = indices[local_edge_mask]
+        local_dest_ranks = edge_dest_ranks[local_edge_mask]
 
         local_rank_output = RankLocalMaskedScatter(
             send_tensor,
@@ -283,8 +277,8 @@ class ScatterFunction(Function):
         else:
             local_comm_mask = local_dest_ranks != rank
 
-            all_comm_mask = send_ranks != recv_ranks
-            reciever_mask = recv_ranks == rank
+            all_comm_mask = edge_src_ranks != edge_dest_ranks
+            reciever_mask = edge_dest_ranks == rank
 
             receive_from_remote_mask = all_comm_mask & reciever_mask
 
@@ -331,7 +325,7 @@ class ScatterFunction(Function):
         else:
             recv_placement = _get_local_unique_recv_placement(
                 indices,
-                send_ranks,
+                edge_src_ranks,
                 receive_from_remote_mask,
                 num_local_output_rows,
                 rank,
@@ -499,38 +493,34 @@ class NCCLBackendEngine(BackendEngine):
         rank = self.get_rank()
         assert b_size == 1, "Multi-batch gather disabled for testing"
         assert len(send_tensor_shape) == 3, "Currently only support 3D tensors"
-
         assert indices.shape[-1] == rank_mappings.shape[-1]
-        if len(rank_mappings.shape) == 1:
-            # src ranks are not explicitly provided but they
-            # are just the current rank
-            send_rank = _generate_local_rank_mapping(rank_mappings, world_size)
-            recv_rank = rank_mappings
-        elif len(rank_mappings.shape) == 2:
-            assert rank_mappings.shape[0] == 2
-            send_rank = rank_mappings[0]
-            recv_rank = rank_mappings[1]
-
-        else:
-            raise ValueError(
-                "Rank mappings shape is invalid. Exepcted either 1 or 2D array"
-            )
-
+        assert rank_mappings.shape[0] == 2
         assert local_send_tensor.device.type == "cuda"
-
         assert output_size > 0, "Output size must be greater than 0"
         assert (
             torch.max(indices) < world_size * output_size
         ), f"Max index: {torch.max(indices)} is greater than world_size * output_size: {world_size * output_size}"
 
+        src_ranks = rank_mappings[0]
+        dest_ranks = rank_mappings[1]
+
+        use_cache = True if "cache" in kwargs else False
+
+        if use_cache:
+            assert type(kwargs["cache"]) == NCCLScatterCache
+            scatter_cache = kwargs["cache"]
+        else:
+            scatter_cache = None
+
         output_tensor = ScatterFunction.apply(
             local_send_tensor,
             indices,
-            send_rank,
-            recv_rank,
+            src_ranks,
+            dest_ranks,
             output_size,
             rank,
             world_size,
+            scatter_cache,
         )
 
         return output_tensor
@@ -588,6 +578,14 @@ class NCCLBackendEngine(BackendEngine):
         send_rank = rank_mappings[0]
         recv_rank = rank_mappings[1]
 
+        use_cache = True if "cache" in kwargs else False
+
+        if use_cache:
+            assert type(kwargs["cache"]) == NCCLGatherCache
+            gather_cache = kwargs["cache"]
+        else:
+            gather_cache = None
+
         output_tensor = GatherFunction.apply(
             local_send_tensor,
             indices,
@@ -595,6 +593,7 @@ class NCCLBackendEngine(BackendEngine):
             recv_rank,
             rank,
             world_size,
+            gather_cache,
         )
 
         dist.barrier()

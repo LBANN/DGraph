@@ -13,7 +13,7 @@ from DGraph.distributed.nccl._indices_utils import (
 
 @dataclass
 class NCCLGatherCache:
-    """A class to store the NCCL communication cache required for alltoallv operations
+    """This class stores the NCCL communication cache required for alltoallv operations
     for a gather operation.
     """
 
@@ -30,7 +30,7 @@ class NCCLGatherCache:
 
 @dataclass
 class NCCLScatterCache:
-    """A class to store the NCCL communication cache required for alltoallv operations
+    """This class stores the NCCL communication cache required for alltoallv operations
     for a scatter operation.
     """
 
@@ -99,5 +99,71 @@ def NCCLScatterCacheGenerator(
         local_renumbered_indices=renumbered_indices,
         rank=rank,
         world_size=world_size,
+    )
+    return _cache
+
+
+def NCCLGatherCacheGenerator(
+    indices: torch.Tensor,
+    edge_src_ranks: torch.Tensor,
+    edge_dest_ranks: torch.Tensor,
+    rank: int,
+    world_size: int,
+):
+    """
+    This function generates the NCCL cache required for alltoallv operations.
+    """
+
+    all_comm_mask = edge_src_ranks != edge_dest_ranks
+    receiver_mask = edge_dest_ranks == rank
+
+    # All message that will be recieved by the current rank but
+    # sent by other ranks
+
+    receive_from_ranks = all_comm_mask & receiver_mask
+
+    _start_index = ((indices.shape[0] + world_size - 1) // world_size) * rank
+    _end_index = ((indices.shape[0] + world_size - 1) // world_size) * (rank + 1)
+    _end_index = min(_end_index, indices.shape[0])
+
+    local_indices_slice = indices[_start_index:_end_index]
+    local_dest_ranks_slice = edge_dest_ranks[_start_index:_end_index]
+
+    # This is the mask for the rows that will be sent by the current rank
+    local_send_mask = local_dest_ranks_slice != rank
+
+    send_comm_vector, recv_comm_vector = _get_send_recv_comm_vectors(
+        edge_src_ranks, edge_dest_ranks, rank, world_size
+    )
+    send_local_placement = _get_local_send_placement(
+        send_comm_vector,
+        indices,
+        edge_src_ranks,
+        edge_dest_ranks,
+        rank,
+        num_output_rows,
+    )
+
+    recv_local_placement = _get_local_recv_placement(
+        recv_comm_vector, edge_src_ranks, rank
+    )
+
+    local_comm_indices = local_indices_slice[local_send_mask]
+    local_remote_dest_mappings = local_dest_ranks_slice[local_send_mask]
+
+    renumbered_indices, unique_indices, remapped_ranks = (
+        RankLocalRenumberingWithMapping(local_comm_indices, local_remote_dest_mappings)
+    )
+    num_remote_rows = unique_indices.shape[0]
+    _cache = NCCLGatherCache(
+        send_buffer_dict={},
+        recv_buffer_dict={},
+        send_comm_vector=send_comm_vector,
+        recv_comm_vector=recv_comm_vector,
+        send_local_placement=send_local_placement,
+        recv_local_placement=recv_local_placement,
+        rank=rank,
+        world_size=world_size,
+        num_features=num_features,
     )
     return _cache
