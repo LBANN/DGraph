@@ -115,6 +115,7 @@ class MeshNodeBlock(nn.Module):
         node_features: torch.Tensor,
         edge_features: torch.Tensor,
         src_indices: torch.Tensor,
+        rank_mapping: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Compute the node block
@@ -133,7 +134,7 @@ class MeshNodeBlock(nn.Module):
         # TODO: This can be optimized by a fused gather-scatter operation - S.Z
 
         aggregated_edge_features = self.comm.scatter(
-            edge_features, src_indices, None, num_local_nodes
+            edge_features, src_indices, rank_mapping, num_local_nodes
         )
         # Concatenate the node and edge features
         x = torch.cat([node_features, aggregated_edge_features], dim=-1)
@@ -185,6 +186,8 @@ class MeshEdgeBlock(nn.Module):
         edge_features: torch.Tensor,
         src_indices: torch.Tensor,
         dst_indices: torch.Tensor,
+        src_rank_mapping: Optional[torch.Tensor] = None,
+        dst_rank_mapping: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Compute the edge block
@@ -199,8 +202,12 @@ class MeshEdgeBlock(nn.Module):
             The updated edge features
         """
         # Concatenate the source and destination node features with the edge features
-        src_node_features = self.comm.gather(src_node_features, src_indices, None)
-        dst_node_features = self.comm.gather(dst_node_features, dst_indices, None)
+        src_node_features = self.comm.gather(
+            src_node_features, src_indices, src_rank_mapping
+        )
+        dst_node_features = self.comm.gather(
+            dst_node_features, dst_indices, dst_rank_mapping
+        )
         conccated_features = torch.cat(
             [src_node_features, dst_node_features, edge_features], dim=-1
         )

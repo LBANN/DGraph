@@ -59,7 +59,7 @@ def node_renumbering(node_rank_placement, num_parts):
 
 
 def edge_renumbering(edge_indices, renumbered_nodes):
-    """"""
+    """The edges are renumbered based on the renumbered nodes."""
     src_indices = edge_indices[:, 0]
     dst_indices = edge_indices[:, 1]
     src_indices = renumbered_nodes[src_indices]
@@ -68,8 +68,19 @@ def edge_renumbering(edge_indices, renumbered_nodes):
     return renumbered_edges
 
 
-def save_networkx_digraph(coo_list, num_nodes, dname):
-    G = nx.DiGraph()
+def add_opposite_edges(edge_indices):
+    """Add the opposite edges to the edge indices.
+    Converts a directed graph to an undirected graph. Useful for METIS which only
+    supports undirected graphs.
+    """
+    src_indices = edge_indices[0]
+    dst_indices = edge_indices[1]
+    opposite_edges = np.stack((dst_indices, src_indices))
+    return np.concatenate((edge_indices, opposite_edges), axis=1)
+
+
+def save_networkx_graph(coo_list, num_nodes, dname):
+    G = nx.Graph()
     nodes = np.arange(num_nodes)
     G.add_nodes_from(nodes)
     G.add_edges_from(coo_list)
@@ -78,19 +89,33 @@ def save_networkx_digraph(coo_list, num_nodes, dname):
         pickle.dump(G, f)
 
 
-def read_networkx_digraph(dname):
+def load_networkx_graph(dname):
     with open(f"{dname}.pkl", "rb") as f:
         G = pickle.load(f)
     return G
 
 
 if __name__ == "__main__":
-    dset_name = "products"
-    comm = SingleProcessDummyCommunicator()
-    training_dataset = DistributedOGBWrapper(f"ogbn-{dset_name}", comm)
+    from ogb.nodeproppred import NodePropPredDataset
 
-    node_features, edge_indices, rank_mappings, labels = training_dataset[0]
-    print(node_features.shape)
-    num_nodes = node_features.shape[0]
-    coo_list = edge_indices.numpy().T
-    node_rank_placement = partition_directed_graph(coo_list, num_nodes, 4)
+    dset_name = "ogbn-products"
+
+    dataset = NodePropPredDataset(
+        name=dset_name,
+    )
+    graph_data, labels = dataset[0]
+
+    edge_index = torch.Tensor(graph_data["edge_index"]).long()
+    num_nodes = graph_data["num_nodes"]
+
+    print(edge_index.shape, num_nodes)
+
+    # print(node_features.shape)
+    # num_nodes = node_features.shape[0]
+    coo_list = edge_index.numpy().T
+
+    # node_rank_placement = partition_directed_graph(coo_list, num_nodes,
+    #
+    #  4)
+
+    save_networkx_graph(coo_list, num_nodes, dset_name)
