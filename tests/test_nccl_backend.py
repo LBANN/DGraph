@@ -61,7 +61,7 @@ def setup_unbalanced_gather_data(init_nccl_backend):
     num_global_rows = 16
     num_features = 64
     all_rank_input_data = torch.randn(1, num_global_rows, num_features)
-
+    node_rank_placement = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
     # Graph viz:
     # 0 - 2     4  - 6
     # | X |  X  |    |
@@ -108,7 +108,14 @@ def setup_unbalanced_gather_data(init_nccl_backend):
         for i in range(num_edges):
             all_rank_output[k][i] = all_rank_input_data[:, all_edge_coo[k, i]]
 
-    return comm, all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output
+    return (
+        comm,
+        all_rank_input_data,
+        all_edge_coo,
+        node_rank_placement,
+        rank_mappings,
+        all_rank_output,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -207,6 +214,7 @@ def setup_unbalanced_scatter_data(init_nccl_backend):
     all_rank_output = torch.cat([all_rank_output_0, all_rank_output_1], dim=0)
 
     return (
+        comm,
         all_rank_input_data,
         all_rank_indices,
         rank_mappings,
@@ -249,13 +257,13 @@ def test_nccl_backend_gather(setup_gather_data):
     assert all_edge_coo.shape == (2, 8)
 
     dgraph_output_tensor_0 = comm.gather(
-        local_input_data.cuda(), all_edge_coo[[0]].cuda(), rank_mappings[0]
+        local_input_data.cuda(), all_edge_coo[[0]].cuda(), rank_mappings
     )
     assert dgraph_output_tensor_0.shape == (1, 4, 64)
     assert torch.allclose(dgraph_output_tensor_0.cpu(), local_output_data_gt[0])
 
     dgraph_output_tensor_1 = comm.gather(
-        local_input_data.cuda(), all_edge_coo[[1]].cuda(), rank_mappings[1]
+        local_input_data.cuda(), all_edge_coo[[1]].cuda(), rank_mappings
     )
 
     assert dgraph_output_tensor_1.shape == (1, 4, 64)
@@ -292,7 +300,7 @@ def test_nccl_backend_gather_assymetric(setup_unbalanced_gather_data):
             i, node_rank_placement == edge_rank_placement, :
         ]
         dgraph_output_tensor = comm.gather(
-            local_input_data.cuda(), all_edge_coo[[i]].cuda(), rank_mappings[i]
+            local_input_data.cuda(), all_edge_coo[[i]].cuda(), rank_mappings
         )
         assert torch.allclose(dgraph_output_tensor.cpu(), local_output_data_gt[0])
 
@@ -316,7 +324,7 @@ def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
     for i in range(all_rank_indices.shape[0]):
         local_output_gt = all_rank_output[[i], output_start_index:output_end_index]
         dgraph_output_tensor = comm.scatter(
-            local_input_data.cuda(), all_rank_indices[i].cuda(), rank_mappings[i], 2
+            local_input_data.cuda(), all_rank_indices[i].cuda(), rank_mappings, 2
         )
         assert local_output_gt.shape == (1, 2, 4)
         assert dgraph_output_tensor.shape == (1, 2, 4)

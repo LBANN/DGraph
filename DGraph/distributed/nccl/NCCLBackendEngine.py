@@ -82,7 +82,7 @@ class GatherFunction(Function):
             local_send_tensor.device
         )
 
-        local_indices_slice = indices[local_slice_mask]
+        local_indices_slice = indices[local_slice_mask.unsqueeze(0)]
         local_rank_mapping = edge_src_ranks[local_slice_mask]
         local_recv_tensor = edge_dest_ranks[local_slice_mask]
 
@@ -255,6 +255,10 @@ class ScatterFunction(Function):
 
         local_rank_output = torch.zeros(1, num_local_output_rows, num_features).to(
             device
+        )
+
+        print(
+            f"Rank: {rank}  indices shape: {indices.shape} \t edge_src_ranks: {edge_src_ranks.shape} \t edge_dest_ranks: {edge_dest_ranks.shape}"
         )
 
         indices = indices.view(-1)
@@ -493,13 +497,22 @@ class NCCLBackendEngine(BackendEngine):
         rank = self.get_rank()
         assert b_size == 1, "Multi-batch gather disabled for testing"
         assert len(send_tensor_shape) == 3, "Currently only support 3D tensors"
-        assert indices.shape[-1] == rank_mappings.shape[-1]
-        assert rank_mappings.shape[0] == 2
-        assert local_send_tensor.device.type == "cuda"
-        assert output_size > 0, "Output size must be greater than 0"
+        assert indices.shape[-1] == rank_mappings.shape[-1], (
+            f"Indices shape: {indices.shape} and rank mappings shape: "
+            + f" {rank_mappings.shape} must match"
+        )
+        assert rank_mappings.shape[0] == 2, (
+            "Rank mappings shape[0] expected to be 2, "
+            + f"but got {rank_mappings.shape[0]}"
+        )
         assert (
-            torch.max(indices) < world_size * output_size
-        ), f"Max index: {torch.max(indices)} is greater than world_size * output_size: {world_size * output_size}"
+            local_send_tensor.device.type == "cuda"
+        ), f"Device: {local_send_tensor.device.type} expected cuda"
+        assert output_size > 0, "Output size must be greater than 0"
+        assert torch.max(indices) < world_size * output_size, (
+            f"Max index: {torch.max(indices)} is greater than "
+            + f"world_size * output_size: {world_size * output_size}"
+        )
 
         src_ranks = rank_mappings[0]
         dest_ranks = rank_mappings[1]
