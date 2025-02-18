@@ -311,7 +311,7 @@ def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
         setup_scatter_data
     )
     local_edge_placement = rank_mappings[0]
-    local_input_data = comm.get_local_rank_slice(
+    local_input_data = comm.get_local_tensor(
         all_rank_input_data, local_edge_placement, dim=1
     )
 

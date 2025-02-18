@@ -21,7 +21,9 @@ import torch
 from torch.utils.data import DataLoader
 from dataset import SyntheticWeatherDataset
 from dist_utils import SingleProcessDummyCommunicator, CommAwareDistributedSampler
-from torch.profiler import profile, record_function, ProfilerActivity
+from torch.profiler import profile, ProfilerActivity
+from DGraph.Communicator import Communicator
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 def compute_loss(ground_truth, prediction, comm):
@@ -38,18 +40,43 @@ def main(
     test_run: bool = False,
     use_synthetic_data: bool = False,
     benchmark: bool = False,
+    backend: str = "single",
+    procs_per_graph: int = 2,
 ):
+    _communicator = backend.lower()
+
+    assert _communicator.lower() in [
+        "single",
+        "nccl",
+        "nvshmem",
+        "mpi",
+    ], "Invalid backend"
+
     cfg = graphcast_config.Config()
 
     # Create the model
 
-    comm = SingleProcessDummyCommunicator()
     if is_distributed:
-        raise NotImplementedError("Distributed training is not yet supported.")
+        comm = Communicator.init_process_group(
+            _communicator, ranks_per_graph=procs_per_graph
+        )
+    else:
+        comm = SingleProcessDummyCommunicator()
     if not use_synthetic_data:
         raise NotImplementedError("Real data is not yet supported yet.")
 
     model = DGraphCast(cfg, comm)
+
+    torch.cuda.set_device(comm.get_rank())
+    device = torch.cuda.current_device()
+
+    model = model.to(device)
+
+    model = (
+        DDP(model, device_ids=[device], output_device=device)
+        if is_distributed
+        else model
+    )
 
     # Create the optimizer
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.lr)
