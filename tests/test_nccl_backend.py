@@ -310,8 +310,10 @@ def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
     all_rank_input_data, all_rank_indices, rank_mappings, all_rank_output = (
         setup_scatter_data
     )
-
-    local_input_data = comm.get_local_rank_slice(all_rank_input_data)
+    local_edge_placement = rank_mappings[0]
+    local_input_data = comm.get_local_rank_slice(
+        all_rank_input_data, local_edge_placement, dim=1
+    )
 
     rank = comm.get_rank()
     world_size = comm.get_world_size()

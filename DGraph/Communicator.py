@@ -69,6 +69,32 @@ class Communicator(CommunicatorBase):
         self.__check_init()
         return self.__backend_engine.get_local_rank_slice(tensor, dim)
 
+    def get_local_tensor(
+        self, tensor: torch.Tensor, placement_tensor: torch.Tensor, dim: int = -1
+    ) -> torch.Tensor:
+        """Returns the tensor corresponding to the current process based on the placement tensor.
+
+        Args:
+            tensor: The tensor to be sliced.
+            placement_tensor: A boolean tensor of the same shape as the tensor, where True indicates the process
+                that should receive the corresponding element.
+            dim: The dimension along which the tensor should be sliced.
+
+        Returns:
+            (torch.Tensor): The local tensor corresponding to the current process.
+        """
+        self.__check_init()
+        mask = (placement_tensor == self.get_rank()).bool()
+        mask_shape = [1] * tensor.ndim
+        mask_shape[dim] = mask.size(0)
+        mask_expanded = mask.view(mask_shape).expand_as(tensor)
+        masked_tensor = tensor[mask_expanded]
+        new_shape = list(tensor.shape)
+        new_shape[dim] = int(mask.sum().item())
+        masked_tensor = masked_tensor.view(new_shape)
+
+        return masked_tensor
+
     def scatter(self, *args, **kwargs) -> torch.Tensor:
         self.__check_init()
         return self.__backend_engine.scatter(*args, **kwargs)
