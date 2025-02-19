@@ -11,6 +11,7 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
+from typing import Optional
 import torch
 from torch.utils.data import Dataset
 from DGraph.Communicator import CommunicatorBase
@@ -48,13 +49,19 @@ def edge_renumbering(edge_indices, renumbered_nodes) -> torch.Tensor:
 
 
 def process_homogenous_data(
-    graph_data, labels, rank, world_Size, split_idx, partition_file, *args, **kwargs
+    graph_data,
+    labels,
+    rank: int,
+    world_Size: int,
+    split_idx: dict,
+    node_rank_placement: torch.Tensor,
+    *args,
+    **kwargs,
 ) -> DistributedGraph:
     """For processing homogenous graph with node features, edge index and labels"""
     assert "node_feat" in graph_data, "Node features not found"
     assert "edge_index" in graph_data, "Edge index not found"
     assert "num_nodes" in graph_data, "Number of nodes not found"
-    assert os.path.exists(partition_file), f"Partition file {partition_file} not found"
     assert graph_data["edge_feat"] is None, "Edge features not supported"
 
     node_features = torch.Tensor(graph_data["node_feat"]).float()
@@ -64,36 +71,36 @@ def process_homogenous_data(
     # For bidirectional graphs the number of edges are double counted
     num_edges = edge_index.shape[1]
 
+    assert node_rank_placement.shape[0] == num_nodes, "Node mapping mismatch"
+    assert "train" in split_idx, "Train mask not found"
+    assert "valid" in split_idx, "Validation mask not found"
+    assert "test" in split_idx, "Test mask not found"
+
     train_nodes = torch.from_numpy(split_idx["train"])
     valid_nodes = torch.from_numpy(split_idx["valid"])
     test_nodes = torch.from_numpy(split_idx["test"])
 
-    partition_data = np.load(partition_file, allow_pickle=True)
-
-    assert "node_rank_mapping" in partition_data, "Node rank mapping not found"
-
-    # Load the partition data
-
-    # Integer tensor for where each node is placed
-    node_rank_mapping = partition_data["node_rank_mapping"]
-    assert node_rank_mapping.shape[0] == num_nodes, "Node mapping mismatch"
-
-    renumbered_nodes = node_renumbering(node_rank_mapping, world_Size)
+    # Renumber the nodes and edges to make them contiguous
+    renumbered_nodes = node_renumbering(node_rank_placement, world_Size)
     node_features = node_features[renumbered_nodes]
     # Edges are placed on the same rank as the source node
-    edge_rank_mapping = node_rank_mapping[edge_index[0]]
+    edge_rank_mapping = node_rank_placement[edge_index[0]]
 
     edge_index = edge_renumbering(edge_index, renumbered_nodes)
     edge_rank_mapping = edge_renumbering(edge_rank_mapping, renumbered_nodes)
 
-    # Renumber the nodes and edges to make them contiguous
+    # Renumber the masks
+
+    train_nodes = renumbered_nodes[train_nodes]
+    valid_nodes = renumbered_nodes[valid_nodes]
+    test_nodes = renumbered_nodes[test_nodes]
 
     graph_obj = DistributedGraph(
         node_features=node_features,
         edge_index=edge_index,
         num_nodes=num_nodes,
         num_edges=num_edges,
-        node_loc=node_rank_mapping,
+        node_loc=node_rank_placement,
         edge_loc=edge_rank_mapping,
         rank=rank,
         world_size=world_Size,
@@ -110,8 +117,8 @@ class DistributedOGBWrapper(Dataset):
         self,
         dname: str,
         comm_object: CommunicatorBase,
-        cache_partitioning_file=None,
-        dir_name=None,
+        dir_name: Optional[str] = None,
+        node_rank_placement: Optional[torch.Tensor] = None,
         *args,
         **kwargs,
     ) -> None:
@@ -121,9 +128,6 @@ class DistributedOGBWrapper(Dataset):
         ), f"Dataset {dname} not supported. Supported datasets: {SUPPORTED_DATASETS}"
 
         assert comm_object._is_initialized, "Communicator not initialized"
-        assert (
-            cache_partitioning_file is not None
-        ), "Either run partitioning or provide a cache directory"
 
         self.dname = dname
         self.comm_object = comm_object
@@ -151,13 +155,20 @@ class DistributedOGBWrapper(Dataset):
         if os.path.exists(cached_graph_file):
             graph_obj = torch.load(cached_graph_file)
         else:
+            # Intetionally not providing a method to generate node rank placement
+            # as it would require additional external dependencies
+            # Let the user provide the node rank placement
+            assert (
+                node_rank_placement is not None
+            ), "Regenerating distributed graph, please provide node rank placement"
+
             graph_obj = process_homogenous_data(
                 graph_data,
                 labels,
                 self._rank,
                 self._world_size,
                 self.split_idx,
-                partition_file=cache_partitioning_file,
+                node_rank_placement=node_rank_placement,
                 *args,
                 **kwargs,
             )
