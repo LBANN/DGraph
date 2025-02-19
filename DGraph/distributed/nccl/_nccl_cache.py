@@ -122,19 +122,20 @@ def NCCLGatherCacheGenerator(
 
     receive_from_ranks = all_comm_mask & receiver_mask
 
-    _start_index = ((indices.shape[0] + world_size - 1) // world_size) * rank
-    _end_index = ((indices.shape[0] + world_size - 1) // world_size) * (rank + 1)
-    _end_index = min(_end_index, indices.shape[0])
-
-    local_indices_slice = indices[_start_index:_end_index]
-    local_dest_ranks_slice = edge_dest_ranks[_start_index:_end_index]
+    local_indices_mask = edge_src_ranks == rank
+    local_indices_slice = indices[local_indices_mask]
+    local_dest_ranks_slice = edge_dest_ranks[local_indices_mask]
 
     # This is the mask for the rows that will be sent by the current rank
     local_send_mask = local_dest_ranks_slice != rank
 
+    # send_comm_vector recv_comm_vector are the number of messages
+    # to be sent to each rank and received from each rank respectively
+    # Shape: (world_size,)
     send_comm_vector, recv_comm_vector = _get_send_recv_comm_vectors(
         edge_src_ranks, edge_dest_ranks, rank, world_size
     )
+
     send_local_placement = _get_local_send_placement(
         send_comm_vector,
         indices,

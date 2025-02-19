@@ -57,6 +57,8 @@ def process_homogenous_data(
         edge_index=edge_index,
         num_nodes=num_nodes,
         num_edges=num_edges,
+        node_loc=node_rank_mapping,
+        edge_loc=edge_rank_mapping,
         rank=rank,
         world_size=world_Size,
         labels=labels,
