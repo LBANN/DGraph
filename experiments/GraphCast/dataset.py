@@ -14,7 +14,7 @@
 import torch
 import numpy as np
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 from torch.utils.data import Dataset
 from data_utils.graphcast_graph import DistributedGraphCastGraphGenerator
 from data_utils.utils import padded_size
@@ -41,7 +41,7 @@ class SyntheticWeatherDataset(Dataset):
         channels: List[int],
         num_samples_per_year: int,
         num_steps: int,
-        device: 'str | torch.device = "cuda"',
+        device: Union[str, torch.device] = "cuda",
         grid_size: Tuple[int, int] = (721, 1440),
         base_temp: float = 15,
         amplitude: float = 10,

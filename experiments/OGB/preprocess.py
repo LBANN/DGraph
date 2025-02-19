@@ -9,6 +9,7 @@ import pickle
 
 import networkx as nx
 import numpy as np
+from fire import Fire
 
 
 def partition_graph(coo_list: np.ndarray, num_ranks: int):
@@ -79,13 +80,22 @@ def add_opposite_edges(edge_indices):
     return np.concatenate((edge_indices, opposite_edges), axis=1)
 
 
-def save_networkx_graph(coo_list, num_nodes, dname):
-    G = nx.Graph()
-    nodes = np.arange(num_nodes)
-    G.add_nodes_from(nodes)
-    G.add_edges_from(coo_list)
+def save_networkx_graph(coo_list, num_nodes, dname, directed=False):
 
-    with open(f"{dname}.pkl", "wb") as f:
+    if not directed:
+        G = nx.Graph()
+        nodes = np.arange(num_nodes)
+        G.add_nodes_from(nodes)
+        G.add_edges_from(coo_list)
+
+    else:
+        G = nx.DiGraph()
+        nodes = np.arange(num_nodes)
+        G.add_nodes_from(nodes)
+        G.add_edges_from(coo_list)
+        G.add_edges_from([(dst, src) for src, dst in coo_list])
+
+    with open(f"{dname}_directed={directed}.pkl", "wb") as f:
         pickle.dump(G, f)
 
 
@@ -95,27 +105,27 @@ def load_networkx_graph(dname):
     return G
 
 
-if __name__ == "__main__":
+def main(dset_name: str):
     from ogb.nodeproppred import NodePropPredDataset
 
-    dset_name = "ogbn-products"
+    assert dset_name in ["ogbn-arxiv", "ogbn-products", "ogbn-proteins"]
+
+    is_directed = False
+    if dset_name == "ogbn-arxiv":
+        is_directed = True
 
     dataset = NodePropPredDataset(
-        name=dset_name,
+        dset_name,
     )
     graph_data, labels = dataset[0]
 
     edge_index = torch.Tensor(graph_data["edge_index"]).long()
     num_nodes = graph_data["num_nodes"]
 
-    print(edge_index.shape, num_nodes)
-
-    # print(node_features.shape)
-    # num_nodes = node_features.shape[0]
     coo_list = edge_index.numpy().T
 
-    # node_rank_placement = partition_directed_graph(coo_list, num_nodes,
-    #
-    #  4)
+    save_networkx_graph(coo_list, num_nodes, dset_name, directed=is_directed)
 
-    save_networkx_graph(coo_list, num_nodes, dset_name)
+
+if __name__ == "__main__":
+    Fire(main)

@@ -13,7 +13,7 @@
 # SPDX-License-Identifier: (Apache-2.0)
 import numpy as np
 import torch
-from torch import Tensor, LongTensor
+from torch import Tensor
 from experiments.GraphCast.data_utils.spatial_utils import max_edge_length
 from .icosahedral_mesh import (
     get_hierarchy_of_triangular_meshes_for_sphere,
@@ -26,6 +26,7 @@ from .utils import (
     create_mesh2grid_graph,
     pad_indices,
 )
+from .preprocess import graphcast_graph_to_nxgraph, partition_graph
 from dataclasses import dataclass
 
 
@@ -38,6 +39,7 @@ class DistributedGraphCastGraph:
     lat_lon_grid: Tensor
     mesh_graph_node_features: Tensor
     mesh_graph_edge_features: Tensor
+    mesh_graph_node_rank_placement: Tensor
     mesh_graph_src_indices: Tensor
     mesh_graph_dst_indices: Tensor
     mesh2grid_graph_node_features: Tensor
@@ -85,7 +87,16 @@ class DistributedGraphCastGraphGenerator:
         self.mesh_vertices = np.array(mesh.vertices)
         self.mesh_faces = mesh.faces
 
-    def get_mesh_graph(self):
+    @staticmethod
+    def get_mesh_graph_partition(mesh_graph):
+        """Generate the partitioning of the mesh graph."""
+
+        # Only rank 1 should generate the partitioning
+        nx_graph = graphcast_graph_to_nxgraph(mesh_graph)
+        mesh_vertex_rank_placement = partition_graph(nx_graph, self.world_size)
+        return mesh_vertex_rank_placement
+
+    def get_mesh_graph(self, mesh_vertex_rank_placement):
         """Get the graph for the distributed graphcast graph."""
 
         mesh_pos = torch.tensor(self.mesh_vertices, dtype=torch.float32)
@@ -99,10 +110,21 @@ class DistributedGraphCastGraphGenerator:
 
         node_features, edge_features, src_indices, dst_indices = mesh_graph
 
-        src_indices = pad_indices(src_indices, self.ranks_per_graph)
-        dst_indices = pad_indices(src_indices, self.ranks_per_graph)
+        contiguous_rank_mapping, renumbered_nodes = torch.sort(
+            mesh_vertex_rank_placement
+        )
+
+        # renumber the nodes
+        node_features = node_features[renumbered_nodes]
+        local_vertex_mask = contiguous_rank_mapping == self.rank
+        node_features = node_features[local_vertex_mask]
+
+        # renumber the edges
+        src_indices = renumbered_nodes[src_indices]
+        dst_indices = renumbered_nodes[dst_indices]
 
         num_edges = src_indices.shape[0]
+        edge_arrangement = torch.arange(num_edges)
         start_index = self.local_rank * (num_edges // self.ranks_per_graph)
         end_index = start_index + (num_edges // self.ranks_per_graph)
         src_indices = src_indices[start_index:end_index]
@@ -139,7 +161,9 @@ class DistributedGraphCastGraphGenerator:
         edge_features, src_mesh_indices, dst_grid_indices = m2g_graph
         return torch.Tensor([]), edge_features, src_mesh_indices, dst_grid_indices
 
-    def get_graphcast_graph(self) -> DistributedGraphCastGraph:
+    def get_graphcast_graph(
+        self, mesh_vertex_rank_placement
+    ) -> DistributedGraphCastGraph:
         """Get the distributed graphcast graph."""
         mesh_graph = self.get_mesh_graph()
         mesh2grid_graph = self.get_mesh2grid_graph()

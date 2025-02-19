@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import sys
+from typing import Optional
 from DGraph.data.datasets import DistributedOGBWrapper
 from DGraph.Communicator import CommunicatorBase, Communicator
 
@@ -30,6 +31,7 @@ from utils import (
     calculate_accuracy,
 )
 import numpy as np
+import os
 
 
 class SingleProcessDummyCommunicator(CommunicatorBase):
@@ -202,6 +204,7 @@ def main(
     lr: float = 0.001,
     runs: int = 1,
     log_dir: str = "logs",
+    node_rank_placement_file: Optional[str] = None,
 ):
     _communicator = backend.lower()
 
@@ -214,15 +217,26 @@ def main(
 
     assert dataset in ["arxiv"], "Invalid dataset"
 
+    node_rank_placement = None
     if _communicator.lower() == "single":
         # Dummy communicator for single process testing
         comm = SingleProcessDummyCommunicator()
+
     else:
         dist.init_process_group(backend="nccl")
         comm = Communicator.init_process_group(_communicator)
 
+        # Must pass the node rank placement file the first time
+        if node_rank_placement_file is not None:
+            assert os.path.exists(
+                node_rank_placement_file
+            ), "Node rank placement file not found"
+            node_rank_placement = torch.load(node_rank_placement_file)
+
     safe_create_dir(log_dir, comm.get_rank())
-    training_dataset = DistributedOGBWrapper(f"ogbn-{dataset}", comm)
+    training_dataset = DistributedOGBWrapper(
+        f"ogbn-{dataset}", comm, node_rank_placement=node_rank_placement
+    )
 
     training_trajectores = np.zeros((runs, epochs))
     validation_trajectores = np.zeros((runs, epochs))

@@ -11,7 +11,7 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
-from typing import Optional
+from typing import Optional, Tuple
 import torch
 from torch.utils.data import Dataset
 from DGraph.Communicator import CommunicatorBase
@@ -28,16 +28,12 @@ SUPPORTED_DATASETS = datasets = [
 ]
 
 
-def node_renumbering(node_rank_placement, world_size) -> torch.Tensor:
+def node_renumbering(node_rank_placement) -> Tuple[torch.Tensor, torch.Tensor]:
     """The nodes are renumbered based on the rank mappings so the node features and
     numbers are contiguous."""
-    rearranged_indices = []
-    for rank in range(world_size):
-        mask = node_rank_placement == rank
-        indices = torch.where(mask)[0]
-        rearranged_indices.append(indices)
-    renumbered_nodes = torch.cat(rearranged_indices)
-    return renumbered_nodes
+
+    contiguous_rank_mapping, renumbered_nodes = torch.sort(node_rank_placement)
+    return renumbered_nodes, contiguous_rank_mapping
 
 
 def edge_renumbering(edge_indices, renumbered_nodes) -> torch.Tensor:
@@ -81,7 +77,7 @@ def process_homogenous_data(
     test_nodes = torch.from_numpy(split_idx["test"])
 
     # Renumber the nodes and edges to make them contiguous
-    renumbered_nodes = node_renumbering(node_rank_placement, world_Size)
+    renumbered_nodes, contiguous_rank_mapping = node_renumbering(node_rank_placement)
     node_features = node_features[renumbered_nodes]
     # Edges are placed on the same rank as the source node
     edge_rank_mapping = node_rank_placement[edge_index[0]]
@@ -95,12 +91,14 @@ def process_homogenous_data(
     valid_nodes = renumbered_nodes[valid_nodes]
     test_nodes = renumbered_nodes[test_nodes]
 
+    labels = labels[renumbered_nodes]
+
     graph_obj = DistributedGraph(
         node_features=node_features,
         edge_index=edge_index,
         num_nodes=num_nodes,
         num_edges=num_edges,
-        node_loc=node_rank_placement,
+        node_loc=contiguous_rank_mapping,
         edge_loc=edge_rank_mapping,
         rank=rank,
         world_size=world_Size,
@@ -150,7 +148,7 @@ class DistributedOGBWrapper(Dataset):
         if not os.path.exists(dir_name):
             os.makedirs(dir_name)
 
-        cached_graph_file = f"{dir_name}/{dname}_graph_data.pt"
+        cached_graph_file = f"{dir_name}/{dname}_graph_data_{self._world_size}.pt"
 
         if os.path.exists(cached_graph_file):
             graph_obj = torch.load(cached_graph_file)
@@ -158,6 +156,10 @@ class DistributedOGBWrapper(Dataset):
             # Intetionally not providing a method to generate node rank placement
             # as it would require additional external dependencies
             # Let the user provide the node rank placement
+
+            if self._world_size == 1:
+                node_rank_placement = torch.zeros(graph_data["num_nodes"])
+
             assert (
                 node_rank_placement is not None
             ), "Regenerating distributed graph, please provide node rank placement"
