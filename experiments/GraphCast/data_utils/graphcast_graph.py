@@ -116,27 +116,31 @@ class DistributedGraphCastGraphGenerator:
 
         # renumber the nodes
         node_features = node_features[renumbered_nodes]
-        local_vertex_mask = contiguous_rank_mapping == self.rank
-        node_features = node_features[local_vertex_mask]
 
         # renumber the edges
         src_indices = renumbered_nodes[src_indices]
         dst_indices = renumbered_nodes[dst_indices]
 
-        num_edges = src_indices.shape[0]
-        edge_arrangement = torch.arange(num_edges)
-        start_index = self.local_rank * (num_edges // self.ranks_per_graph)
-        end_index = start_index + (num_edges // self.ranks_per_graph)
-        src_indices = src_indices[start_index:end_index]
-        dst_indices = dst_indices[start_index:end_index]
-        edge_features = edge_features[start_index:end_index]
+        # Base the edge placements on the source indices
+        edge_placement_tensor = mesh_vertex_rank_placement[src_indices]
 
-        num_nodes = node_features.shape[0]
-        start_index = self.local_rank * (num_nodes // self.ranks_per_graph)
-        end_index = start_index + (num_nodes // self.ranks_per_graph)
-        node_features = node_features[start_index:end_index]
+        contigous_edge_mapping, renumbered_edges = torch.sort(edge_placement_tensor)
 
-        return node_features, edge_features, src_indices.long(), dst_indices.long()
+        src_indices = src_indices[renumbered_edges]
+        dst_indices = dst_indices[renumbered_edges]
+
+        edge_features = edge_features[renumbered_edges]
+
+        mesh_graph_dict = {
+            "node_features": node_features,
+            "edge_features": edge_features,
+            "src_indices": src_indices,
+            "dst_indices": dst_indices,
+            "node_rank_placement": contiguous_rank_mapping,
+            "edge_rank_placement": contigous_edge_mapping,
+        }
+
+        return mesh_graph_dict
 
     def get_grid2mesh_graph(self):
         max_edge_len = max_edge_length(
@@ -165,7 +169,7 @@ class DistributedGraphCastGraphGenerator:
         self, mesh_vertex_rank_placement
     ) -> DistributedGraphCastGraph:
         """Get the distributed graphcast graph."""
-        mesh_graph = self.get_mesh_graph()
+        mesh_graph = self.get_mesh_graph(mesh_vertex_rank_placement)
         mesh2grid_graph = self.get_mesh2grid_graph()
         grid2mesh_graph = self.get_grid2mesh_graph()
 
@@ -175,10 +179,11 @@ class DistributedGraphCastGraphGenerator:
             ranks_per_graph=self.ranks_per_graph,
             mesh_level=self.mesh_level,
             lat_lon_grid=self.lat_lon_grid,
-            mesh_graph_node_features=mesh_graph[0],
-            mesh_graph_edge_features=mesh_graph[1],
-            mesh_graph_src_indices=mesh_graph[2],
-            mesh_graph_dst_indices=mesh_graph[3],
+            mesh_graph_node_features=mesh_graph["node_features"],
+            mesh_graph_edge_features=mesh_graph["edge_features"],
+            mesh_graph_node_rank_placement=mesh_graph["node_rank_placement"],
+            mesh_graph_src_indices=mesh_graph["src_indices"],
+            mesh_graph_dst_indices=mesh_graph["dst_indices"],
             mesh2grid_graph_node_features=mesh2grid_graph[0],
             mesh2grid_graph_edge_features=mesh2grid_graph[1],
             mesh2grid_graph_src_indices=mesh2grid_graph[2],
