@@ -27,6 +27,26 @@ SUPPORTED_DATASETS = datasets = [
 ]
 
 
+def node_renumbering(node_rank_placement, world_size) -> torch.Tensor:
+    """The nodes are renumbered based on the rank mappings so the node features and
+    numbers are contiguous."""
+    rearranged_indices = []
+    for rank in range(world_size):
+        mask = node_rank_placement == rank
+        indices = torch.where(mask)[0]
+        rearranged_indices.append(indices)
+    renumbered_nodes = torch.cat(rearranged_indices)
+    return renumbered_nodes
+
+
+def edge_renumbering(edge_indices, renumbered_nodes) -> torch.Tensor:
+    src_indices = edge_indices[:, 0]
+    dst_indices = edge_indices[:, 1]
+    src_indices = renumbered_nodes[src_indices]
+    dst_indices = renumbered_nodes[dst_indices]
+    return torch.stack([src_indices, dst_indices], dim=0)
+
+
 def process_homogenous_data(
     graph_data, labels, rank, world_Size, split_idx, partition_file, *args, **kwargs
 ) -> DistributedGraph:
@@ -49,8 +69,24 @@ def process_homogenous_data(
     test_nodes = torch.from_numpy(split_idx["test"])
 
     partition_data = np.load(partition_file, allow_pickle=True)
+
+    assert "node_rank_mapping" in partition_data, "Node rank mapping not found"
+
+    # Load the partition data
+
+    # Integer tensor for where each node is placed
     node_rank_mapping = partition_data["node_rank_mapping"]
-    edge_rank_mapping = partition_data["edge_rank_mapping"]
+    assert node_rank_mapping.shape[0] == num_nodes, "Node mapping mismatch"
+
+    renumbered_nodes = node_renumbering(node_rank_mapping, world_Size)
+    node_features = node_features[renumbered_nodes]
+    # Edges are placed on the same rank as the source node
+    edge_rank_mapping = node_rank_mapping[edge_index[0]]
+
+    edge_index = edge_renumbering(edge_index, renumbered_nodes)
+    edge_rank_mapping = edge_renumbering(edge_rank_mapping, renumbered_nodes)
+
+    # Renumber the nodes and edges to make them contiguous
 
     graph_obj = DistributedGraph(
         node_features=node_features,
@@ -75,6 +111,7 @@ class DistributedOGBWrapper(Dataset):
         dname: str,
         comm_object: CommunicatorBase,
         cache_partitioning_file=None,
+        dir_name=None,
         *args,
         **kwargs,
     ) -> None:
@@ -104,18 +141,30 @@ class DistributedOGBWrapper(Dataset):
         self.split_idx = self.dataset.get_idx_split()
         assert self.split_idx is not None, "Split index not found"
 
-        graph_obj = process_homogenous_data(
-            graph_data,
-            labels,
-            self._rank,
-            self._world_size,
-            self.split_idx,
-            partition_file=cache_partitioning_file,
-            *args,
-            **kwargs,
-        )
+        dir_name = dir_name if dir_name is not None else os.getcwd() + "/data"
 
-        self.graph_obj = graph_obj
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name)
+
+        cached_graph_file = f"{dir_name}/{dname}_graph_data.pt"
+
+        if os.path.exists(cached_graph_file):
+            graph_obj = torch.load(cached_graph_file)
+        else:
+            graph_obj = process_homogenous_data(
+                graph_data,
+                labels,
+                self._rank,
+                self._world_size,
+                self.split_idx,
+                partition_file=cache_partitioning_file,
+                *args,
+                **kwargs,
+            )
+            self.graph_obj = graph_obj
+            if self._rank == 0:
+                print(f"Saving the processed graph data to {cached_graph_file}")
+                torch.save(graph_obj, cached_graph_file)
 
     def __len__(self) -> int:
         return 1
