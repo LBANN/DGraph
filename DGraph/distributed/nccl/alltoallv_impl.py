@@ -7,20 +7,22 @@ def _nccl_alltoall_v(
     local_recv_tensor: torch.Tensor,
     indices: torch.Tensor,
     local_rank_mapping: torch.Tensor,
-    src_ranks: torch.Tensor,
-    dest_ranks: torch.Tensor,
+    edge_rank_loc: torch.Tensor,
+    src_rank_loc: torch.Tensor,
     rank: int,
     world_size: int,
 ):
     num_features = local_send_tensor.shape[2]
     num_src_rows = local_send_tensor.shape[1]
     # These are all the rows participating in communication
-    all_comm_mask = src_ranks != dest_ranks
+    all_comm_mask = edge_rank_loc != src_rank_loc
+
+    if all_comm_mask.sum() == 0:
+        return local_recv_tensor
     # These ranks will send a message
-    comm_senders = src_ranks[all_comm_mask]
+    comm_senders = src_rank_loc[all_comm_mask]
     # These ranks will recieve a message
-    # Current rank will send to these ranks
-    comm_receivers = dest_ranks[all_comm_mask]
+    comm_receivers = edge_rank_loc[all_comm_mask]
 
     # Current rank will send to these ranks
     send_to_ranks = comm_receivers[comm_senders == rank]
@@ -32,6 +34,10 @@ def _nccl_alltoall_v(
     recv_buffer_dict = {}
     recv_local_placement = {}
     send_local_placement = {}
+
+    # if rank == 0:
+    #     breakpoint()
+    # dist.barrier()
 
     for i, num_messages in enumerate(recv_comm_vector):
         if num_messages == 0:
@@ -58,10 +64,13 @@ def _nccl_alltoall_v(
         if i == rank:
             continue
 
-        _mask = (src_ranks == rank) & (dest_ranks == i)
+        _mask = (src_rank_loc == rank) & (edge_rank_loc == i)
         _send_row = indices[0][_mask] % num_src_rows
         send_local_placement[i] = _send_row
 
+    # if rank == 0:
+    #     breakpoint()
+    # dist.barrier()
     p2p_op_list = []
     for send_rank_index in range(world_size):
         for recv_rank_index in range(world_size):

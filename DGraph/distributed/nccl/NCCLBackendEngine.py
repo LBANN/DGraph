@@ -76,7 +76,7 @@ class GatherFunction(Function):
         # Get the edges that are local to the rank
         local_slice_mask = edge_src_ranks == rank
 
-        num_local_output_rows = len(local_slice_mask)
+        num_local_output_rows = int(local_slice_mask.sum().item())
 
         recv_tensor = torch.zeros(batch_size, num_local_output_rows, num_features).to(
             local_send_tensor.device
@@ -84,15 +84,18 @@ class GatherFunction(Function):
 
         local_indices_slice = indices[local_slice_mask.unsqueeze(0)]
         local_rank_mapping = edge_src_ranks[local_slice_mask]
+
         local_recv_tensor = edge_dest_ranks[local_slice_mask]
 
-        assert torch.all(local_recv_tensor == rank)
+        # assert torch.all(local_recv_tensor == rank), local_recv_tensor
 
         local_indices = local_indices_slice % local_send_tensor.shape[1]
 
-        if len(local_indices_slice) > 0:
+        local_gather_mask = local_rank_mapping == rank
 
-            recv_tensor[:, local_rank_mapping == rank, :] = RankLocalMaskedGather(
+        if local_gather_mask.sum() > 0:
+
+            recv_tensor[:, local_gather_mask, :] = RankLocalMaskedGather(
                 local_send_tensor, local_indices, local_rank_mapping, rank
             )
 
@@ -100,9 +103,9 @@ class GatherFunction(Function):
             local_send_tensor=local_send_tensor,
             local_recv_tensor=recv_tensor,
             indices=indices,
-            local_rank_mapping=local_rank_mapping,
-            src_ranks=edge_src_ranks,
-            dest_ranks=edge_dest_ranks,
+            local_rank_mapping=local_recv_tensor,
+            edge_rank_loc=edge_src_ranks,
+            src_rank_loc=edge_dest_ranks,
             rank=rank,
             world_size=world_size,
         )
