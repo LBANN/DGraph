@@ -19,6 +19,7 @@ from ogb.nodeproppred import NodePropPredDataset
 from DGraph.data.graph import DistributedGraph
 import numpy as np
 import os
+import torch.distributed as dist
 
 SUPPORTED_DATASETS = datasets = [
     "ogbn-arxiv",
@@ -36,11 +37,21 @@ def node_renumbering(node_rank_placement) -> Tuple[torch.Tensor, torch.Tensor]:
     return renumbered_nodes, contiguous_rank_mapping
 
 
-def edge_renumbering(edge_indices, renumbered_nodes) -> torch.Tensor:
-    src_indices = edge_indices[:, 0]
-    dst_indices = edge_indices[:, 1]
+def edge_renumbering(
+    edge_indices, renumbered_nodes, edge_features=None
+) -> torch.Tensor:
+    src_indices = edge_indices[0, :]
+    dst_indices = edge_indices[1, :]
     src_indices = renumbered_nodes[src_indices]
     dst_indices = renumbered_nodes[dst_indices]
+    sorted_src_indices, sorted_indices = torch.sort(src_indices)
+    dst_indices = dst_indices[sorted_indices]
+    src_indices = sorted_src_indices
+
+    if edge_features is not None:
+        # Sort the edge features based on the sorted indices
+        edge_features = edge_features[sorted_indices]
+
     return torch.stack([src_indices, dst_indices], dim=0)
 
 
@@ -80,11 +91,11 @@ def process_homogenous_data(
     renumbered_nodes, contiguous_rank_mapping = node_renumbering(node_rank_placement)
     node_features = node_features[renumbered_nodes]
     # Edges are placed on the same rank as the source node
+
+    edge_index = edge_renumbering(edge_index, renumbered_nodes, edge_features=None)
     edge_rank_mapping = node_rank_placement[edge_index[0]]
 
-    edge_index = edge_renumbering(edge_index, renumbered_nodes)
-    edge_rank_mapping = edge_renumbering(edge_rank_mapping, renumbered_nodes)
-
+    edge_dest_rank_mapping = node_rank_placement[edge_index[1]]
     # Renumber the masks
 
     train_nodes = renumbered_nodes[train_nodes]
@@ -100,7 +111,7 @@ def process_homogenous_data(
         num_edges=num_edges,
         node_loc=contiguous_rank_mapping,
         edge_loc=edge_rank_mapping,
-        rank=rank,
+        edge_dest_rank_mapping=edge_dest_rank_mapping,
         world_size=world_Size,
         labels=labels,
         train_mask=train_nodes,
@@ -174,17 +185,20 @@ class DistributedOGBWrapper(Dataset):
                 *args,
                 **kwargs,
             )
-            self.graph_obj = graph_obj
+
             if self._rank == 0:
                 print(f"Saving the processed graph data to {cached_graph_file}")
                 torch.save(graph_obj, cached_graph_file)
+
+        self.graph_obj = graph_obj
 
     def __len__(self) -> int:
         return 1
 
     def __getitem__(self, idx: int):
-        local_node_features = self.graph_obj.get_local_node_features()
-        labels = self.graph_obj.get_local_labels()
+        rank = self.comm_object.get_rank()
+        local_node_features = self.graph_obj.get_local_node_features(rank=rank)
+        labels = self.graph_obj.get_local_labels(rank=rank)
 
         # TODO: Move this to a backend-specific collator in the future
         if self.comm_object.backend == "nccl":
@@ -193,17 +207,10 @@ class DistributedOGBWrapper(Dataset):
             # NOTE: Two-sided comm needs all the edge indices not the local ones
             edge_indices = self.graph_obj.get_global_edge_indices()
             rank_mappings = self.graph_obj.get_global_rank_mappings()
-
-            # A hack to get the local edge indices, will fix this later with
-            # TensorDict as the underlying data object rather than tensors.
-            # This is just for quick spin up of the experiments
-            edge_indices.__setattr__("local_num_edges", self.graph_obj._edges_per_rank)
-            rank_mappings.__setattr__("local_num_edges", self.graph_obj._edges_per_rank)
-
         else:
             # One-sided communication, no need for rank placement data
 
-            edge_indices = self.graph_obj.get_local_edge_indices()
-            rank_mappings = self.graph_obj.get_local_rank_mappings()
+            edge_indices = self.graph_obj.get_local_edge_indices(rank=rank)
+            rank_mappings = self.graph_obj.get_local_rank_mappings(rank=rank)
 
         return local_node_features, edge_indices, rank_mappings, labels

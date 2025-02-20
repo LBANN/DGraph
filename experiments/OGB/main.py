@@ -24,6 +24,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from GCN import CommAwareGCN as GCN
 from utils import (
     dist_print_ephemeral,
+    make_experiment_log,
     write_experiment_log,
     cleanup,
     visualize_trajectories,
@@ -94,12 +95,9 @@ def _run_experiment(
         else model
     )
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    start_time = torch.cuda.Event(enable_timing=True)
-    end_time = torch.cuda.Event(enable_timing=True)
 
     stream = torch.cuda.Stream()
 
-    start_time.record(stream)
     node_features, edge_indices, rank_mappings, labels = dataset[0]
 
     node_features = node_features.to(device).unsqueeze(0)
@@ -117,8 +115,8 @@ def _run_experiment(
         dist.barrier()
     criterion = torch.nn.CrossEntropyLoss()
 
-    train_mask = dataset.graph_obj.get_local_mask("train")
-    validation_mask = dataset.graph_obj.get_local_mask("val")
+    train_mask = dataset.graph_obj.get_local_mask("train", rank)
+    validation_mask = dataset.graph_obj.get_local_mask("val", rank)
     training_loss_scores = []
     validation_loss_scores = []
     validation_accuracy_scores = []
@@ -126,7 +124,13 @@ def _run_experiment(
     print(f"Rank: {rank} training_mask: {train_mask.shape}")
     print(f"Rank: {rank} validation_mask: {validation_mask.shape}")
 
+    training_times = []
     for i in range(epochs):
+        dist.barrier()
+        torch.cuda.synchronize()
+        start_time = torch.cuda.Event(enable_timing=True)
+        end_time = torch.cuda.Event(enable_timing=True)
+        start_time.record(stream)
         optimizer.zero_grad()
         _output = model(node_features, edge_indices, rank_mappings)
         # Must flatten along the batch dimension for the loss function
@@ -137,6 +141,10 @@ def _run_experiment(
         dist_print_ephemeral(f"Epoch {i} \t Loss: {loss.item()}", rank)
         optimizer.step()
 
+        dist.barrier()
+        end_time.record(stream)
+        torch.cuda.synchronize()
+        training_times.append(start_time.elapsed_time(end_time))
         training_loss_scores.append(loss.item())
         write_experiment_log(str(loss.item()), f"{log_prefix}_training_loss.log", rank)
 
@@ -165,13 +173,11 @@ def _run_experiment(
         model.train()
 
     torch.cuda.synchronize()
-    end_time.record(stream)
-    torch.cuda.synchronize()
 
     model.eval()
 
     with torch.no_grad():
-        test_idx = dataset.graph_obj.get_local_mask("test")
+        test_idx = dataset.graph_obj.get_local_mask("test", rank)
         test_labels = labels[:, test_idx].view(-1)
         test_preds = model(node_features, edge_indices, rank_mappings)[:, test_idx]
         test_preds = test_preds.view(-1, num_classes)
@@ -186,7 +192,13 @@ def _run_experiment(
         )
         write_experiment_log(f"{test_loss.item()},{test_accuracy}", test_log_file, rank)
 
-    average_time = start_time.elapsed_time(end_time) / epochs
+    make_experiment_log(f"{log_prefix}_training_times.log", rank)
+    make_experiment_log(f"{log_prefix}_runtime_experiment.log", rank)
+
+    for times in training_times:
+        write_experiment_log(str(times), f"{log_prefix}_training_times.log", rank)
+
+    average_time = np.mean(training_times[1:])
     log_str = f"Average time per epoch: {average_time:.4f} ms"
     write_experiment_log(log_str, f"{log_prefix}_runtime_experiment.log", rank)
 
@@ -200,7 +212,7 @@ def _run_experiment(
 def main(
     backend: str = "single",
     dataset: str = "arxiv",
-    epochs: int = 100,
+    epochs: int = 3,
     lr: float = 0.001,
     runs: int = 1,
     log_dir: str = "logs",
@@ -241,8 +253,9 @@ def main(
     training_trajectores = np.zeros((runs, epochs))
     validation_trajectores = np.zeros((runs, epochs))
     validation_accuracies = np.zeros((runs, epochs))
+    world_size = comm.get_world_size()
     for i in range(runs):
-        log_prefix = f"{log_dir}/run_{i}"
+        log_prefix = f"{log_dir}/{dataset}_{world_size}_run_{i}"
         training_traj, val_traj, val_accuracy = _run_experiment(
             training_dataset, comm, lr, epochs, log_prefix
         )

@@ -13,7 +13,7 @@
 # SPDX-License-Identifier: (Apache-2.0)
 from typing import Optional
 import torch
-
+import torch.distributed as dist
 
 # Graph object to store and keep track of distributed graph data
 
@@ -29,16 +29,15 @@ class DistributedGraph:
         labels: torch.Tensor,
         node_loc: torch.Tensor,
         edge_loc: torch.Tensor,
+        edge_dest_rank_mapping: torch.Tensor,
         num_nodes: int,
         num_edges: int,
-        rank: int,
         world_size: int,
         edge_features: Optional[torch.Tensor] = None,
         train_mask: Optional[torch.Tensor] = None,
         val_mask: Optional[torch.Tensor] = None,
         test_mask: Optional[torch.Tensor] = None,
         graph_labels: Optional[torch.Tensor] = None,
-        pre_calculate_mapping: bool = False,
     ):
         """A Distributed Graph Object to store and keep track of a single graph
         distributed across multiple ranks.
@@ -87,17 +86,19 @@ class DistributedGraph:
         self.val_mask = val_mask
         self.test_mask = test_mask
         self.graph_labels = graph_labels
-        self.rank = rank
         self.world_size = world_size
-        self._nodes_per_rank = (num_nodes + world_size - 1) // world_size
-        self._edges_per_rank = (num_edges + world_size - 1) // world_size
+        self._nodes_per_rank = node_loc.bincount()
+        self._edges_per_rank = edge_loc.bincount()
         self.node_loc = node_loc
         self.edge_loc = edge_loc
 
-        if pre_calculate_mapping:
-            self._precalculate_index_rank_mappings(edge_index)
-        self.max_node_per_rank = None
-        self.max_edge_per_rank = None
+        self.max_node_per_rank = int(self._nodes_per_rank.max().item())
+        self.max_edge_per_rank = int(self._edges_per_rank.max().item())
+        self.edge_dest_rank_mapping = edge_dest_rank_mapping
+        self.rank_mappings = torch.cat(
+            [self.edge_loc.unsqueeze(0), self.edge_dest_rank_mapping.unsqueeze(0)],
+            dim=0,
+        )
 
     def get_max_node_per_rank(self) -> int:
         """Returns the maximum number of nodes per rank according to the rank mapping
@@ -123,7 +124,7 @@ class DistributedGraph:
             self.max_edge_per_rank = int(edges_per_rank.max().item())
         return self.max_edge_per_rank
 
-    def get_local_node_features(self) -> torch.Tensor:
+    def get_local_node_features(self, rank) -> torch.Tensor:
         """
         Returns the local node features for the current rank based on the rank mapping
 
@@ -132,7 +133,6 @@ class DistributedGraph:
                          (num_local_nodes, num_node_features)
         """
 
-        rank = self.rank
         rank_mask = self.node_loc == rank
         local_node_features = self.node_features[rank_mask, :]
         return local_node_features
@@ -147,7 +147,7 @@ class DistributedGraph:
         """
         return self.node_features
 
-    def get_local_edge_indices(self) -> torch.Tensor:
+    def get_local_edge_indices(self, rank) -> torch.Tensor:
         """
         Returns the local edge indices for the current rank based on the rank mapping
 
@@ -155,7 +155,6 @@ class DistributedGraph:
             torch.Tensor: Local edge indices tensor of shape (2, num_local_edges)
         """
 
-        rank = self.rank
         rank_mask = self.edge_loc == rank
         local_edge_index = self.edge_index[:, rank_mask]
         return local_edge_index
@@ -177,11 +176,9 @@ class DistributedGraph:
         Returns:
             torch.Tensor: Global rank mappings tensor of shape (2, num_edges)
         """
-        if self.rank_mappings is None:
-            self._precalculate_index_rank_mappings(self.edge_index)
         return self.rank_mappings
 
-    def get_local_rank_mappings(self) -> torch.Tensor:
+    def get_local_rank_mappings(self, rank) -> torch.Tensor:
         """
         Returns the rank mappings for local edges in this rank in the form
         (source_rank, destination_rank) for each edge.
@@ -190,21 +187,16 @@ class DistributedGraph:
             torch.Tensor: Local rank mappings tensor of shape (2, num_local_edges)
         """
 
-        local_edge_mask = self.edge_loc == self.rank
-
-        if self.rank_mappings is None:
-            self._precalculate_index_rank_mappings(self.edge_index)
-        assert self.rank_mappings is not None, "Rank mappings not precalculated"
+        local_edge_mask = self.edge_loc == rank
         return self.rank_mappings[:, local_edge_mask]
 
-    def get_local_labels(self) -> torch.Tensor:
+    def get_local_labels(self, rank) -> torch.Tensor:
         """
         Returns the local labels for the current rank based on the rank mapping
 
         Returns:
             torch.Tensor: Local labels tensor
         """
-        rank = self.rank
         rank_mask = self.node_loc == rank
         local_labels = self.labels[rank_mask]
 
@@ -213,7 +205,7 @@ class DistributedGraph:
     def get_global_labels(self) -> torch.Tensor:
         return self.labels
 
-    def get_local_mask(self, mask: str) -> torch.Tensor:
+    def get_local_mask(self, mask: str, rank) -> torch.Tensor:
         """
         Returns the local mask for the given mask type based on the rank mapping.
         The local slice is calculated based on the range of nodes local to the
@@ -225,8 +217,6 @@ class DistributedGraph:
         Returns:
             torch.Tensor: Local mask tensor
         """
-
-        rank = self.rank
 
         nodes_per_rank = self.node_loc.bincount()
 
@@ -247,24 +237,15 @@ class DistributedGraph:
 
         _mask = _mask.int()
 
-        _mask_rank = _mask < local_node_end and _mask >= local_node_start
+        _mask_rank = (_mask < local_node_end) & (_mask >= local_node_start)
 
-        local_mask = _mask[_mask_rank] % self._nodes_per_rank
+        local_mask = _mask[_mask_rank] % self._nodes_per_rank[rank]
         return local_mask
 
     def _get_index_to_rank_mapping(self, _indices):
         """Returns the rank mapping for the given indices"""
         return self.node_loc[_indices.int()]
 
-    def _precalculate_index_rank_mappings(self, _indices):
-        """Precalculates the rank mappings for the given indices and caches them.
-        This is needed for two-sided communication backends like NCCL."""
-        self._source_sender_ranks = self._get_index_to_rank_mapping(_indices[0, :])
-        self._source_receiver_ranks = self._get_index_to_rank_mapping(_indices[1, :])
-        self.rank_mappings = torch.stack(
-            [self._source_sender_ranks, self._source_receiver_ranks], dim=0
-        )
-
     def get_sender_receiver_ranks(self):
         """Returns the sender and receiver ranks for each edge"""
-        return self._source_sender_ranks, self._source_receiver_ranks
+        return self.edge_loc, self.edge_dest_rank_mapping

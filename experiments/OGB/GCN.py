@@ -38,7 +38,7 @@ class CommAwareGCN(nn.Module):
         super(CommAwareGCN, self).__init__()
 
         self.conv1 = ConvLayer(in_channels, hidden_dims)
-        self.conv2 = nn.Linear(hidden_dims, hidden_dims)
+        # self.conv2 = nn.Linear(hidden_dims, hidden_dims)
         self.fc = nn.Linear(hidden_dims, num_classes)
         self.softmax = nn.Softmax(dim=1)
         self.comm = comm
@@ -56,9 +56,9 @@ class CommAwareGCN(nn.Module):
         x = self.comm.gather(node_features, _dst_indices, _dst_rank_mappings)
         x = self.conv1(x)
         x = self.comm.scatter(x, _src_indices, _src_rank_mappings, num_local_nodes)
-        x = self.comm.gather(x, _dst_indices, _dst_rank_mappings)
-        x = self.conv2(x)
-        x = self.comm.scatter(x, _src_indices, _src_rank_mappings, num_local_nodes)
+        # x = self.comm.gather(x, _dst_indices, _dst_rank_mappings)
+        # x = self.conv2(x)
+        # x = self.comm.scatter(x, _src_indices, _src_rank_mappings, num_local_nodes)
         x = self.fc(x)
         # x = self.softmax(x)
         return x
