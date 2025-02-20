@@ -47,8 +47,12 @@ class CommAwareGCN(nn.Module):
         num_local_nodes = node_features.size(1)
         _src_indices = edge_index[:, 0, :]
         _dst_indices = edge_index[:, 1, :]
-        _src_rank_mappings = rank_mapping[0]
-        _dst_rank_mappings = rank_mapping[1]
+        _src_rank_mappings = torch.cat(
+            [rank_mapping[0].unsqueeze(0), rank_mapping[0].unsqueeze(0)], dim=0
+        )
+        _dst_rank_mappings = torch.cat(
+            [rank_mapping[0].unsqueeze(0), rank_mapping[1].unsqueeze(0)], dim=0
+        )
         x = self.comm.gather(node_features, _dst_indices, _dst_rank_mappings)
         x = self.conv1(x)
         x = self.comm.scatter(x, _src_indices, _src_rank_mappings, num_local_nodes)
