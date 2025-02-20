@@ -119,14 +119,17 @@ def setup_unbalanced_gather_data(init_nccl_backend):
 
 
 @pytest.fixture(scope="module")
-def setup_scatter_data():
+def setup_scatter_data(init_nccl_backend):
+    comm = init_nccl_backend
+    torch.manual_seed(0)
+    torch.cuda.set_device(comm.get_rank())
     num_features = 4
     all_rank_input_data = torch.randn(1, 8, num_features, requires_grad=True)
     all_rank_indices = torch.tensor(
-        [[0, 0, 0, 1, 1, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]]
+        [[0, 0, 0, 1, 2, 2, 2, 3], [1, 2, 3, 0, 3, 0, 3, 0]]
     )
     rank_mappings = torch.tensor(
-        [[0, 0, 0, 0, 0, 1, 1, 1], [0, 1, 1, 0, 1, 0, 1, 0]],
+        [[0, 0, 0, 0, 1, 1, 1, 1], [0, 1, 1, 0, 1, 0, 1, 0]],
     )
 
     all_rank_output_0 = torch.zeros(1, 4, num_features)
@@ -325,8 +328,11 @@ def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
 
     for i in range(all_rank_indices.shape[0]):
         local_output_gt = all_rank_output[[i], output_start_index:output_end_index]
+        _mappings = torch.cat(
+            [local_edge_placement.unsqueeze(0), rank_mappings[[i]]], dim=0
+        )
         dgraph_output_tensor = comm.scatter(
-            local_input_data.cuda(), all_rank_indices[i].cuda(), rank_mappings, 2
+            local_input_data.cuda(), all_rank_indices[i].cuda(), _mappings, 2
         )
         assert local_output_gt.shape == (1, 2, 4)
         assert dgraph_output_tensor.shape == (1, 2, 4)
