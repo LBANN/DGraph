@@ -43,7 +43,14 @@ class CommAwareGCN(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         self.comm = comm
 
-    def forward(self, node_features, edge_index, rank_mapping):
+    def forward(
+        self,
+        node_features,
+        edge_index,
+        rank_mapping,
+        gather_cache=None,
+        scatter_cache=None,
+    ):
         num_local_nodes = node_features.size(1)
         _src_indices = edge_index[:, 0, :]
         _dst_indices = edge_index[:, 1, :]
@@ -53,12 +60,18 @@ class CommAwareGCN(nn.Module):
         _dst_rank_mappings = torch.cat(
             [rank_mapping[0].unsqueeze(0), rank_mapping[1].unsqueeze(0)], dim=0
         )
-        x = self.comm.gather(node_features, _dst_indices, _dst_rank_mappings)
+        x = self.comm.gather(
+            node_features, _dst_indices, _dst_rank_mappings, cache=gather_cache
+        )
         x = self.conv1(x)
-        x = self.comm.scatter(x, _src_indices, _src_rank_mappings, num_local_nodes)
-        x = self.comm.gather(x, _dst_indices, _dst_rank_mappings)
+        x = self.comm.scatter(
+            x, _src_indices, _src_rank_mappings, num_local_nodes, cache=scatter_cache
+        )
+        x = self.comm.gather(x, _dst_indices, _dst_rank_mappings, cache=gather_cache)
         x = self.conv2(x)
-        x = self.comm.scatter(x, _src_indices, _src_rank_mappings, num_local_nodes)
+        x = self.comm.scatter(
+            x, _src_indices, _src_rank_mappings, num_local_nodes, cache=scatter_cache
+        )
         x = self.fc(x)
         # x = self.softmax(x)
         return x

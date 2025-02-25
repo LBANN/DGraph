@@ -100,6 +100,22 @@ class DistributedGraph:
             dim=0,
         )
 
+    def get_nodes_per_rank(self) -> torch.Tensor:
+        """Returns the number of nodes per rank based on the rank mapping
+
+        Returns:
+            torch.Tensor: Number of nodes per rank tensor
+        """
+        return self._nodes_per_rank
+
+    def get_edges_per_rank(self) -> torch.Tensor:
+        """Returns the number of edges per rank based on the rank mapping
+
+        Returns:
+            torch.Tensor: Number of edges per rank tensor
+        """
+        return self._edges_per_rank
+
     def get_max_node_per_rank(self) -> int:
         """Returns the maximum number of nodes per rank according to the rank mapping
 

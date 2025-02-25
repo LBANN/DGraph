@@ -23,6 +23,10 @@ class NCCLGatherCache:
     recv_comm_vector: torch.Tensor
     send_local_placement: torch.Tensor
     recv_local_placement: torch.Tensor
+
+    backward_renumbered_indices: torch.Tensor
+    backward_num_remote_rows: int
+    backward_recv_placement: Dict[int, torch.Tensor]
     rank: int
     world_size: int
     num_features: int
@@ -33,6 +37,9 @@ class NCCLScatterCache:
     """This class stores the NCCL communication cache required for alltoallv operations
     for a scatter operation.
     """
+
+    send_comm_vector: torch.Tensor
+    recv_comm_vector: torch.Tensor
 
     local_comm_mask: torch.Tensor
     send_local_placement: Dict[int, torch.Tensor]

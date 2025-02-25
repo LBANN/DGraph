@@ -16,6 +16,10 @@ from typing import Optional
 from DGraph.data.datasets import DistributedOGBWrapper
 from DGraph.Communicator import CommunicatorBase, Communicator
 
+from DGraph.distributed.nccl._nccl_cache import (
+    NCCLGatherCacheGenerator,
+    NCCLScatterCacheGenerator,
+)
 import fire
 import torch
 import torch.optim as optim
@@ -50,7 +54,12 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
         return self._world_size
 
     def scatter(
-        self, tensor: torch.Tensor, src: torch.Tensor, rank_mappings, num_local_nodes
+        self,
+        tensor: torch.Tensor,
+        src: torch.Tensor,
+        rank_mappings,
+        num_local_nodes,
+        **kwargs,
     ):
         # TODO: Wrap this in the datawrapper class
         src = src.unsqueeze(-1).expand(1, -1, tensor.shape[-1])
@@ -58,7 +67,7 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
         out.scatter_add(1, src, tensor)
         return out
 
-    def gather(self, tensor, dst, rank_mappings):
+    def gather(self, tensor, dst, rank_mappings, **kwargs):
         # TODO: Wrap this in the datawrapper class
         dst = dst.unsqueeze(-1).expand(1, -1, tensor.shape[-1])
         out = torch.gather(tensor, 1, dst)
@@ -80,6 +89,7 @@ def _run_experiment(
     log_prefix: str,
     hidden_dims: int = 128,
     num_classes: int = 40,
+    use_cache: bool = False,
 ):
     torch.cuda.set_device(comm.get_rank())
     device = torch.cuda.current_device()
@@ -121,8 +131,44 @@ def _run_experiment(
     validation_loss_scores = []
     validation_accuracy_scores = []
 
+    world_size = comm.get_world_size()
+
     print(f"Rank: {rank} training_mask: {train_mask.shape}")
     print(f"Rank: {rank} validation_mask: {validation_mask.shape}")
+
+    if use_cache:
+        src_indices = edge_indices[:, 0, :]
+        dst_indices = edge_indices[:, 1, :]
+
+        # This says where the edges are located
+        edge_placement = rank_mappings[0]
+
+        # These say where the source and destination nodes are located
+        edge_src_placement = rank_mappings[
+            0
+        ]  # Redundant but making explicit for clarity
+        edge_dest_placement = rank_mappings[1]
+
+        gather_cache = NCCLGatherCacheGenerator(
+            dst_indices,
+            edge_placement,
+            edge_dest_placement,
+            rank,
+            world_size,
+        )
+        nodes_per_rank = dataset.graph_obj.get_nodes_per_rank()
+
+        scatter_cache = NCCLScatterCacheGenerator(
+            src_indices,
+            edge_placement,
+            edge_src_placement,
+            nodes_per_rank[rank],
+            rank,
+            world_size,
+        )
+    else:
+        gather_cache = None
+        scatter_cache = None
 
     training_times = []
     for i in range(epochs):
@@ -132,7 +178,9 @@ def _run_experiment(
         end_time = torch.cuda.Event(enable_timing=True)
         start_time.record(stream)
         optimizer.zero_grad()
-        _output = model(node_features, edge_indices, rank_mappings)
+        _output = model(
+            node_features, edge_indices, rank_mappings, gather_cache, scatter_cache
+        )
         # Must flatten along the batch dimension for the loss function
         output = _output[:, train_mask].view(-1, num_classes)
         gt = labels[:, train_mask].view(-1)
@@ -217,6 +265,7 @@ def main(
     runs: int = 1,
     log_dir: str = "logs",
     node_rank_placement_file: Optional[str] = None,
+    use_cache: bool = False,
 ):
     _communicator = backend.lower()
 
@@ -255,9 +304,9 @@ def main(
     validation_accuracies = np.zeros((runs, epochs))
     world_size = comm.get_world_size()
     for i in range(runs):
-        log_prefix = f"{log_dir}/{dataset}_{world_size}_run_{i}"
+        log_prefix = f"{log_dir}/{dataset}_{world_size}_cache={use_cache}_run_{i}"
         training_traj, val_traj, val_accuracy = _run_experiment(
-            training_dataset, comm, lr, epochs, log_prefix
+            training_dataset, comm, lr, epochs, log_prefix, use_cache=use_cache
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj

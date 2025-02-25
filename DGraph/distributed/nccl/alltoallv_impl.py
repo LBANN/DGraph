@@ -21,54 +21,74 @@ def _nccl_alltoall_v(
     recv_buffer_dict = {}
     if cache is None:
 
-    # These are all the rows participating in communication
-    all_comm_mask = edge_rank_loc != src_rank_loc
+        # These are all the rows participating in communication
+        all_comm_mask = edge_rank_loc != src_rank_loc
 
-    if all_comm_mask.sum() == 0:
-        return local_recv_tensor
-    # These ranks will send a message
-    comm_senders = src_rank_loc[all_comm_mask]
-    # These ranks will recieve a message
-    comm_receivers = edge_rank_loc[all_comm_mask]
+        if all_comm_mask.sum() == 0:
+            return local_recv_tensor
+        # These ranks will send a message
+        comm_senders = src_rank_loc[all_comm_mask]
+        # These ranks will recieve a message
+        comm_receivers = edge_rank_loc[all_comm_mask]
 
-    # Current rank will send to these ranks
-    send_to_ranks = comm_receivers[comm_senders == rank]
+        # Current rank will send to these ranks
+        send_to_ranks = comm_receivers[comm_senders == rank]
 
-    # Current rank will receive from these ranks
-    receive_from_ranks = comm_senders[comm_receivers == rank]
-    send_comm_vector = torch.bincount(send_to_ranks, minlength=world_size).long()
-    recv_comm_vector = torch.bincount(receive_from_ranks, minlength=world_size).long()
-    recv_local_placement = {}
-    send_local_placement = {}
+        # Current rank will receive from these ranks
+        receive_from_ranks = comm_senders[comm_receivers == rank]
+        send_comm_vector = torch.bincount(send_to_ranks, minlength=world_size).long()
+        recv_comm_vector = torch.bincount(
+            receive_from_ranks, minlength=world_size
+        ).long()
+        recv_local_placement = {}
+        send_local_placement = {}
 
-    for i, num_messages in enumerate(recv_comm_vector):
-        if num_messages == 0:
-            continue
+        for i, num_messages in enumerate(recv_comm_vector):
+            if num_messages == 0:
+                continue
 
-        if i == rank:
-            continue
+            if i == rank:
+                continue
 
-        recv_buffer = torch.zeros(1, int(num_messages.item()), num_features).to(
-            local_send_tensor.device
-        )
-        recv_buffer_dict[i] = recv_buffer
-        _local_placement_indices = torch.argwhere(local_rank_mapping == i)
-        assert (
-            _local_placement_indices.shape[0] == num_messages
-        ), f"{i} {(local_rank_mapping == i).sum()} {_local_placement_indices.shape} {num_messages} {local_rank_mapping.shape}"
-        recv_local_placement[i] = _local_placement_indices
+            recv_buffer = torch.zeros(1, int(num_messages.item()), num_features).to(
+                local_send_tensor.device
+            )
+            recv_buffer_dict[i] = recv_buffer
+            _local_placement_indices = torch.argwhere(local_rank_mapping == i)
+            assert (
+                _local_placement_indices.shape[0] == num_messages
+            ), f"{i} {(local_rank_mapping == i).sum()} {_local_placement_indices.shape} {num_messages} {local_rank_mapping.shape}"
+            recv_local_placement[i] = _local_placement_indices
 
-    for i, num_messages in enumerate(send_comm_vector):
-        if num_messages == 0:
-            # Not sending any messages current_rank to rank i
-            continue
+        for i, num_messages in enumerate(send_comm_vector):
+            if num_messages == 0:
+                # Not sending any messages current_rank to rank i
+                continue
 
-        if i == rank:
-            continue
+            if i == rank:
+                continue
 
-        _mask = (src_rank_loc == rank) & (edge_rank_loc == i)
-        _send_row = indices[0][_mask] % num_src_rows
-        send_local_placement[i] = _send_row
+            _mask = (src_rank_loc == rank) & (edge_rank_loc == i)
+            _send_row = indices[0][_mask] % num_src_rows
+            send_local_placement[i] = _send_row
+    else:
+        send_comm_vector = cache.send_comm_vector
+        recv_comm_vector = cache.recv_comm_vector
+        recv_local_placement = cache.recv_local_placement
+        send_local_placement = cache.send_local_placement
+
+        # Allocate the receive buffers
+        for i, num_messages in enumerate(recv_comm_vector):
+            if num_messages == 0:
+                continue
+
+            if i == rank:
+                continue
+
+            recv_buffer = torch.zeros(1, int(num_messages.item()), num_features).to(
+                local_send_tensor.device
+            )
+            recv_buffer_dict[i] = recv_buffer
 
     p2p_op_list = []
     for send_rank_index in range(world_size):
