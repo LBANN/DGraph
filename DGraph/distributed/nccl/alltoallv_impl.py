@@ -72,10 +72,10 @@ def _nccl_alltoall_v(
             _send_row = indices[0][_mask] % num_src_rows
             send_local_placement[i] = _send_row
     else:
-        send_comm_vector = cache.send_comm_vector
-        recv_comm_vector = cache.recv_comm_vector
-        recv_local_placement = cache.recv_local_placement
-        send_local_placement = cache.send_local_placement
+        send_comm_vector = cache.gather_send_comm_vector
+        recv_comm_vector = cache.gather_recv_comm_vector
+        recv_local_placement = cache.gather_recv_local_placement
+        send_local_placement = cache.gather_send_local_placement
 
         # Allocate the receive buffers
         for i, num_messages in enumerate(recv_comm_vector):

@@ -309,10 +309,9 @@ class ScatterFunction(Function):
 
             all_comm_mask = edge_src_ranks != edge_dest_ranks
             reciever_mask = edge_dest_ranks == rank
-
             receive_from_remote_mask = all_comm_mask & reciever_mask
 
-            send_buffer_dict = {}
+        send_buffer_dict = {}
 
         if torch.any(local_comm_mask):
 
@@ -320,6 +319,7 @@ class ScatterFunction(Function):
                 num_remote_rows = scatter_cache.num_remote_rows
                 remapped_ranks = scatter_cache.local_remapped_ranks
                 renumbered_indices = scatter_cache.local_renumbered_indices
+                receving_ranks = scatter_cache.remote_send_to_ranks
 
             else:
                 # These rows need to be sent to other ranks
@@ -351,7 +351,7 @@ class ScatterFunction(Function):
         recv_buffer_dict = {}
         recv_placement = {}
         if use_cache:
-            recv_placement = scatter_cache.recv_local_placement
+            recv_placement = scatter_cache.scatter_recv_local_placement
         else:
             recv_placement = _get_local_unique_recv_placement(
                 indices,
@@ -382,18 +382,22 @@ class ScatterFunction(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        # We need to switch the send and recv ranks
-        indices, recv_ranks, send_ranks, _, rank, world_size = ctx.saved_tensors
 
-        rank = int(rank.item())
-        world_size = int(world_size.item())
+        if ctx.has_cache:
+            cache: NCCLScatterCache = ctx.scatter_cache
+            num_local_output_rows = cache.num_grad_output_rows
+        else:
+            # We need to switch the send and recv ranks
+            indices, recv_ranks, send_ranks, _, rank, world_size = ctx.saved_tensors
 
-        indices = indices.view(1, -1)
+            rank = int(rank.item())
+            world_size = int(world_size.item())
 
-        # Now it's a gather operation
+            indices = indices.view(1, -1)
 
-        local_mask = recv_ranks == rank
-        num_local_output_rows = int(local_mask.sum().item())
+            # Now it's a gather operation
+            local_mask = recv_ranks == rank
+            num_local_output_rows = int(local_mask.sum().item())
 
         batch_size = 1
         num_features = grad_output.shape[2]
