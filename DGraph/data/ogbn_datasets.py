@@ -38,21 +38,32 @@ def node_renumbering(node_rank_placement) -> Tuple[torch.Tensor, torch.Tensor]:
 
 
 def edge_renumbering(
-    edge_indices, renumbered_nodes, edge_features=None
-) -> torch.Tensor:
+    edge_indices, renumbered_nodes, vertex_mapping, edge_features=None
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     src_indices = edge_indices[0, :]
     dst_indices = edge_indices[1, :]
     src_indices = renumbered_nodes[src_indices]
     dst_indices = renumbered_nodes[dst_indices]
-    sorted_src_indices, sorted_indices = torch.sort(src_indices)
+
+    edge_src_rank_mapping = vertex_mapping[src_indices]
+    edge_dest_rank_mapping = vertex_mapping[dst_indices]
+
+    sorted_src_rank_mapping, sorted_indices = torch.sort(edge_src_rank_mapping)
     dst_indices = dst_indices[sorted_indices]
-    src_indices = sorted_src_indices
+    src_indices = src_indices[sorted_indices]
+
+    sorted_dest_rank_mapping = edge_dest_rank_mapping[sorted_indices]
 
     if edge_features is not None:
         # Sort the edge features based on the sorted indices
         edge_features = edge_features[sorted_indices]
 
-    return torch.stack([src_indices, dst_indices], dim=0)
+    return (
+        torch.stack([src_indices, dst_indices], dim=0),
+        sorted_src_rank_mapping,
+        sorted_dest_rank_mapping,
+        edge_features,
+    )
 
 
 def process_homogenous_data(
@@ -90,13 +101,21 @@ def process_homogenous_data(
     # Renumber the nodes and edges to make them contiguous
     renumbered_nodes, contiguous_rank_mapping = node_renumbering(node_rank_placement)
     node_features = node_features[renumbered_nodes]
-    # Edges are placed on the same rank as the source node
 
-    edge_index = edge_renumbering(edge_index, renumbered_nodes, edge_features=None)
-    edge_rank_mapping = node_rank_placement[edge_index[0]]
+    # Sanity check to make sure we placed the nodes in the correct spots
 
-    edge_dest_rank_mapping = node_rank_placement[edge_index[1]]
-    # Renumber the masks
+    assert torch.all(node_rank_placement[renumbered_nodes] == contiguous_rank_mapping)
+
+    # First renumber the edges
+    # Then we calculate the location of the source and destination vertex of each edge
+    # based on the rank mapping
+    # Then we sort the edges based on the source vertex rank mapping
+    # When determining the location of the edge, we use the rank of the source vertex
+    # as the location of the edge
+
+    edge_index, edge_rank_mapping, edge_dest_rank_mapping, _ = edge_renumbering(
+        edge_index, renumbered_nodes, contiguous_rank_mapping, edge_features=None
+    )
 
     train_nodes = renumbered_nodes[train_nodes]
     valid_nodes = renumbered_nodes[valid_nodes]

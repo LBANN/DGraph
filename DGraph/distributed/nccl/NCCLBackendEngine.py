@@ -41,6 +41,7 @@ class GatherFunction(Function):
         ctx,
         local_send_tensor: torch.Tensor,
         indices: torch.LongTensor,
+        # vertex_ranks: torch.Tensor,
         edge_src_ranks: torch.Tensor,
         edge_dest_ranks: torch.Tensor,
         rank: int,
@@ -49,10 +50,15 @@ class GatherFunction(Function):
     ):
         num_local_input_rows = local_send_tensor.shape[1]
 
+        # vertices_per_rank = torch.bincount(vertex_ranks, minlength=world_size), to(
+        #     torch.int32
+        # )
+
         ctx.save_for_backward(
             indices,
             edge_src_ranks,
             edge_dest_ranks,
+            # vertices_per_rank,
             torch.tensor(num_local_input_rows),
             torch.tensor(rank),
             torch.tensor(world_size),
@@ -115,9 +121,15 @@ class GatherFunction(Function):
     @staticmethod
     def backward(ctx, grad_output):
         # We need to switch the send and recv ranks
-        indices, recv_ranks, send_ranks, num_local_input_rows, rank, world_size = (
-            ctx.saved_tensors
-        )
+        (
+            indices,
+            recv_ranks,
+            send_ranks,
+            # vertices_per_rank,
+            num_local_input_rows,
+            rank,
+            world_size,
+        ) = ctx.saved_tensors
 
         num_local_output_rows = num_local_input_rows.item()
         rank = rank.item()
@@ -132,7 +144,6 @@ class GatherFunction(Function):
         )
 
         indices = indices.view(-1)
-
         local_slice_mask = recv_ranks == rank
         local_indices_slice = indices[local_slice_mask]
         local_dest_ranks = send_ranks[local_slice_mask]
@@ -168,25 +179,38 @@ class GatherFunction(Function):
                 renumbered_indices.view(1, -1, 1).expand(1, -1, num_features),
                 send_tensor[:, local_comm_mask, :],
             )
-            receving_ranks = torch.unique(local_dest_ranks[local_comm_mask])
-            for _recv_rank in receving_ranks:
+            receiving_ranks = torch.unique(local_dest_ranks[local_comm_mask])
+            for _recv_rank in receiving_ranks:
                 _recv_indices = remapped_ranks == _recv_rank
                 send_buffer_dict[_recv_rank.item()] = buffer[:, _recv_indices, :]
 
-        all_comm_mask = send_ranks != recv_ranks
-        reciever_mask = send_ranks == rank
+        # Now we need to receive the data from the remote ranks
+        send_to_rank = send_ranks
+        all_comm_mask = send_to_rank != recv_ranks
+        reciever_mask = send_to_rank == rank
         receive_from_remote = all_comm_mask & reciever_mask
 
         recv_buffer_dict = {}
         recv_placement = {}
+        for i in range(world_size):
+            if i == rank:
+                print(f"Rank: {rank}, num output rows: {num_local_output_rows}")
+            dist.barrier()
+
         if torch.any(receive_from_remote):
             receive_from_ranks = recv_ranks[receive_from_remote]
 
             for _sender in range(world_size):
+                if _sender == rank:
+                    continue
                 if torch.any(receive_from_ranks == _sender):
                     _send_mask = (recv_ranks == _sender) & receive_from_remote
                     _send_indices = indices[_send_mask] % num_local_output_rows
                     # TODO: This is brittle, look into a better way to do this - S.Z
+
+                    if rank == 0:
+                        breakpoint()
+
                     unique_send_indices = torch.unique(_send_indices)
                     num_elements = unique_send_indices.shape[0]
                     recv_buffer_dict[_sender] = torch.zeros(
