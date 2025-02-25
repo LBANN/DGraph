@@ -1,5 +1,7 @@
 import torch
 import torch.distributed as dist
+from DGraph.distributed.nccl._nccl_cache import NCCLGatherCache, NCCLScatterCache
+from typing import Optional, Union
 
 
 def _nccl_alltoall_v(
@@ -11,9 +13,14 @@ def _nccl_alltoall_v(
     src_rank_loc: torch.Tensor,
     rank: int,
     world_size: int,
+    cache: Optional[Union[NCCLGatherCache, NCCLScatterCache]] = None,
 ):
     num_features = local_send_tensor.shape[2]
     num_src_rows = local_send_tensor.shape[1]
+
+    recv_buffer_dict = {}
+    if cache is None:
+
     # These are all the rows participating in communication
     all_comm_mask = edge_rank_loc != src_rank_loc
 
@@ -31,13 +38,8 @@ def _nccl_alltoall_v(
     receive_from_ranks = comm_senders[comm_receivers == rank]
     send_comm_vector = torch.bincount(send_to_ranks, minlength=world_size).long()
     recv_comm_vector = torch.bincount(receive_from_ranks, minlength=world_size).long()
-    recv_buffer_dict = {}
     recv_local_placement = {}
     send_local_placement = {}
-
-    # if rank == 0:
-    #     breakpoint()
-    # dist.barrier()
 
     for i, num_messages in enumerate(recv_comm_vector):
         if num_messages == 0:
@@ -68,9 +70,6 @@ def _nccl_alltoall_v(
         _send_row = indices[0][_mask] % num_src_rows
         send_local_placement[i] = _send_row
 
-    # if rank == 0:
-    #     breakpoint()
-    # dist.barrier()
     p2p_op_list = []
     for send_rank_index in range(world_size):
         for recv_rank_index in range(world_size):

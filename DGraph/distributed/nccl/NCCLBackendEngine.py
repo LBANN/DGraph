@@ -46,23 +46,24 @@ class GatherFunction(Function):
         edge_dest_ranks: torch.Tensor,
         rank: int,
         world_size: int,
-        cache: Optional[NCCLScatterCache] = None,
+        cache: Optional[NCCLGatherCache] = None,
     ):
         num_local_input_rows = local_send_tensor.shape[1]
 
-        # vertices_per_rank = torch.bincount(vertex_ranks, minlength=world_size), to(
-        #     torch.int32
-        # )
-
-        ctx.save_for_backward(
-            indices,
-            edge_src_ranks,
-            edge_dest_ranks,
-            # vertices_per_rank,
-            torch.tensor(num_local_input_rows),
-            torch.tensor(rank),
-            torch.tensor(world_size),
-        )
+        if cache is not None:
+            # We have a cache, use it, don't need to save anything
+            ctx.has_cache = True
+            ctx.cache = cache
+        else:
+            ctx.save_for_backward(
+                indices,
+                edge_src_ranks,
+                edge_dest_ranks,
+                # vertices_per_rank,
+                torch.tensor(num_local_input_rows),
+                torch.tensor(rank),
+                torch.tensor(world_size),
+            )
 
         # Since NCCL is two-sided, we need to push from local rank and pull from
         # remote rank to get the global gather
@@ -90,7 +91,6 @@ class GatherFunction(Function):
 
         local_indices_slice = indices[local_slice_mask.unsqueeze(0)]
         local_rank_mapping = edge_src_ranks[local_slice_mask]
-
         local_recv_tensor = edge_dest_ranks[local_slice_mask]
 
         # assert torch.all(local_recv_tensor == rank), local_recv_tensor
@@ -185,17 +185,13 @@ class GatherFunction(Function):
                 send_buffer_dict[_recv_rank.item()] = buffer[:, _recv_indices, :]
 
         # Now we need to receive the data from the remote ranks
-        send_to_rank = send_ranks
+        send_to_rank = send_ranks  # Pedantic variable name change
         all_comm_mask = send_to_rank != recv_ranks
         reciever_mask = send_to_rank == rank
         receive_from_remote = all_comm_mask & reciever_mask
 
         recv_buffer_dict = {}
         recv_placement = {}
-        for i in range(world_size):
-            if i == rank:
-                print(f"Rank: {rank}, num output rows: {num_local_output_rows}")
-            dist.barrier()
 
         if torch.any(receive_from_remote):
             receive_from_ranks = recv_ranks[receive_from_remote]
@@ -208,15 +204,23 @@ class GatherFunction(Function):
                     _send_indices = indices[_send_mask] % num_local_output_rows
                     # TODO: This is brittle, look into a better way to do this - S.Z
 
-                    if rank == 0:
-                        breakpoint()
-
                     unique_send_indices = torch.unique(_send_indices)
                     num_elements = unique_send_indices.shape[0]
                     recv_buffer_dict[_sender] = torch.zeros(
                         1, num_elements, num_features
                     ).cuda()
                     recv_placement[_sender] = unique_send_indices
+
+        for i in range(world_size):
+            if i == rank:
+
+                num_expected_recv = 0
+                for key, val in recv_placement.items():
+                    num_expected_recv += val.shape[0]
+
+                num_expected_send = 0
+                for key, val in send_buffer_dict.items():
+                    num_expected_send += val.shape[1]
 
         recv_buffer_dict = _nccl_alltoallv_with_dict(
             send_buffer_dict, recv_buffer_dict, rank, world_size
@@ -261,21 +265,20 @@ class ScatterFunction(Function):
         scatter_cache: Optional[NCCLScatterCache] = None,
     ) -> torch.Tensor:
 
-        ctx.save_for_backward(
-            indices,
-            edge_src_ranks,
-            edge_dest_ranks,
-            torch.tensor(num_local_output_rows),
-            torch.tensor(rank),
-            torch.tensor(world_size),
-        )
-
         use_cache = scatter_cache is not None
         if use_cache:
             ctx.scatter_cache = scatter_cache
             ctx.has_cache = True
         else:
             ctx.has_cache = False
+            ctx.save_for_backward(
+                indices,
+                edge_src_ranks,
+                edge_dest_ranks,
+                torch.tensor(num_local_output_rows),
+                torch.tensor(rank),
+                torch.tensor(world_size),
+            )
 
         num_features = send_tensor.shape[-1]
         device = send_tensor.device
