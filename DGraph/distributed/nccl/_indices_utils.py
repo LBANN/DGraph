@@ -204,16 +204,15 @@ def _get_local_recv_placement(
 def _allocate_local_recv_buffers(
     recv_comm_vector: torch.Tensor,
     num_features: int,
+    rank: int,
     device: torch.device,
 ) -> Dict[int, torch.Tensor]:
     recv_buffer_dict: Dict[int, torch.Tensor] = {}
     for i, num_messages in enumerate(recv_comm_vector):
         if num_messages == 0:
             continue
-
         if i == rank:
             continue
-
         num_rows = int(num_messages.item())
         recv_buffer = torch.zeros(1, num_rows, num_features).to(device)
         recv_buffer_dict[i] = recv_buffer

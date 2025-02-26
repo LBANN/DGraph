@@ -15,6 +15,7 @@ class CommunicatorBase:
     _is_initialized = False
 
     def __init__(self):
+        self.backend = ""
         pass
 
     def init_process_group(self, backend: str, **kwargs):

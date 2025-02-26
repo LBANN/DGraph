@@ -149,10 +149,14 @@ def _run_experiment(
         ]  # Redundant but making explicit for clarity
         edge_dest_placement = rank_mappings[1]
 
+        num_input_rows = node_features.size(1)
+        local_num_edges = (edge_placement == rank).sum().item()
+
         gather_cache = NCCLGatherCacheGenerator(
             dst_indices,
             edge_placement,
             edge_dest_placement,
+            num_input_rows,
             rank,
             world_size,
         )
@@ -166,6 +170,20 @@ def _run_experiment(
             rank,
             world_size,
         )
+
+        # Sanity checks for the cache
+        for key, value in gather_cache.gather_send_local_placement.items():
+            assert value.max().item() < num_input_rows
+            assert key < world_size
+            assert key != rank
+            assert value.shape[0] == gather_cache.gather_send_comm_vector[key]
+
+        for key, value in gather_cache.gather_recv_local_placement.items():
+            assert value.max().item() < local_num_edges
+            assert key < world_size
+            assert key != rank
+            assert value.shape[0] == gather_cache.gather_recv_comm_vector[key]
+
     else:
         gather_cache = None
         scatter_cache = None

@@ -10,6 +10,7 @@ from DGraph.distributed.nccl._indices_utils import (
     _get_send_comm_vector,
     _get_send_recv_comm_vectors,
 )
+import torch.distributed as dist
 
 
 @dataclass
@@ -25,12 +26,14 @@ class NCCLGatherCache:
     gather_send_local_placement: Dict[int, torch.Tensor]
 
     # Backward cached values
-    backward_renumbered_indices: torch.Tensor
-    backward_num_remote_rows: int
-    backward_recv_placement: Dict[int, torch.Tensor]
+    scatter_renumbered_indices: torch.Tensor
+    scatter_local_comm_mask: torch.Tensor
+    scatter_remote_send_to_ranks: torch.Tensor
+    scatter_num_remote_rows: int
+    scatter_recv_local_placement: Dict[int, torch.Tensor]
+    scatter_local_remapped_ranks: torch.Tensor
     rank: int
     world_size: int
-    num_features: int
 
 
 @dataclass
@@ -41,13 +44,13 @@ class NCCLScatterCache:
 
     # Forward cached values
     scatter_recv_local_placement: Dict[int, torch.Tensor]
-    local_comm_mask: torch.Tensor
-    remote_send_to_ranks: torch.Tensor
-    num_remote_rows: int
-    local_remapped_ranks: torch.Tensor
-    local_renumbered_indices: torch.Tensor
+    scatter_local_comm_mask: torch.Tensor
+    scatter_remote_send_to_ranks: torch.Tensor
+    scatter_num_remote_rows: int
+    scatter_local_remapped_ranks: torch.Tensor
+    scatter_local_renumbered_indices: torch.Tensor
     # Backward cached values
-    num_grad_output_rows: int
+    gather_num_output_rows: int
     gather_recv_comm_vector: torch.Tensor
     gather_send_comm_vector: torch.Tensor
     gather_recv_local_placement: Dict[int, torch.Tensor]
@@ -57,7 +60,7 @@ class NCCLScatterCache:
 
 
 def all_to_all_cache_helper(
-    indices, edge_placement, edge_vertex_ranks, rank, world_size
+    indices, edge_placement, edge_vertex_ranks, num_rows, rank, world_size
 ):
     local_mask = edge_placement == rank
     all_comm_mask = edge_placement != edge_vertex_ranks
@@ -89,12 +92,12 @@ def all_to_all_cache_helper(
         if num_messages == 0:
             # Not sending any messages current_rank to rank i
             continue
-
         if i == rank:
+            # No local sends
             continue
 
         _mask = (edge_placement == rank) & (edge_vertex_ranks == i)
-        _send_row = indices[0][_mask]
+        _send_row = indices[0][_mask] % num_rows
         send_local_placement[i] = _send_row
 
     return (
@@ -102,6 +105,49 @@ def all_to_all_cache_helper(
         recv_comm_vector,
         send_local_placement,
         recv_local_placement,
+    )
+
+
+def all_to_all_cache_with_local_reduce_helper(
+    indices, edge_placement, edge_vertex_ranks, num_output_rows, rank, world_size
+):
+    indices = indices.view(-1)
+    all_comm_mask = edge_placement != edge_vertex_ranks
+    receiver_mask = edge_vertex_ranks == rank
+
+    # All message that will be recieved by the current rank but
+    # sent by other ranks
+
+    local_edges_mask = edge_placement == rank
+    local_indices_slice = indices[local_edges_mask]
+    local_dest_ranks_slice = edge_vertex_ranks[local_edges_mask]
+
+    # This is the mask for the rows that will be sent by the current rank
+    local_send_mask = local_dest_ranks_slice != rank
+
+    local_remote_send_indices = local_indices_slice[local_send_mask]
+    local_remote_dest_mappings = local_dest_ranks_slice[local_send_mask]
+
+    renumbered_indices, unique_indices, remapped_ranks = (
+        RankLocalRenumberingWithMapping(
+            local_remote_send_indices, local_remote_dest_mappings
+        )
+    )
+    receving_ranks = torch.unique(local_dest_ranks_slice[local_send_mask])
+
+    # All message that will be recieved by the current rank but
+    remote_recv_mask = all_comm_mask & receiver_mask
+    recv_placement = _get_local_unique_recv_placement(
+        indices, edge_placement, remote_recv_mask, num_output_rows, rank, world_size
+    )
+    num_remote_rows = len(unique_indices)
+
+    return (
+        renumbered_indices,
+        num_remote_rows,
+        remapped_ranks,
+        receving_ranks,
+        recv_placement,
     )
 
 
@@ -124,7 +170,7 @@ def NCCLScatterCacheGenerator(
 
     # All message that will be recieved by the current rank but
     # sent by other ranks
-
+    indices = indices.view(-1)
     local_edges_mask = edge_placement == rank
     local_indices_slice = indices[local_edges_mask]
     local_dest_ranks_slice = edge_dest_ranks[local_edges_mask]
@@ -143,7 +189,7 @@ def NCCLScatterCacheGenerator(
 
     num_remote_rows = unique_indices.shape[0]
 
-    receving_ranks = torch.unique(local_remote_dest_mappings[local_send_mask])
+    receving_ranks = torch.unique(local_dest_ranks_slice[local_send_mask])
 
     recv_placement = _get_local_unique_recv_placement(
         indices, edge_placement, remote_recv_mask, num_output_rows, rank, world_size
@@ -153,21 +199,25 @@ def NCCLScatterCacheGenerator(
     # It's a gather operation so quite a bit simpler
 
     num_grad_output_rows = int(local_edges_mask.sum().item())
-
     send_comm_vector, recv_comm_vector, send_local_placement, recv_local_placement = (
         all_to_all_cache_helper(
-            indices, edge_placement, edge_dest_ranks, rank, world_size
+            indices,
+            edge_placement,
+            edge_dest_ranks,
+            num_grad_output_rows,
+            rank,
+            world_size,
         )
     )
 
     _cache = NCCLScatterCache(
         scatter_recv_local_placement=recv_placement,
-        local_comm_mask=local_send_mask,
-        remote_send_to_ranks=receving_ranks,
-        num_remote_rows=num_remote_rows,
-        local_remapped_ranks=remapped_ranks,
-        local_renumbered_indices=renumbered_indices,
-        num_grad_output_rows=num_grad_output_rows,
+        scatter_local_comm_mask=local_send_mask,
+        scatter_remote_send_to_ranks=receving_ranks,
+        scatter_num_remote_rows=num_remote_rows,
+        scatter_local_remapped_ranks=remapped_ranks,
+        scatter_local_renumbered_indices=renumbered_indices,
+        gather_num_output_rows=num_grad_output_rows,
         gather_recv_comm_vector=recv_comm_vector,
         gather_send_comm_vector=send_comm_vector,
         gather_recv_local_placement=recv_local_placement,
@@ -180,8 +230,9 @@ def NCCLScatterCacheGenerator(
 
 def NCCLGatherCacheGenerator(
     indices: torch.Tensor,
-    edge_src_ranks: torch.Tensor,
+    edge_placement: torch.Tensor,
     edge_dest_ranks: torch.Tensor,
+    num_input_rows: int,
     rank: int,
     world_size: int,
 ):
@@ -189,57 +240,51 @@ def NCCLGatherCacheGenerator(
     This function generates the NCCL cache required for alltoallv operations.
     """
 
-    all_comm_mask = edge_src_ranks != edge_dest_ranks
-    receiver_mask = edge_dest_ranks == rank
+    # Forward pass
 
-    # All message that will be recieved by the current rank but
-    # sent by other ranks
-
-    receive_from_ranks = all_comm_mask & receiver_mask
-
-    local_indices_mask = edge_src_ranks == rank
-    local_indices_slice = indices[local_indices_mask]
-    local_dest_ranks_slice = edge_dest_ranks[local_indices_mask]
-
-    # This is the mask for the rows that will be sent by the current rank
-    local_send_mask = local_dest_ranks_slice != rank
-
-    # send_comm_vector recv_comm_vector are the number of messages
-    # to be sent to each rank and received from each rank respectively
-    # Shape: (world_size,)
-    send_comm_vector, recv_comm_vector = _get_send_recv_comm_vectors(
-        edge_src_ranks, edge_dest_ranks, rank, world_size
+    send_comm_vector, recv_comm_vector, send_local_placement, recv_local_placement = (
+        all_to_all_cache_helper(
+            indices, edge_placement, edge_dest_ranks, num_input_rows, rank, world_size
+        )
     )
 
-    send_local_placement = _get_local_send_placement(
-        send_comm_vector,
+    local_slice_mask = edge_placement == rank
+    local_dest_ranks = edge_dest_ranks[local_slice_mask]
+
+    local_send_mask = local_dest_ranks != rank
+
+    # Backward pass
+    # This is a scatter operation so quite a bit more complicated
+
+    all_to_all_v_cache = all_to_all_cache_with_local_reduce_helper(
         indices,
-        edge_src_ranks,
+        edge_placement,
         edge_dest_ranks,
+        num_input_rows,
         rank,
-        num_output_rows,
+        world_size,
     )
 
-    recv_local_placement = _get_local_recv_placement(
-        recv_comm_vector, edge_src_ranks, rank
-    )
+    (
+        renumbered_indices,
+        num_remote_rows,
+        remapped_ranks,
+        receving_ranks,
+        scatter_recv_local_placement,
+    ) = all_to_all_v_cache
 
-    local_comm_indices = local_indices_slice[local_send_mask]
-    local_remote_dest_mappings = local_dest_ranks_slice[local_send_mask]
-
-    renumbered_indices, unique_indices, remapped_ranks = (
-        RankLocalRenumberingWithMapping(local_comm_indices, local_remote_dest_mappings)
-    )
-    num_remote_rows = unique_indices.shape[0]
     _cache = NCCLGatherCache(
-        send_buffer_dict={},
-        recv_buffer_dict={},
-        send_comm_vector=send_comm_vector,
-        recv_comm_vector=recv_comm_vector,
-        send_local_placement=send_local_placement,
-        recv_local_placement=recv_local_placement,
+        gather_recv_comm_vector=recv_comm_vector,
+        gather_send_comm_vector=send_comm_vector,
+        gather_recv_local_placement=recv_local_placement,
+        gather_send_local_placement=send_local_placement,
+        scatter_renumbered_indices=renumbered_indices,
+        scatter_local_comm_mask=local_send_mask,
+        scatter_remote_send_to_ranks=receving_ranks,
+        scatter_num_remote_rows=num_remote_rows,
+        scatter_recv_local_placement=scatter_recv_local_placement,
+        scatter_local_remapped_ranks=remapped_ranks,
         rank=rank,
         world_size=world_size,
-        num_features=num_features,
     )
     return _cache
