@@ -64,8 +64,8 @@ def all_to_all_cache_helper(
 ):
     local_mask = edge_placement == rank
     all_comm_mask = edge_placement != edge_vertex_ranks
-    comm_senders = edge_placement[all_comm_mask]
-    comm_receivers = edge_vertex_ranks[all_comm_mask]
+    comm_senders = edge_vertex_ranks[all_comm_mask]
+    comm_receivers = edge_placement[all_comm_mask]
 
     local_vertex_src_ranks = edge_vertex_ranks[local_mask]
 
@@ -96,7 +96,7 @@ def all_to_all_cache_helper(
             # No local sends
             continue
 
-        _mask = (edge_placement == rank) & (edge_vertex_ranks == i)
+        _mask = (edge_vertex_ranks == rank) & (edge_placement == i)
         _send_row = indices[0][_mask] % num_rows
         send_local_placement[i] = _send_row
 

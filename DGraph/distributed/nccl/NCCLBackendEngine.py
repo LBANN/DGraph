@@ -408,6 +408,8 @@ class ScatterFunction(Function):
         indices, recv_ranks, send_ranks, num_input_rows, rank, world_size = (
             ctx.saved_tensors
         )
+
+        local_mask = recv_ranks == rank
         if ctx.has_cache:
             cache: NCCLScatterCache = ctx.scatter_cache
             num_local_output_rows = cache.gather_num_output_rows
@@ -419,7 +421,7 @@ class ScatterFunction(Function):
             indices = indices.view(1, -1)
 
             # Now it's a gather operation
-            local_mask = recv_ranks == rank
+
             num_local_output_rows = int(local_mask.sum().item())
 
         batch_size = 1

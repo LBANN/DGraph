@@ -171,6 +171,9 @@ def _run_experiment(
             world_size,
         )
 
+        # if rank == 0:
+        #     breakpoint()
+        # dist.barrier()
         # Sanity checks for the cache
         for key, value in gather_cache.gather_send_local_placement.items():
             assert value.max().item() < num_input_rows
@@ -183,6 +186,18 @@ def _run_experiment(
             assert key < world_size
             assert key != rank
             assert value.shape[0] == gather_cache.gather_recv_comm_vector[key]
+
+        for rank, value in scatter_cache.gather_send_local_placement.items():
+            assert value.max().item() < local_num_edges
+            assert rank < world_size
+            assert rank != rank
+            assert value.shape[0] == scatter_cache.gather_send_comm_vector
+
+        for rank, value in scatter_cache.gather_recv_local_placement.items():
+            assert value.max().item() < num_input_rows
+            assert rank < world_size
+            assert rank != rank
+            assert value.shape[0] == scatter_cache.gather_recv_comm_vector
 
     else:
         gather_cache = None
