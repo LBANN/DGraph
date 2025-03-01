@@ -113,7 +113,7 @@ class DistributedGraphCastGraphGenerator:
         mesh_vertex_rank_placement = torch.tensor(mesh_vertex_rank_placement)
         return mesh_vertex_rank_placement
 
-    def get_mesh_graph(self, mesh_vertex_rank_placement):
+    def get_mesh_graph(self, mesh_vertex_rank_placement: torch.Tensor):
         """Get the graph for the distributed graphcast graph."""
 
         mesh_pos = torch.tensor(self.mesh_vertices, dtype=torch.float32)
@@ -126,6 +126,10 @@ class DistributedGraphCastGraphGenerator:
         )
 
         node_features, edge_features, src_indices, dst_indices = mesh_graph
+
+        num_nodes = node_features.size(0)
+
+        assert num_nodes == mesh_vertex_rank_placement.size(0)
 
         contiguous_rank_mapping, renumbered_nodes = torch.sort(
             mesh_vertex_rank_placement
@@ -183,9 +187,24 @@ class DistributedGraphCastGraphGenerator:
         return torch.Tensor([]), edge_features, src_mesh_indices, dst_grid_indices
 
     def get_graphcast_graph(
-        self, mesh_vertex_rank_placement
+        self, mesh_vertex_rank_placement: torch.Tensor
     ) -> DistributedGraphCastGraph:
         """Get the distributed graphcast graph."""
+
+        assert (
+            self.rank <= mesh_vertex_rank_placement.max().item()
+        ), "Mesh vertex placement does not include current rank"
+
+        assert (
+            self.rank >= mesh_vertex_rank_placement.min().item()
+        ), "Mesh vertex placement does not include current rank"
+
+        assert (
+            self.world_size == mesh_vertex_rank_placement.max().item() + 1
+        ), "World size does not match the number of partitions in mesh rank placement"
+
+        mesh_vertex_rank_placement = mesh_vertex_rank_placement.view(-1)
+
         mesh_graph = self.get_mesh_graph(mesh_vertex_rank_placement)
         mesh2grid_graph = self.get_mesh2grid_graph()
         grid2mesh_graph = self.get_grid2mesh_graph()
@@ -210,3 +229,10 @@ class DistributedGraphCastGraphGenerator:
             grid2mesh_graph_src_indices=grid2mesh_graph[2],
             grid2mesh_graph_dst_indices=grid2mesh_graph[3],
         )
+
+
+def GetMeshVertexRankPlacement(mesh_level: int, world_size: int):
+    """Generate the partitioning of the mesh graph."""
+    return DistributedGraphCastGraphGenerator.get_mesh_graph_partition(
+        mesh_level, world_size
+    )

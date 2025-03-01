@@ -41,6 +41,7 @@ class SyntheticWeatherDataset(Dataset):
         channels: List[int],
         num_samples_per_year: int,
         num_steps: int,
+        mesh_vertex_placement: torch.Tensor,
         device: Union[str, torch.device] = "cuda",
         grid_size: Tuple[int, int] = (721, 1440),
         base_temp: float = 15,
@@ -92,7 +93,7 @@ class SyntheticWeatherDataset(Dataset):
             ranks_per_graph=self.ranks_per_graph,
             rank=self.rank,
             world_size=self.world_size,
-        ).get_graphcast_graph()
+        ).get_graphcast_graph(mesh_vertex_rank_placement=mesh_vertex_placement)
         print(f"Generated static graph in {time.time() - start_time:.2f} seconds.")
         self.extra_args: Dict[str, Any] = kwargs
 
@@ -240,6 +241,8 @@ def test_synthetic_weather_dataset(num_days, batch_size=1):
         "dt": dt,
         "start_year": start_year,
     }
+
+    mesh_vertex_placement = torch.ones(40962)
     test_dataset = SyntheticWeatherDataset(
         channels=channels_list,
         num_samples_per_year=num_samples_per_year_train,
@@ -250,6 +253,7 @@ def test_synthetic_weather_dataset(num_days, batch_size=1):
         num_workers=num_workers,
         num_history=num_history,
         use_time_of_year_index=use_time_of_year_index,
+        mesh_vertex_placement=mesh_vertex_placement,
     )
     print(len(test_dataset))
     print("=" * 80)
