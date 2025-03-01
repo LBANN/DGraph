@@ -88,12 +88,29 @@ class DistributedGraphCastGraphGenerator:
         self.mesh_faces = mesh.faces
 
     @staticmethod
-    def get_mesh_graph_partition(mesh_graph):
+    def get_mesh_graph_partition(mesh_level: int, world_size: int):
         """Generate the partitioning of the mesh graph."""
-
         # Only rank 1 should generate the partitioning
+        _meshes = get_hierarchy_of_triangular_meshes_for_sphere(splits=mesh_level)
+        finest_mesh = _meshes[-1]
+        finest_mesh_src, finest_mesh_dst = faces_to_edges(finest_mesh.faces)
+        mesh = merge_meshes(_meshes)
+        mesh_src, mesh_dst = faces_to_edges(mesh.faces)  # type: ignore
+        mesh_src: Tensor = torch.tensor(mesh_src, dtype=torch.int32)
+        mesh_dst: Tensor = torch.tensor(mesh_dst, dtype=torch.int32)
+        mesh_vertices = np.array(mesh.vertices)  # No op but just in case
+        mesh_pos = torch.tensor(mesh_vertices, dtype=torch.float32)
+
+        mesh_graph = create_graph(
+            mesh_src,
+            mesh_dst,
+            mesh_pos,
+            to_bidirected=True,
+        )
+
         nx_graph = graphcast_graph_to_nxgraph(mesh_graph)
-        mesh_vertex_rank_placement = partition_graph(nx_graph, self.world_size)
+        mesh_vertex_rank_placement = partition_graph(nx_graph, world_size)
+        mesh_vertex_rank_placement = torch.tensor(mesh_vertex_rank_placement)
         return mesh_vertex_rank_placement
 
     def get_mesh_graph(self, mesh_vertex_rank_placement):
