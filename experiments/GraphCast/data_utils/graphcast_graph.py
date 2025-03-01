@@ -159,14 +159,19 @@ class DistributedGraphCastGraphGenerator:
             "dst_indices": dst_indices,
             "node_rank_placement": contiguous_rank_mapping,
             "edge_rank_placement": contigous_edge_mapping,
+            "mesh_vertex_renumbering": renumbered_nodes,
         }
 
         return mesh_graph_dict
 
-    def get_grid2mesh_graph(self):
+    def get_grid2mesh_graph(self, mesh_graph_dict: dict):
+
+        vertex_renumbering = mesh_graph_dict["mesh_vertex_renumbering"]
         max_edge_len = max_edge_length(
             self.finest_mesh_vertices, self.finest_mesh_src, self.finest_mesh_dst
         )
+
+        mesh_rank_placement = mesh_graph_dict["node_rank_placement"]
 
         # create the grid2mesh bipartite graph
         lat_lon_grid_flat = self.lat_lon_grid.permute(2, 0, 1).view(2, -1).permute(1, 0)
@@ -175,6 +180,38 @@ class DistributedGraphCastGraphGenerator:
             max_edge_len, lat_lon_grid_flat, self.mesh_vertices
         )
         edge_features, src_grid_indices, dst_mesh_indices = g2m_graph
+        dst_mesh_indices = vertex_renumbering[dst_mesh_indices]
+
+        # Now we must place the grid vertices on the some rank
+
+        # In general it is not possible to place all the grid vertices on the
+        # same rank as the mesh vertices. There are more grid vertices than mesh
+        # vertices but each grid vertex may be connected to multiple mesh vertices that
+        # may be on different ranks.
+
+        # We know that the grid features will be accumulated onto the mesh vertices
+        # so we should minimize the number of grid vertices that are placed on a
+        # different rank than the mesh vertices they are connected to.
+
+        num_g2m_edges = src_grid_indices.size(0)
+        num_grid_vertices = int(src_grid_indices.max().item() + 1)
+
+        grid_edge_rank_count = torch.zeros((num_grid_vertices, self.world_size))
+
+        grid_vertices = src_grid_indices.to(torch.long)
+        dst_mesh_vertex_ranks = mesh_rank_placement[dst_mesh_indices]
+        grid_edge_rank_count.index_add_(
+            0,
+            grid_vertices,
+            torch.nn.functional.one_hot(dst_mesh_vertex_ranks, self.world_size).to(
+                grid_edge_rank_count.dtype
+            ),
+        )
+
+        # Now we collapse the rank dimension along the rank dimension
+
+        grid_vertex_ranks = torch.argmax(grid_edge_rank_count, dim=1)
+
         return torch.Tensor([]), edge_features, src_grid_indices, dst_mesh_indices
 
     def get_mesh2grid_graph(self):
@@ -189,7 +226,14 @@ class DistributedGraphCastGraphGenerator:
     def get_graphcast_graph(
         self, mesh_vertex_rank_placement: torch.Tensor
     ) -> DistributedGraphCastGraph:
-        """Get the distributed graphcast graph."""
+        """Get the distributed graphcast graph.
+
+        Args:
+            mesh_vertex_rank_placement (torch.Tensor): The rank placement of the mesh vertices.
+
+        Returns:
+            (DistributedGraphCastGraph): The distributed graphcast graph object.
+        """
 
         assert (
             self.rank <= mesh_vertex_rank_placement.max().item()

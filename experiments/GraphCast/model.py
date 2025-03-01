@@ -270,19 +270,19 @@ class GraphCastDecoder(nn.Module):
         mesh2grid_edge_features: Tensor,
         grid_node_features: Tensor,
         mesh_node_features: Tensor,
-        mesh2graph_edge_indices_src: Tensor,
-        mesh2graph_edge_indices_dst: Tensor,
+        mesh2grid_edge_indices_src: Tensor,
+        mesh2grid_edge_indices_dst: Tensor,
     ) -> Tensor:
         """
         Args:
             mesh2grid_edge_features (Tensor): The edge features from the mesh to the grid
             grid_node_features (Tensor): The grid node features
             mesh_node_features (Tensor): The mesh node features
-            mesh2graph_edge_indices_src (Tensor): The source indices for the mesh2graph
+            mesh2grid_edge_indices_src (Tensor): The source indices for the mesh2grid
                                                   bipartitate edges. These are the indices
                                                   of the mesh nodes that are connected to
                                                   the grid nodes.
-            mesh2graph_edge_indices_dst (Tensor): The destination indices for the mesh2graph
+            mesh2grid_edge_indices_dst (Tensor): The destination indices for the mesh2grid
                                                   bipartitate edges. These are the indices of
                                                   the grid nodes that are connected to the
                                                   mesh nodes.
@@ -294,13 +294,13 @@ class GraphCastDecoder(nn.Module):
             src_node_features=mesh_node_features,
             dst_node_features=grid_node_features,
             edge_features=mesh2grid_edge_features,
-            src_indices=mesh2graph_edge_indices_src,
-            dst_indices=mesh2graph_edge_indices_dst,
+            src_indices=mesh2grid_edge_indices_src,
+            dst_indices=mesh2grid_edge_indices_dst,
         )
         n_feats = self.node_mlp(
             node_features=grid_node_features,
             edge_features=e_feats,
-            src_indices=mesh2graph_edge_indices_dst,
+            src_indices=mesh2grid_edge_indices_dst,
         )
 
         n_feats = grid_node_features + n_feats
