@@ -21,14 +21,19 @@ import numpy as np
 import os
 import torch.distributed as dist
 
-SUPPORTED_DATASETS = datasets = [
+SUPPORTED_DATASETS = [
     "ogbn-arxiv",
     "ogbn-proteins",
     "ogbn-papers100M",
     "ogbn-products",
 ]
 
-
+num_classes = {
+    "ogbn-arxiv": 40,
+    "ogbn-proteins": 112,
+    "ogbn-papers100M": 172,
+    "ogbn-products": 47,
+}
 def node_renumbering(node_rank_placement) -> Tuple[torch.Tensor, torch.Tensor]:
     """The nodes are renumbered based on the rank mappings so the node features and
     numbers are contiguous."""
@@ -147,6 +152,7 @@ class DistributedOGBWrapper(Dataset):
         comm_object: CommunicatorBase,
         dir_name: Optional[str] = None,
         node_rank_placement: Optional[torch.Tensor] = None,
+        force_reprocess: bool = False,
         *args,
         **kwargs,
     ) -> None:
@@ -158,6 +164,7 @@ class DistributedOGBWrapper(Dataset):
         assert comm_object._is_initialized, "Communicator not initialized"
 
         self.dname = dname
+        self.num_classes = num_classes[dname]
         self.comm_object = comm_object
 
         assert self.comm_object._is_initialized, "Communicator not initialized"
@@ -180,7 +187,7 @@ class DistributedOGBWrapper(Dataset):
 
         cached_graph_file = f"{dir_name}/{dname}_graph_data_{self._world_size}.pt"
 
-        if os.path.exists(cached_graph_file):
+        if os.path.exists(cached_graph_file) and not force_reprocess:
             graph_obj = torch.load(cached_graph_file)
         else:
             # Intetionally not providing a method to generate node rank placement

@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import sys
+from time import perf_counter
 from typing import Optional
 from DGraph.data.datasets import DistributedOGBWrapper
 from DGraph.Communicator import CommunicatorBase, Communicator
@@ -91,7 +92,9 @@ def _run_experiment(
     num_classes: int = 40,
     use_cache: bool = False,
 ):
-    torch.cuda.set_device(comm.get_rank())
+    local_rank = comm.get_rank() % torch.cuda.device_count()
+    print(f"Rank: {local_rank} Local Rank: {local_rank}")
+    torch.cuda.set_device(local_rank)
     device = torch.cuda.current_device()
     model = GCN(
         in_channels=128, hidden_dims=hidden_dims, num_classes=num_classes, comm=comm
@@ -100,7 +103,7 @@ def _run_experiment(
     model = model.to(device)
 
     model = (
-        DDP(model, device_ids=[rank], output_device=rank)
+        DDP(model, device_ids=[local_rank], output_device=local_rank)
         if comm.get_world_size() > 1
         else model
     )
@@ -136,7 +139,19 @@ def _run_experiment(
     print(f"Rank: {rank} training_mask: {train_mask.shape}")
     print(f"Rank: {rank} validation_mask: {validation_mask.shape}")
 
+    gather_cache = None
+    scatter_cache = None
+
     if use_cache:
+        print(f"Rank: {rank} Using Cache. Generating Cache")
+
+        if os.path.exists(f"{log_prefix}_gather_cache.pt"):
+            gather_cache = torch.load(open(f"{log_prefix}_gather_cache.pt", "rb"))
+        
+        if os.path.exists(f"{log_prefix}_scatter_cache.pt"):
+            scatter_cache = torch.load(open(f"{log_prefix}_scatter_cache.pt", "rb"))
+        
+        start_time = perf_counter()
         src_indices = edge_indices[:, 0, :]
         dst_indices = edge_indices[:, 1, :]
 
@@ -152,24 +167,26 @@ def _run_experiment(
         num_input_rows = node_features.size(1)
         local_num_edges = (edge_placement == rank).sum().item()
 
-        gather_cache = NCCLGatherCacheGenerator(
-            dst_indices,
-            edge_placement,
-            edge_dest_placement,
-            num_input_rows,
-            rank,
-            world_size,
-        )
-        nodes_per_rank = dataset.graph_obj.get_nodes_per_rank()
+        if gather_cache is None:    
+            gather_cache = NCCLGatherCacheGenerator(
+                dst_indices,
+                edge_placement,
+                edge_dest_placement,
+                num_input_rows,
+                rank,
+                world_size,
+            )
+        if scatter_cache is None:
+            nodes_per_rank = dataset.graph_obj.get_nodes_per_rank()
 
-        scatter_cache = NCCLScatterCacheGenerator(
-            src_indices,
-            edge_placement,
-            edge_src_placement,
-            nodes_per_rank[rank],
-            rank,
-            world_size,
-        )
+            scatter_cache = NCCLScatterCacheGenerator(
+                src_indices,
+                edge_placement,
+                edge_src_placement,
+                nodes_per_rank[rank],
+                rank,
+                world_size,
+            )
 
         # if rank == 0:
         #     breakpoint()
@@ -198,10 +215,16 @@ def _run_experiment(
             assert rank < world_size
             assert rank != rank
             assert value.shape[0] == scatter_cache.gather_recv_comm_vector
+        end_time = perf_counter()
+        print(f"Rank: {rank} Cache Generation Time: {end_time - start_time:.4f} s")
 
-    else:
-        gather_cache = None
-        scatter_cache = None
+        if rank == 0:
+            with open(f"{log_prefix}_gather_cache.pt", "wb") as f:
+                torch.save(gather_cache, f)
+            with open(f"{log_prefix}_scatter_cache.pt", "wb") as f:
+                torch.save(scatter_cache, f)
+        # print(f"Rank: {rank} Cache Generated")
+        
 
     training_times = []
     for i in range(epochs):
@@ -309,7 +332,7 @@ def main(
         "mpi",
     ], "Invalid backend"
 
-    assert dataset in ["arxiv"], "Invalid dataset"
+    assert dataset in ["arxiv", "products"], "Invalid dataset"
 
     node_rank_placement = None
     if _communicator.lower() == "single":
@@ -329,8 +352,11 @@ def main(
 
     safe_create_dir(log_dir, comm.get_rank())
     training_dataset = DistributedOGBWrapper(
-        f"ogbn-{dataset}", comm, node_rank_placement=node_rank_placement
+        f"ogbn-{dataset}", comm, node_rank_placement=node_rank_placement, 
+        force_reprocess=True
     )
+
+    num_classes = training_dataset.num_classes
 
     training_trajectores = np.zeros((runs, epochs))
     validation_trajectores = np.zeros((runs, epochs))
@@ -339,7 +365,9 @@ def main(
     for i in range(runs):
         log_prefix = f"{log_dir}/{dataset}_{world_size}_cache={use_cache}_run_{i}"
         training_traj, val_traj, val_accuracy = _run_experiment(
-            training_dataset, comm, lr, epochs, log_prefix, use_cache=use_cache
+            training_dataset, comm, lr, epochs, log_prefix, 
+            use_cache=use_cache, 
+            num_classes=num_classes
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj
