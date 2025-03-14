@@ -40,14 +40,18 @@ class DistributedGraphCastGraph:
     mesh_graph_node_features: Tensor
     mesh_graph_edge_features: Tensor
     mesh_graph_node_rank_placement: Tensor
+    mesh_graph_edge_rank_placement: Tensor
     mesh_graph_src_indices: Tensor
     mesh_graph_dst_indices: Tensor
+    grid_rank_placement: Tensor
     mesh2grid_graph_node_features: Tensor
     mesh2grid_graph_edge_features: Tensor
+    mesh2grid_graph_edge_rank_placement: Tensor
     mesh2grid_graph_src_indices: Tensor
     mesh2grid_graph_dst_indices: Tensor
     grid2mesh_graph_node_features: Tensor
     grid2mesh_graph_edge_features: Tensor
+    grid2mesh_graph_edge_rank_placement: Tensor
     grid2mesh_graph_src_indices: Tensor
     grid2mesh_graph_dst_indices: Tensor
 
@@ -138,11 +142,21 @@ class DistributedGraphCastGraphGenerator:
             "dst_indices": dst_indices,
             "node_rank_placement": contiguous_rank_mapping,
             "edge_rank_placement": contigous_edge_mapping,
+            "renumbered_vertices": renumbered_nodes,
         }
 
         return mesh_graph_dict
 
-    def get_grid2mesh_graph(self):
+    def get_grid_placement(
+        self, mesh_vertex_rank_placement, grid2mesh_mesh_dst_indices
+    ):
+        meshtogrid_edge_placement = mesh_vertex_rank_placement[
+            grid2mesh_mesh_dst_indices
+        ]
+
+        return meshtogrid_edge_placement
+
+    def get_grid2mesh_graph(self, mesh_vertex_rank_placement, renumbered_vertices):
         max_edge_len = max_edge_length(
             self.finest_mesh_vertices, self.finest_mesh_src, self.finest_mesh_dst
         )
@@ -154,24 +168,81 @@ class DistributedGraphCastGraphGenerator:
             max_edge_len, lat_lon_grid_flat, self.mesh_vertices
         )
         edge_features, src_grid_indices, dst_mesh_indices = g2m_graph
-        return torch.Tensor([]), edge_features, src_grid_indices, dst_mesh_indices
 
-    def get_mesh2grid_graph(self):
+        meshtogrid_edge_placement = self.get_grid_placement(
+            mesh_vertex_rank_placement, dst_mesh_indices
+        )
+        dst_mesh_indices = renumbered_vertices[dst_mesh_indices]
+
+        contigous_edge_mapping, renumbered_edges = torch.sort(meshtogrid_edge_placement)
+
+        src_grid_indices = src_grid_indices[renumbered_edges]
+        grid_vertex_rank_placement = torch.zeros_like(lat_lon_grid_flat)
+        for i, rank in enumerate(meshtogrid_edge_placement):
+            loc = src_grid_indices[i]
+            grid_vertex_rank_placement[loc] = rank
+
+        continuous_grid_mapping, renumbered_grid = torch.sort(
+            grid_vertex_rank_placement
+        )
+
+        # TODO: Consider we can have it to so grid2mesh edges don't require a
+        # backpropagation. (If encoder is after the gather / scatter)
+        grid2mesh_graph_dict = {
+            "node_features": torch.tensor([]),
+            "edge_features": edge_features,
+            "src_indices": src_grid_indices,
+            "dst_indices": dst_mesh_indices,
+            "grid2mesh_edge_rank_placement": contigous_edge_mapping,
+            "grid_vertex_rank_placement": continuous_grid_mapping,
+            "renumbered_grid": renumbered_grid,
+        }
+        return grid2mesh_graph_dict
+
+    def get_mesh2grid_graph(
+        self,
+        grid_vertex_rank_placement,
+        renumbered_vertices,
+        renumbered_grid,
+    ):
         lat_lon_grid_flat = self.lat_lon_grid.permute(2, 0, 1).view(2, -1).permute(1, 0)
 
         m2g_graph = create_mesh2grid_graph(
             lat_lon_grid_flat, self.mesh_vertices, self.mesh_faces
         )
+
         edge_features, src_mesh_indices, dst_grid_indices = m2g_graph
-        return torch.Tensor([]), edge_features, src_mesh_indices, dst_grid_indices
+        src_mesh_indices = renumbered_vertices[src_mesh_indices]
+        dst_grid_indices = renumbered_grid[dst_grid_indices]
+
+        mesh2grid_edge_rank_placement = grid_vertex_rank_placement[dst_grid_indices]
+
+        mesh2grid_graph_dict = {
+            "node_features": torch.tensor([]),
+            "edge_features": edge_features,
+            "src_indices": src_mesh_indices,
+            "dst_indices": dst_grid_indices,
+            "mesh2grid_edge_rank_placement": mesh2grid_edge_rank_placement,
+        }
+
+        return mesh2grid_graph_dict
 
     def get_graphcast_graph(
         self, mesh_vertex_rank_placement
     ) -> DistributedGraphCastGraph:
         """Get the distributed graphcast graph."""
         mesh_graph = self.get_mesh_graph(mesh_vertex_rank_placement)
-        mesh2grid_graph = self.get_mesh2grid_graph()
-        grid2mesh_graph = self.get_grid2mesh_graph()
+        mesh_vertex_rank_placement = mesh_graph["node_rank_placement"]
+        renumbered_vertices = mesh_graph["renumbered_vertices"]
+        grid2mesh_graph = self.get_grid2mesh_graph(
+            mesh_vertex_rank_placement, renumbered_vertices
+        )
+        grid_vertex_rank_placement = grid2mesh_graph["grid_vertex_rank_placement"]
+        renumbered_grid = grid2mesh_graph["renumbered_grid"]
+
+        mesh2grid_graph = self.get_mesh2grid_graph(
+            grid_vertex_rank_placement, renumbered_vertices, renumbered_grid
+        )
 
         return DistributedGraphCastGraph(
             rank=self.rank,
@@ -182,14 +253,22 @@ class DistributedGraphCastGraphGenerator:
             mesh_graph_node_features=mesh_graph["node_features"],
             mesh_graph_edge_features=mesh_graph["edge_features"],
             mesh_graph_node_rank_placement=mesh_graph["node_rank_placement"],
+            mesh_graph_edge_rank_placement=mesh_graph["edge_rank_placement"],
             mesh_graph_src_indices=mesh_graph["src_indices"],
             mesh_graph_dst_indices=mesh_graph["dst_indices"],
-            mesh2grid_graph_node_features=mesh2grid_graph[0],
-            mesh2grid_graph_edge_features=mesh2grid_graph[1],
-            mesh2grid_graph_src_indices=mesh2grid_graph[2],
-            mesh2grid_graph_dst_indices=mesh2grid_graph[3],
-            grid2mesh_graph_node_features=grid2mesh_graph[0],
-            grid2mesh_graph_edge_features=grid2mesh_graph[1],
-            grid2mesh_graph_src_indices=grid2mesh_graph[2],
-            grid2mesh_graph_dst_indices=grid2mesh_graph[3],
+            grid_rank_placement=grid2mesh_graph["grid_vertex_rank_placement"],
+            mesh2grid_graph_node_features=mesh2grid_graph["node_features"],
+            mesh2grid_graph_edge_features=mesh2grid_graph["edge_features"],
+            mesh2grid_graph_edge_rank_placement=mesh2grid_graph[
+                "mesh2grid_edge_rank_placement"
+            ],
+            mesh2grid_graph_src_indices=mesh2grid_graph["src_indices"],
+            mesh2grid_graph_dst_indices=mesh2grid_graph["dst_indices"],
+            grid2mesh_graph_node_features=grid2mesh_graph["node_features"],
+            grid2mesh_graph_edge_features=grid2mesh_graph["edge_features"],
+            grid2mesh_graph_edge_rank_placement=grid2mesh_graph[
+                "grid2mesh_edge_rank_placement"
+            ],
+            grid2mesh_graph_src_indices=grid2mesh_graph["src_indices"],
+            grid2mesh_graph_dst_indices=grid2mesh_graph["dst_indices"],
         )

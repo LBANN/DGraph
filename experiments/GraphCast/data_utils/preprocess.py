@@ -1,6 +1,5 @@
 import numpy as np
 import networkx as nx
-import metis
 
 
 def graphcast_graph_to_nxgraph(mesh_graph):
@@ -13,6 +12,10 @@ def graphcast_graph_to_nxgraph(mesh_graph):
 
 
 def partition_graph(G: nx.Graph, num_ranks: int):
+    try:
+        import metis
+    except ImportError:
+        raise ImportError("Please install metis to use this function.")
     metis_graph = metis.networkx_to_metis(G)
     (edgecuts, node_rank_placement) = metis.part_graph(metis_graph, nparts=num_ranks)
     # Node_rank_placement is of shape (num_nodes, ), where each element is the
