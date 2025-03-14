@@ -92,15 +92,32 @@ class DistributedGraphCastGraphGenerator:
         self.mesh_faces = mesh.faces
 
     @staticmethod
-    def get_mesh_graph_partition(mesh_graph):
+    def get_mesh_graph_partition(mesh_level: int, world_size: int):
         """Generate the partitioning of the mesh graph."""
-
         # Only rank 1 should generate the partitioning
+        _meshes = get_hierarchy_of_triangular_meshes_for_sphere(splits=mesh_level)
+        finest_mesh = _meshes[-1]
+        finest_mesh_src, finest_mesh_dst = faces_to_edges(finest_mesh.faces)
+        mesh = merge_meshes(_meshes)
+        mesh_src, mesh_dst = faces_to_edges(mesh.faces)  # type: ignore
+        mesh_src: Tensor = torch.tensor(mesh_src, dtype=torch.int32)
+        mesh_dst: Tensor = torch.tensor(mesh_dst, dtype=torch.int32)
+        mesh_vertices = np.array(mesh.vertices)  # No op but just in case
+        mesh_pos = torch.tensor(mesh_vertices, dtype=torch.float32)
+
+        mesh_graph = create_graph(
+            mesh_src,
+            mesh_dst,
+            mesh_pos,
+            to_bidirected=True,
+        )
+
         nx_graph = graphcast_graph_to_nxgraph(mesh_graph)
-        mesh_vertex_rank_placement = partition_graph(nx_graph, self.world_size)
+        mesh_vertex_rank_placement = partition_graph(nx_graph, world_size)
+        mesh_vertex_rank_placement = torch.tensor(mesh_vertex_rank_placement)
         return mesh_vertex_rank_placement
 
-    def get_mesh_graph(self, mesh_vertex_rank_placement):
+    def get_mesh_graph(self, mesh_vertex_rank_placement: torch.Tensor):
         """Get the graph for the distributed graphcast graph."""
 
         mesh_pos = torch.tensor(self.mesh_vertices, dtype=torch.float32)
@@ -113,6 +130,10 @@ class DistributedGraphCastGraphGenerator:
         )
 
         node_features, edge_features, src_indices, dst_indices = mesh_graph
+
+        num_nodes = node_features.size(0)
+
+        assert num_nodes == mesh_vertex_rank_placement.size(0)
 
         contiguous_rank_mapping, renumbered_nodes = torch.sort(
             mesh_vertex_rank_placement
@@ -142,6 +163,7 @@ class DistributedGraphCastGraphGenerator:
             "dst_indices": dst_indices,
             "node_rank_placement": contiguous_rank_mapping,
             "edge_rank_placement": contigous_edge_mapping,
+            "mesh_vertex_renumbering": renumbered_nodes,
             "renumbered_vertices": renumbered_nodes,
         }
 
@@ -156,10 +178,14 @@ class DistributedGraphCastGraphGenerator:
 
         return meshtogrid_edge_placement
 
-    def get_grid2mesh_graph(self, mesh_vertex_rank_placement, renumbered_vertices):
+    def get_grid2mesh_graph(self, mesh_graph_dict: dict):
+
+        mesh_vertex_rank_placement = mesh_graph_dict["mesh_vertex_renumbering"]
         max_edge_len = max_edge_length(
             self.finest_mesh_vertices, self.finest_mesh_src, self.finest_mesh_dst
         )
+
+        renumbered_vertices = mesh_graph_dict["node_rank_placement"]
 
         # create the grid2mesh bipartite graph
         lat_lon_grid_flat = self.lat_lon_grid.permute(2, 0, 1).view(2, -1).permute(1, 0)
@@ -228,15 +254,35 @@ class DistributedGraphCastGraphGenerator:
         return mesh2grid_graph_dict
 
     def get_graphcast_graph(
-        self, mesh_vertex_rank_placement
+        self, mesh_vertex_rank_placement: torch.Tensor
     ) -> DistributedGraphCastGraph:
-        """Get the distributed graphcast graph."""
+        """Get the distributed graphcast graph.
+
+        Args:
+            mesh_vertex_rank_placement (torch.Tensor): The rank placement of the mesh vertices.
+
+        Returns:
+            (DistributedGraphCastGraph): The distributed graphcast graph object.
+        """
+
+        assert (
+            self.rank <= mesh_vertex_rank_placement.max().item()
+        ), "Mesh vertex placement does not include current rank"
+
+        assert (
+            self.rank >= mesh_vertex_rank_placement.min().item()
+        ), "Mesh vertex placement does not include current rank"
+
+        assert (
+            self.world_size == mesh_vertex_rank_placement.max().item() + 1
+        ), "World size does not match the number of partitions in mesh rank placement"
+
+        mesh_vertex_rank_placement = mesh_vertex_rank_placement.view(-1)
+
         mesh_graph = self.get_mesh_graph(mesh_vertex_rank_placement)
         mesh_vertex_rank_placement = mesh_graph["node_rank_placement"]
         renumbered_vertices = mesh_graph["renumbered_vertices"]
-        grid2mesh_graph = self.get_grid2mesh_graph(
-            mesh_vertex_rank_placement, renumbered_vertices
-        )
+        grid2mesh_graph = self.get_grid2mesh_graph(mesh_graph)
         grid_vertex_rank_placement = grid2mesh_graph["grid_vertex_rank_placement"]
         renumbered_grid = grid2mesh_graph["renumbered_grid"]
 

@@ -16,6 +16,11 @@ def partition_graph(G: nx.Graph, num_ranks: int):
         import metis
     except ImportError:
         raise ImportError("Please install metis to use this function.")
+    if num_ranks == 1:
+        return np.ones(len(G.nodes), dtype=int)
+    if num_ranks < 1:
+        raise ValueError("Number of ranks must be greater than 0.")
+
     metis_graph = metis.networkx_to_metis(G)
     (edgecuts, node_rank_placement) = metis.part_graph(metis_graph, nparts=num_ranks)
     # Node_rank_placement is of shape (num_nodes, ), where each element is the

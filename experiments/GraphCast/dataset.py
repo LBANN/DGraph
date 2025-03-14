@@ -41,6 +41,7 @@ class SyntheticWeatherDataset(Dataset):
         channels: List[int],
         num_samples_per_year: int,
         num_steps: int,
+        mesh_vertex_placement: torch.Tensor,
         device: Union[str, torch.device] = "cuda",
         grid_size: Tuple[int, int] = (721, 1440),
         base_temp: float = 15,
@@ -50,7 +51,6 @@ class SyntheticWeatherDataset(Dataset):
         rank: int = 0,
         world_size: int = 1,
         ranks_per_graph: int = 1,
-        mesh_vertex_placement: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ):
         self.num_days: int = num_samples_per_year
