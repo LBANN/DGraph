@@ -145,12 +145,16 @@ def _run_experiment(
     if use_cache:
         print(f"Rank: {rank} Using Cache. Generating Cache")
 
-        if os.path.exists(f"{log_prefix}_gather_cache.pt"):
-            gather_cache = torch.load(open(f"{log_prefix}_gather_cache.pt", "rb"))
-        
-        if os.path.exists(f"{log_prefix}_scatter_cache.pt"):
-            scatter_cache = torch.load(open(f"{log_prefix}_scatter_cache.pt", "rb"))
-        
+        # if os.path.exists(f"{log_prefix}_gather_cache.pt"):
+        #     gather_cache = torch.load(
+        #         open(f"{log_prefix}_gather_cache.pt", "rb"), weights_only=False
+        #     )
+
+        # if os.path.exists(f"{log_prefix}_scatter_cache.pt"):
+        #     scatter_cache = torch.load(
+        #         open(f"{log_prefix}_scatter_cache.pt", "rb"), weights_only=False
+        #     )
+
         start_time = perf_counter()
         src_indices = edge_indices[:, 0, :]
         dst_indices = edge_indices[:, 1, :]
@@ -167,7 +171,7 @@ def _run_experiment(
         num_input_rows = node_features.size(1)
         local_num_edges = (edge_placement == rank).sum().item()
 
-        if gather_cache is None:    
+        if gather_cache is None:
             gather_cache = NCCLGatherCacheGenerator(
                 dst_indices,
                 edge_placement,
@@ -224,7 +228,6 @@ def _run_experiment(
             with open(f"{log_prefix}_scatter_cache.pt", "wb") as f:
                 torch.save(scatter_cache, f)
         # print(f"Rank: {rank} Cache Generated")
-        
 
     training_times = []
     for i in range(epochs):
@@ -348,12 +351,16 @@ def main(
             assert os.path.exists(
                 node_rank_placement_file
             ), "Node rank placement file not found"
-            node_rank_placement = torch.load(node_rank_placement_file)
+            node_rank_placement = torch.load(
+                node_rank_placement_file, weights_only=False
+            )
 
     safe_create_dir(log_dir, comm.get_rank())
     training_dataset = DistributedOGBWrapper(
-        f"ogbn-{dataset}", comm, node_rank_placement=node_rank_placement, 
-        force_reprocess=True
+        f"ogbn-{dataset}",
+        comm,
+        node_rank_placement=node_rank_placement,
+        force_reprocess=True,
     )
 
     num_classes = training_dataset.num_classes
@@ -365,9 +372,13 @@ def main(
     for i in range(runs):
         log_prefix = f"{log_dir}/{dataset}_{world_size}_cache={use_cache}_run_{i}"
         training_traj, val_traj, val_accuracy = _run_experiment(
-            training_dataset, comm, lr, epochs, log_prefix, 
-            use_cache=use_cache, 
-            num_classes=num_classes
+            training_dataset,
+            comm,
+            lr,
+            epochs,
+            log_prefix,
+            use_cache=use_cache,
+            num_classes=num_classes,
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj

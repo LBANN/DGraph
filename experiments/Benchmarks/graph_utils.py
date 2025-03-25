@@ -46,9 +46,11 @@ def get_nccl_gather_benchmark_data(
     data = torch.randn(world_size, sample_size).to(device)
 
     vertex_mapping = torch.arange(world_size).to(device)
-    edge_placement = torch.repeat_interleave(
-        torch.arange(world_size), world_size - 1
-    ).unsqueeze(0)
+    edge_placement = (
+        torch.repeat_interleave(torch.arange(world_size), world_size - 1)
+        .unsqueeze(0)
+        .to(device)
+    )
 
     edges = []
     for i in range(world_size):
@@ -57,7 +59,7 @@ def get_nccl_gather_benchmark_data(
                 continue
             edges.append(j)
     edge_src_rank = torch.tensor(edges).to(device).unsqueeze(0)
-    edge_indices = edge_src_rank.clone()
+    edge_indices = edge_src_rank.clone().to(device)
 
     return GatherGraphData(
         vertex_data=data,
@@ -84,11 +86,16 @@ def get_nccl_scatter_benchmark_data(
     torch.cuda.manual_seed(0)
 
     # Generate random data
-    data = torch.randn(world_size * (world_size - 1), sample_size).to(device)
+    data = torch.randn(1, world_size * (world_size - 1), sample_size).to(device)
 
     data_mapping = (
-        torch.zeros(world_size, world_size - 1) + torch.arange(world_size).unsqueeze(1)
-    ).reshape(1, -1)
+        (
+            torch.zeros(world_size, world_size - 1)
+            + torch.arange(world_size).unsqueeze(1)
+        )
+        .reshape(1, -1)
+        .to(device)
+    )
 
     edge_placement = data_mapping.clone()
 

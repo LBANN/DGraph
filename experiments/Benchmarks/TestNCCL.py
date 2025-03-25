@@ -74,6 +74,7 @@ class NCCLBenchmark:
         edge_rank_placement,
         edge_dest_rank,
         edge_indices,
+        num_local_vertices,
         cache: Optional[NCCLScatterCache] = None,
         num_iters: int = 1000,
     ) -> npt.NDArray:
@@ -91,7 +92,7 @@ class NCCLBenchmark:
                 [edge_rank_placement, edge_dest_rank], dim=0
             )
             scattered_data = self.comm.scatter(
-                data, edge_indices, edge_placement_data, cache=cache
+                data, edge_indices, edge_placement_data, num_local_vertices, cache=cache
             )
             end_time.record(stream)
             torch.cuda.synchronize()
@@ -119,7 +120,7 @@ def run_gather_benchmark(
     rank = benchmark.rank
     vertex_data = graph_data.vertex_data
     vertex_mapping = graph_data.vertex_rank_mapping
-    local_vertex_data = vertex_data[vertex_mapping == rank]
+    local_vertex_data = vertex_data[vertex_mapping == rank, :].unsqueeze(0)
     edge_placement = graph_data.edge_rank_placement
     edge_src_rank = graph_data.edge_src_rank
     edge_indices = graph_data.edge_indices
@@ -145,16 +146,17 @@ def run_scatter_benchmark(
     rank = benchmark.rank
     vertex_data = graph_data.vertex_data
     vertex_mapping = graph_data.data_rank_mapping
-    local_vertex_data = vertex_data[vertex_mapping == rank]
+    local_vertex_data = vertex_data[vertex_mapping == rank].unsqueeze(0)
     edge_placement = graph_data.edge_rank_placement
     edge_src_rank = graph_data.edge_dest_rank
     edge_indices = graph_data.edge_indices
-
+    num_local_vertices = graph_data.num_local_vertices
     times = benchmark.benchmark_scatter(
         local_vertex_data,
         edge_placement,
         edge_src_rank,
         edge_indices,
+        num_local_vertices,
         num_iters=num_iters,
         cache=cache,
     )
@@ -219,7 +221,9 @@ def main():
 
         benchmark.print("Saving Gather Benchmark with Cache Times")
         for i in range(world_size):
-            benchmark.save_np(times, f"{log_dir}/gather_with_cache_times_{i}.npy", rank_to_save=i)
+            benchmark.save_np(
+                times, f"{log_dir}/gather_with_cache_times_{i}.npy", rank_to_save=i
+            )
 
         benchmark.print("Gather Benchmark with Cache Complete")
         benchmark.print("*" * 50)
@@ -259,6 +263,8 @@ def main():
 
         benchmark.print("Scatter Benchmark with Cache Complete")
         benchmark.print("*" * 50)
+
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":

@@ -34,6 +34,8 @@ num_classes = {
     "ogbn-papers100M": 172,
     "ogbn-products": 47,
 }
+
+
 def node_renumbering(node_rank_placement) -> Tuple[torch.Tensor, torch.Tensor]:
     """The nodes are renumbered based on the rank mappings so the node features and
     numbers are contiguous."""
@@ -133,9 +135,9 @@ def process_homogenous_data(
         edge_index=edge_index,
         num_nodes=num_nodes,
         num_edges=num_edges,
-        node_loc=contiguous_rank_mapping,
-        edge_loc=edge_rank_mapping,
-        edge_dest_rank_mapping=edge_dest_rank_mapping,
+        node_loc=contiguous_rank_mapping.long(),
+        edge_loc=edge_rank_mapping.long(),
+        edge_dest_rank_mapping=edge_dest_rank_mapping.long(),
         world_size=world_Size,
         labels=labels,
         train_mask=train_nodes,
