@@ -32,19 +32,19 @@ def _nvshmmem_gather(send_tensor, indices, rank_mappings):
     # Gather the tensors
 
     # TODO: Add an option to cache the max value
-    max_num_input_rows = nvshmem.NVSHMEMP2P.get_max(num_input_rows)
+    # max_num_input_rows = nvshmem.NVSHMEMP2P.get_max(num_input_rows)
 
-    if num_input_rows != max_num_input_rows:
-        # Pad the tensor because NVSHMEM requires memory to be symmetric on all ranks
-        # Slice the tensor to the max number of input rows
+    # if num_input_rows != max_num_input_rows:
+    #     # Pad the tensor because NVSHMEM requires memory to be symmetric on all ranks
+    #     # Slice the tensor to the max number of input rows
 
-        # TODO: Look into a better way to do this, possibly a seperate memory
-        # manager for NVSHMEM tensors and workspace tensors
-        nvshmem_send_tensor = nvshmem.NVSHMEMP2P.padded_clone_tensor(
-            send_tensor, max_num_input_rows * num_features
-        )[: num_input_rows * num_features]
-    else:
-        nvshmem_send_tensor = nvshmem.NVSHMEMP2P.clone_tensor(send_tensor)
+    #     # TODO: Look into a better way to do this, possibly a seperate memory
+    #     # manager for NVSHMEM tensors and workspace tensors
+    #     nvshmem_send_tensor = nvshmem.NVSHMEMP2P.padded_clone_tensor(
+    #         send_tensor, max_num_input_rows * num_features
+    #     )[: num_input_rows * num_features]
+    # else:
+    nvshmem_send_tensor = nvshmem.NVSHMEMP2P.clone_tensor(send_tensor)
 
     nvshmem.NVSHMEMP2P.dist_get(
         nvshmem_send_tensor,
@@ -66,11 +66,11 @@ def _nvshmem_scatter(input_tensor, indices, rank_mappings, num_output_rows):
     num_features = input_tensor.shape[2]
     device = input_tensor.device
 
-    max_output_rows = nvshmem.NVSHMEMP2P.get_max(num_output_rows)
-    if num_output_rows != max_output_rows:
-        num_elem = max_output_rows * num_features
-    else:
-        num_elem = num_output_rows * num_features
+    # max_output_rows = nvshmem.NVSHMEMP2P.get_max(num_output_rows)
+    # if num_output_rows != max_output_rows:
+    #     num_elem = max_output_rows * num_features
+    # else:
+    num_elem = num_output_rows * num_features
 
     # TODO: Look into using calloc here to avoid zeroing out the tensor
     scattered_tensor = nvshmem.NVSHMEMP2P.allocate_symmetric_memory(

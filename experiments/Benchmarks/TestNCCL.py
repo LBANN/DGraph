@@ -186,6 +186,7 @@ def main():
     local_rank = rank % torch.cuda.device_count()
     torch.cuda.set_device(local_rank)
     device = torch.cuda.current_device()
+    torch.set_default_device(device)
 
     benchmark = NCCLBenchmark(comm, world_size, rank)
     benchmark.print(f"Running NCCL Benchmark on {world_size} ranks")
