@@ -204,7 +204,7 @@ def main():
     benchmark.print("Saving Gather Benchmark Times")
 
     for i in range(world_size):
-        benchmark.save_np(times, f"{log_dir}/gather_times_{i}.npy", rank_to_save=i)
+        benchmark.save_np(times, f"{log_dir}/NCCL_gather_times_{i}.npy", rank_to_save=i)
 
     benchmark.print("Gather Benchmark Complete")
     benchmark.print("*" * 50)
@@ -226,7 +226,7 @@ def main():
         benchmark.print("Saving Gather Benchmark with Cache Times")
         for i in range(world_size):
             benchmark.save_np(
-                times, f"{log_dir}/gather_with_cache_times_{i}.npy", rank_to_save=i
+                times, f"{log_dir}/NCCL_gather_with_cache_times_{i}.npy", rank_to_save=i
             )
 
         benchmark.print("Gather Benchmark with Cache Complete")
@@ -241,7 +241,9 @@ def main():
 
     benchmark.print("Saving Scatter Benchmark Times")
     for i in range(world_size):
-        benchmark.save_np(times, f"{log_dir}/scatter_times_{i}.npy", rank_to_save=i)
+        benchmark.save_np(
+            times, f"{log_dir}/NCCL_scatter_times_{i}.npy", rank_to_save=i
+        )
 
     benchmark.print("Scatter Benchmark Complete")
     benchmark.print("*" * 50)
@@ -262,7 +264,9 @@ def main():
         benchmark.print("Saving Scatter Benchmark with Cache Times")
         for i in range(world_size):
             benchmark.save_np(
-                times, f"{log_dir}/scatter_with_cache_times_{i}.npy", rank_to_save=i
+                times,
+                f"{log_dir}/NCCL_scatter_with_cache_times_{i}.npy",
+                rank_to_save=i,
             )
 
         benchmark.print("Scatter Benchmark with Cache Complete")
