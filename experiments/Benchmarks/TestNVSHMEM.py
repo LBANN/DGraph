@@ -5,7 +5,7 @@ from DGraph.Communicator import CommunicatorBase
 import DGraph.Communicator as Comm
 import numpy as np
 import numpy.typing as npt
-
+import torch.distributed as dist
 from graph_utils import (
     GatherGraphData,
     ScatterGraphData,
@@ -13,6 +13,7 @@ from graph_utils import (
     get_nvshmem_scatter_benchmark_data,
     safe_create_dir,
 )
+import os
 
 
 class NVSHMEMBenchmark:
@@ -139,6 +140,13 @@ def main():
     comm = Comm.Communicator.init_process_group("nvshmem")
     rank = comm.get_rank()
     world_size = comm.get_world_size()
+
+    dist.init_process_group(
+        backend="nccl",
+        rank=rank,
+        world_size=world_size,
+        init_method=f"file://{os.getcwd()}/DGraph_tmpfile",
+    )
 
     safe_create_dir(log_dir, rank)
 
