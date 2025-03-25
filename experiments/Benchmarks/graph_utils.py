@@ -151,7 +151,7 @@ def get_nvshmem_gather_benchmark_data(
                 continue
             edges.append(j)
     edge_src_rank = torch.tensor(edges).to(device).unsqueeze(0)
-    local_vertex_data = data[rank].view(1, -1, sample_size)
+    local_vertex_data = data[vertex_mapping == rank].view(1, -1, sample_size)
     local_edge_src_rank = edge_src_rank[edge_placement == rank].view(1, -1)
 
     edge_indices = edge_src_rank.clone().to(device)
@@ -208,7 +208,7 @@ def get_nvshmem_scatter_benchmark_data(
     edge_indices = edge_dest_rank.clone()
     local_edge_indices = edge_indices[edge_placement == rank].view(1, -1)
 
-    local_data = data[:, edge_placement == rank, :]
+    local_data = data[edge_placement == rank, :].unsqueeze(0)
     return ScatterGraphData(
         vertex_data=local_data,
         data_rank_mapping=data_mapping,
@@ -223,3 +223,8 @@ def safe_create_dir(directory, rank):
     if rank == 0:
         if not os.path.exists(directory):
             os.makedirs(directory)
+
+
+if __name__ == "__main__":
+    gather_data = get_nvshmem_gather_benchmark_data(64, 0, 4, "cuda")
+    scatter_data = get_nvshmem_scatter_benchmark_data(64, 0, 4, "cuda")
