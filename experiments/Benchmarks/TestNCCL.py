@@ -120,7 +120,9 @@ def run_gather_benchmark(
     rank = benchmark.rank
     vertex_data = graph_data.vertex_data
     vertex_mapping = graph_data.vertex_rank_mapping
-    local_vertex_data = vertex_data[vertex_mapping == rank, :].unsqueeze(0)
+
+    num_features = vertex_data.shape[-1]
+    local_vertex_data = vertex_data[vertex_mapping == rank, :].view(1, -1, num_features)
     edge_placement = graph_data.edge_rank_placement
     edge_src_rank = graph_data.edge_src_rank
     edge_indices = graph_data.edge_indices
@@ -145,8 +147,9 @@ def run_scatter_benchmark(
 ):
     rank = benchmark.rank
     vertex_data = graph_data.vertex_data
+    num_features = vertex_data.shape[-1]
     vertex_mapping = graph_data.data_rank_mapping
-    local_vertex_data = vertex_data[vertex_mapping == rank].unsqueeze(0)
+    local_vertex_data = vertex_data[vertex_mapping == rank].view(1, -1, num_features)
     edge_placement = graph_data.edge_rank_placement
     edge_src_rank = graph_data.edge_dest_rank
     edge_indices = graph_data.edge_indices
