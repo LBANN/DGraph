@@ -22,7 +22,7 @@ def generate_plots(
     stds = []
 
     for op in ops:
-        _mean, _std = get_stats(f"logs/{op}_times_0.npy")
+        _mean, _std = get_stats(f"logs/{backend.upper()}_{op}_times_0.npy")
         means.append(_mean)
         stds.append(_std)
 
