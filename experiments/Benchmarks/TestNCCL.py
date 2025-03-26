@@ -210,12 +210,17 @@ def main():
     benchmark.print("*" * 50)
 
     if benchmark_cache:
-        vertex_data = gather_graph_data.vertex_data
         edge_placement = gather_graph_data.edge_rank_placement
         edge_src_rank = gather_graph_data.edge_src_rank
+        indices = gather_graph_data.edge_indices
 
-        gather_cache = NCCLGatherCacheGenerator.generate_cache(
-            vertex_data, edge_placement, edge_src_rank, rank, world_size
+        gather_cache = NCCLGatherCacheGenerator(
+            indices,
+            edge_placement.view(-1),
+            edge_src_rank.view(-1),
+            1,
+            rank,
+            world_size,
         )
         benchmark.print("*" * 50)
         benchmark.print("Running Gather Benchmark with Cache")
@@ -248,12 +253,17 @@ def main():
     benchmark.print("Scatter Benchmark Complete")
     benchmark.print("*" * 50)
     if benchmark_cache:
-        vertex_data = scatter_graph_data.vertex_data
         edge_placement = scatter_graph_data.edge_rank_placement
         edge_dest_rank = scatter_graph_data.edge_dest_rank
+        indices = scatter_graph_data.edge_indices
 
-        scatter_cache = NCCLScatterCacheGenerator.generate_cache(
-            vertex_data, edge_placement, edge_dest_rank, rank, world_size
+        scatter_cache = NCCLScatterCacheGenerator(
+            indices,
+            edge_placement.view(-1),
+            edge_dest_rank.view(-1),
+            1,
+            rank,
+            world_size,
         )
         benchmark.print("*" * 50)
         benchmark.print("Running Scatter Benchmark with Cache")

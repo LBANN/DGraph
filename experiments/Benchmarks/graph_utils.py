@@ -97,7 +97,7 @@ def get_nccl_scatter_benchmark_data(
         .to(device)
     )
 
-    edge_placement = data_mapping.clone()
+    edge_placement = data_mapping.clone().long()
 
     edges = []
     for i in range(world_size):
@@ -105,7 +105,7 @@ def get_nccl_scatter_benchmark_data(
             if i == j:
                 continue
             edges.append(j)
-    edge_dest_rank = torch.tensor(edges).to(device).unsqueeze(0)
+    edge_dest_rank = torch.tensor(edges).to(device).unsqueeze(0).long()
     edge_indices = edge_dest_rank.clone()
 
     return ScatterGraphData(

@@ -88,6 +88,7 @@ def all_to_all_cache_helper(
         recv_local_placement[i] = _local_placement_indices
 
     send_local_placement = {}
+
     for i, num_messages in enumerate(send_comm_vector):
         if num_messages == 0:
             # Not sending any messages current_rank to rank i
@@ -95,9 +96,9 @@ def all_to_all_cache_helper(
         if i == rank:
             # No local sends
             continue
-
         _mask = (edge_vertex_ranks == rank) & (edge_placement == i)
         _send_row = indices[0][_mask] % num_rows
+
         send_local_placement[i] = _send_row
 
     return (
@@ -201,7 +202,7 @@ def NCCLScatterCacheGenerator(
     num_grad_output_rows = int(local_edges_mask.sum().item())
     send_comm_vector, recv_comm_vector, send_local_placement, recv_local_placement = (
         all_to_all_cache_helper(
-            indices,
+            indices.view(1, -1),
             edge_placement,
             edge_dest_ranks,
             num_grad_output_rows,
