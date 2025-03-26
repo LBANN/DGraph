@@ -44,11 +44,11 @@ class ScatterGraphData:
 Run the benchmarks using the following command:
 
 ```shell
-torchrun --nnodes <N> --nproc-per-node <P> testNCCL.py
+torchrun --nnodes <N> --nproc-per-node <P> TestNCCL.py
 ```
 
 To run the NVSHMEM benchmarks, use the following command:
 
 ```shell
-srun -N <N> --ntasks-per-node=<P> testNVSHMEM.py
+srun -N <N> --ntasks-per-node=<P> TestNVSHMEM.py
 ```
