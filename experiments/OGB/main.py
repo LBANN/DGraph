@@ -144,17 +144,6 @@ def _run_experiment(
 
     if use_cache:
         print(f"Rank: {rank} Using Cache. Generating Cache")
-
-        # if os.path.exists(f"{log_prefix}_gather_cache.pt"):
-        #     gather_cache = torch.load(
-        #         open(f"{log_prefix}_gather_cache.pt", "rb"), weights_only=False
-        #     )
-
-        # if os.path.exists(f"{log_prefix}_scatter_cache.pt"):
-        #     scatter_cache = torch.load(
-        #         open(f"{log_prefix}_scatter_cache.pt", "rb"), weights_only=False
-        #     )
-
         start_time = perf_counter()
         src_indices = edge_indices[:, 0, :]
         dst_indices = edge_indices[:, 1, :]
@@ -192,9 +181,6 @@ def _run_experiment(
                 world_size,
             )
 
-        # if rank == 0:
-        #     breakpoint()
-        # dist.barrier()
         # Sanity checks for the cache
         for key, value in gather_cache.gather_send_local_placement.items():
             assert value.max().item() < num_input_rows
@@ -223,11 +209,11 @@ def _run_experiment(
         print(f"Rank: {rank} Cache Generation Time: {end_time - start_time:.4f} s")
 
         if rank == 0:
-            with open(f"{log_prefix}_gather_cache.pt", "wb") as f:
+            with open(f"{log_prefix}_gather_cache_{world_size}.pt", "wb") as f:
                 torch.save(gather_cache, f)
-            with open(f"{log_prefix}_scatter_cache.pt", "wb") as f:
+            with open(f"{log_prefix}_scatter_cache_{world_size}.pt", "wb") as f:
                 torch.save(scatter_cache, f)
-        # print(f"Rank: {rank} Cache Generated")
+        print(f"Rank: {rank} Cache Generated")
 
     training_times = []
     for i in range(epochs):
