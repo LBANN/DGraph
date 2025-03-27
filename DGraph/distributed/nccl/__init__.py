@@ -12,3 +12,9 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 from DGraph.distributed.nccl.NCCLBackendEngine import NCCLBackendEngine
+from DGraph.distributed.nccl._nccl_cache import (
+    NCCLGatherCache,
+    NCCLScatterCache,
+    NCCLScatterCacheGenerator,
+    NCCLGatherCacheGenerator,
+)

@@ -50,6 +50,8 @@ public:
   static torch::Tensor AllocateSymmetricMemory(const int size,
                                                const int device_ordinal);
   static torch::Tensor clone_tensor(torch::Tensor tensor);
+  static torch::Tensor padded_clone_tensor(torch::Tensor tensor,
+                                           const int padded_size);
   static void register_memory(torch::Tensor tensor);
   static void deregister_memory(torch::Tensor tensor);
   static int get_rank();

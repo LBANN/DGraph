@@ -31,6 +31,19 @@ def _nvshmmem_gather(send_tensor, indices, rank_mappings):
     )
     # Gather the tensors
 
+    # TODO: Add an option to cache the max value
+    # max_num_input_rows = nvshmem.NVSHMEMP2P.get_max(num_input_rows)
+
+    # if num_input_rows != max_num_input_rows:
+    #     # Pad the tensor because NVSHMEM requires memory to be symmetric on all ranks
+    #     # Slice the tensor to the max number of input rows
+
+    #     # TODO: Look into a better way to do this, possibly a seperate memory
+    #     # manager for NVSHMEM tensors and workspace tensors
+    #     nvshmem_send_tensor = nvshmem.NVSHMEMP2P.padded_clone_tensor(
+    #         send_tensor, max_num_input_rows * num_features
+    #     )[: num_input_rows * num_features]
+    # else:
     nvshmem_send_tensor = nvshmem.NVSHMEMP2P.clone_tensor(send_tensor)
 
     nvshmem.NVSHMEMP2P.dist_get(
@@ -53,12 +66,16 @@ def _nvshmem_scatter(input_tensor, indices, rank_mappings, num_output_rows):
     num_features = input_tensor.shape[2]
     device = input_tensor.device
 
+    # max_output_rows = nvshmem.NVSHMEMP2P.get_max(num_output_rows)
+    # if num_output_rows != max_output_rows:
+    #     num_elem = max_output_rows * num_features
+    # else:
     num_elem = num_output_rows * num_features
 
     # TODO: Look into using calloc here to avoid zeroing out the tensor
     scattered_tensor = nvshmem.NVSHMEMP2P.allocate_symmetric_memory(
         num_elem, device.index
-    ).reshape((bs, num_output_rows, num_features))
+    )[: num_output_rows * num_features].reshape((bs, num_output_rows, num_features))
     scattered_tensor.zero_()
 
     cur_rank = nvshmem.NVSHMEMP2P.get_rank()
@@ -145,13 +162,16 @@ class NVSHMEMBackendEngine(BackendEngine):
     _world_size = -1
     _ranks_per_graph = -1
     _nvshmem_p2p_obj = None
+    _partition_size = -1
+    _local_rank = -1
+    _partition_num = -1
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, ranks_per_graph=-1, *args, **kwargs):
         # check if already initialized
         if not NVSHMEMBackendEngine._is_initialized:
-            self.init_process_group(*args, **kwargs)
+            self.init_process_group(ranks_per_graph=-1, *args, **kwargs)
 
-    def init_process_group(self, *args, **kwargs):
+    def init_process_group(self, ranks_per_graph=-1, *args, **kwargs):
         if not NVSHMEMBackendEngine._is_initialized:
             nvshmem.NVSHMEMP2P.init()
             NVSHMEMBackendEngine._is_initialized = True
@@ -161,11 +181,41 @@ class NVSHMEMBackendEngine(BackendEngine):
 
             NVSHMEMBackendEngine._nvshmem_p2p_obj = nvshmem.NVSHMEMP2P
 
-    def get_rank(self) -> int:
+            if ranks_per_graph > 0:
+                assert (
+                    NVSHMEMBackendEngine._world_size % ranks_per_graph == 0
+                ), "World size not divisible by ranks per graph"
+                NVSHMEMBackendEngine._ranks_per_graph = ranks_per_graph
+                NVSHMEMBackendEngine._partition_size = (
+                    NVSHMEMBackendEngine._world_size // ranks_per_graph
+                )
+                NVSHMEMBackendEngine._partition_num = (
+                    NVSHMEMBackendEngine._rank // NVSHMEMBackendEngine._partition_size
+                )
+            else:
+                NVSHMEMBackendEngine._partition_size = NVSHMEMBackendEngine._world_size
+                NVSHMEMBackendEngine._ranks_per_graph = NVSHMEMBackendEngine._world_size
+                NVSHMEMBackendEngine._partition_num = 0
+
+    @staticmethod
+    def get_rank() -> int:
         return NVSHMEMBackendEngine._rank
 
-    def get_world_size(self) -> int:
+    @staticmethod
+    def get_world_size() -> int:
         return NVSHMEMBackendEngine._world_size
+
+    @staticmethod
+    def get_local_rank() -> int:
+        return NVSHMEMBackendEngine._local_rank
+
+    @staticmethod
+    def get_partition_num() -> int:
+        return NVSHMEMBackendEngine._partition_num
+
+    @staticmethod
+    def get_partition_size() -> int:
+        return NVSHMEMBackendEngine._partition_size
 
     def gather(self, input_tensor, indices, rank_mappings):
         assert (
@@ -186,6 +236,15 @@ class NVSHMEMBackendEngine(BackendEngine):
         assert indices.is_cuda, "Indices tensor must be on CUDA"
         assert rank_mappings.is_cuda, "Rank mappings tensor must be on CUDA"
 
+        # Convert the rank mappings to global rank mappings
+        rank_mappings = (
+            NVSHMEMBackendEngine._ranks_per_graph * NVSHMEMBackendEngine._partition_num
+            + rank_mappings
+        )
+
+        num_input_rows = input_tensor.shape[1]
+        num_output_rows = indices.shape[1]
+
         gathered_tensors = NVSHMEMGatherFunction.apply(
             input_tensor, indices, rank_mappings
         )
@@ -203,10 +262,20 @@ class NVSHMEMBackendEngine(BackendEngine):
         ), "Batch size of input tensor and indices tensor must match"
         assert rank_mappings.shape == indices.shape, "Rank mappings shape mismatch"
 
+        rank_mappings = (
+            NVSHMEMBackendEngine._ranks_per_graph * NVSHMEMBackendEngine._partition_num
+            + rank_mappings
+        )
+
         scattered_tensors = NVSHMEMScatterFunction.apply(
             input_tensor, indices, rank_mappings, num_output_rows
         )
         return scattered_tensors
+
+    def get_max(self, val) -> int:
+        assert dist.is_initialized(), "Distributed not initialized"
+        dist.all_reduce(val, op=dist.ReduceOp.MAX)
+        return val
 
     def barrier(self):
         assert NVSHMEMBackendEngine._is_initialized, "NVSHMEM not initialized"

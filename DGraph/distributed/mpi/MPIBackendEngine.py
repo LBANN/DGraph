@@ -259,13 +259,13 @@ class MPIBackendEngine(BackendEngine):
     _local_rank = None
     _partition_num = None
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, ranks_per_graph=-1, *args, **kwargs):
         # self._iniitalized = dist.is_initialized()
         if MPIBackendEngine._is_initialized:
             return
-        self.init_process_group(*args, **kwargs)
+        self.init_process_group(ranks_per_graph, *args, **kwargs)
 
-    def init_process_group(self, ranks_per_graph=None, *args, **kwargs):
+    def init_process_group(self, ranks_per_graph=-1, *args, **kwargs):
         if not MPIBackendEngine._is_initialized:
             # We want both NCCL and MPI to be initialized
 
@@ -286,7 +286,7 @@ class MPIBackendEngine(BackendEngine):
             MPIBackendEngine._global_rank = self._comm.Get_rank()
             MPIBackendEngine._world_size = self._comm.Get_size()
 
-            if ranks_per_graph is not None:
+            if ranks_per_graph > 0:
                 assert (
                     MPIBackendEngine._world_size % ranks_per_graph == 0
                 ), f"World size {MPIBackendEngine._world_size} not divisible by ranks per graph {ranks_per_graph}"
