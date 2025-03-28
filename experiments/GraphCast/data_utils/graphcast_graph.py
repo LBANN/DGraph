@@ -43,6 +43,8 @@ class DistributedGraphCastGraph:
     mesh_graph_edge_rank_placement: Tensor
     mesh_graph_src_indices: Tensor
     mesh_graph_dst_indices: Tensor
+    mesh_graph_src_rank_placement: Tensor
+    mesh_graph_dst_rank_placement: Tensor
     grid_rank_placement: Tensor
     mesh2grid_graph_node_features: Tensor
     mesh2grid_graph_edge_features: Tensor
@@ -151,9 +153,13 @@ class DistributedGraphCastGraphGenerator:
 
         contigous_edge_mapping, renumbered_edges = torch.sort(edge_placement_tensor)
 
+        src_indices_rank_placement = contiguous_rank_mapping
+
+        # Rearrange the indices
         src_indices = src_indices[renumbered_edges]
         dst_indices = dst_indices[renumbered_edges]
 
+        dst_indices_rank_placement = mesh_vertex_rank_placement[dst_indices]
         edge_features = edge_features[renumbered_edges]
 
         mesh_graph_dict = {
@@ -163,6 +169,8 @@ class DistributedGraphCastGraphGenerator:
             "dst_indices": dst_indices,
             "node_rank_placement": contiguous_rank_mapping,
             "edge_rank_placement": contigous_edge_mapping,
+            "src_rank_placement": edge_placement_tensor,
+            "dst_rank_placement": dst_indices_rank_placement,
             "mesh_vertex_renumbering": renumbered_nodes,
             "renumbered_vertices": renumbered_nodes,
         }
@@ -302,6 +310,8 @@ class DistributedGraphCastGraphGenerator:
             mesh_graph_edge_rank_placement=mesh_graph["edge_rank_placement"],
             mesh_graph_src_indices=mesh_graph["src_indices"],
             mesh_graph_dst_indices=mesh_graph["dst_indices"],
+            mesh_graph_src_rank_placement=mesh_graph["src_rank_placement"],
+            mesh_graph_dst_rank_placement=mesh_graph["dst_rank_placement"],
             grid_rank_placement=grid2mesh_graph["grid_vertex_rank_placement"],
             mesh2grid_graph_node_features=mesh2grid_graph["node_features"],
             mesh2grid_graph_edge_features=mesh2grid_graph["edge_features"],
