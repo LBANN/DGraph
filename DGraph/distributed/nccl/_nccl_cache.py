@@ -24,7 +24,12 @@ class NCCLGatherCache:
     gather_send_comm_vector: torch.Tensor
     gather_recv_local_placement: Dict[int, torch.Tensor]
     gather_send_local_placement: Dict[int, torch.Tensor]
-
+    gather_needs_comm: bool
+    gather_local_comm_mask: torch.Tensor
+    gather_local_indices: torch.Tensor
+    gather_num_output_rows: int
+    gather_local_remapped_ranks: torch.Tensor
+    gather_local_recv_mapping: torch.Tensor
     # Backward cached values
     scatter_renumbered_indices: torch.Tensor
     scatter_local_comm_mask: torch.Tensor
@@ -250,10 +255,19 @@ def NCCLGatherCacheGenerator(
     )
 
     local_slice_mask = edge_placement == rank
+
+    local_mask = edge_placement[local_slice_mask]
+
     local_dest_ranks = edge_dest_ranks[local_slice_mask]
 
     local_send_mask = local_dest_ranks != rank
 
+    needs_comm = bool(local_send_mask.any())
+    local_indices_slice = indices[local_slice_mask.unsqueeze(0)]
+
+    num_output_rows = int(local_slice_mask.sum().item())
+
+    local_comm_mask = local_mask == rank
     # Backward pass
     # This is a scatter operation so quite a bit more complicated
 
@@ -279,6 +293,12 @@ def NCCLGatherCacheGenerator(
         gather_send_comm_vector=send_comm_vector,
         gather_recv_local_placement=recv_local_placement,
         gather_send_local_placement=send_local_placement,
+        gather_needs_comm=needs_comm,
+        gather_local_comm_mask=local_comm_mask,
+        gather_local_indices=local_indices_slice,
+        gather_num_output_rows=num_output_rows,
+        gather_local_remapped_ranks=local_mask,
+        gather_local_recv_mapping=local_dest_ranks,
         scatter_renumbered_indices=renumbered_indices,
         scatter_local_comm_mask=local_send_mask,
         scatter_remote_send_to_ranks=receving_ranks,

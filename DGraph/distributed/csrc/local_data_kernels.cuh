@@ -160,4 +160,53 @@ namespace Local
     }
   }
 
+  __global__ void Rank_Local_Gather_Kernel(
+    const float* __restrict__ values,
+    const long* __restrict__ indices,
+    const long* __restrict__ rank_placement,
+    float* __restrict__ output,
+    const int mini_batch_size,
+    const int num_values_rows,
+    const int num_cols,
+    const int num_output_rows,
+    const int local_rank
+  )
+  {
+
+    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
+    const size_t gidz = threadIdx.z + blockIdx.z * blockDim.z;
+
+    const size_t nthreadsx = gridDim.x * blockDim.x;
+    const size_t nthreadsy = gridDim.y * blockDim.y;
+    const size_t nthreadsz = gridDim.z * blockDim.z;
+
+    for (size_t mb_i = gidz; mb_i < mini_batch_size; mb_i += nthreadsz)
+    {
+      const auto values_offset = mb_i * num_cols * num_values_rows;
+      const auto output_offset = mb_i * num_cols * num_output_rows;
+      const auto ind_offset = mb_i * num_output_rows;
+      const auto rank_placement_offset = mb_i * num_output_rows;
+
+      for(size_t row = gidy; row < num_output_rows; row += nthreadsy)
+      {
+        const int ind = indices[ind_offset + row];
+        const int row_rank = rank_placement[rank_placement_offset + row];
+        // Only gather the values if the rank is the same as the local rank
+        if (row_rank == local_rank)
+        {
+          // Probably not needed, but just in case
+          if (ind > -1 && ind < num_values_rows)
+          {
+            for (size_t i = gidx; i < num_cols; i += nthreadsx)
+            {
+              const auto val = values[values_offset + ind * num_cols + i];
+              output[output_offset + row * num_cols + i] = val;
+            }
+          }
+        }
+      }
+    }
+  }
+
 } // namespace Local

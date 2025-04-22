@@ -29,6 +29,8 @@ from .utils import (
 from .preprocess import graphcast_graph_to_nxgraph, partition_graph
 from dataclasses import dataclass
 
+import torch.distributed as dist
+
 
 @dataclass
 class DistributedGraphCastGraph:
@@ -144,23 +146,29 @@ class DistributedGraphCastGraphGenerator:
         # renumber the nodes
         node_features = node_features[renumbered_nodes]
 
+        reverse_renumbered_nodes = torch.zeros_like(renumbered_nodes)
+
+        reverse_renumbered_nodes[renumbered_nodes] = torch.arange(num_nodes)
+
         # renumber the edges
-        src_indices = renumbered_nodes[src_indices]
-        dst_indices = renumbered_nodes[dst_indices]
+        new_src_indices = reverse_renumbered_nodes[src_indices]
+        new_dst_indices = reverse_renumbered_nodes[dst_indices]
 
         # Base the edge placements on the source indices
-        edge_placement_tensor = mesh_vertex_rank_placement[src_indices]
+        edge_placement_tensor = contiguous_rank_mapping[new_src_indices]
+        dst_indices_rank_placement = contiguous_rank_mapping[new_dst_indices]
+
+        # TODO: Check if this is correct
 
         contigous_edge_mapping, renumbered_edges = torch.sort(edge_placement_tensor)
 
-        src_indices_rank_placement = contiguous_rank_mapping
-
         # Rearrange the indices
-        src_indices = src_indices[renumbered_edges]
-        dst_indices = dst_indices[renumbered_edges]
+        src_indices = new_src_indices[renumbered_edges]
+        dst_indices = new_dst_indices[renumbered_edges]
 
-        dst_indices_rank_placement = mesh_vertex_rank_placement[dst_indices]
         edge_features = edge_features[renumbered_edges]
+        src_indices_rank_placement = contigous_edge_mapping
+        dst_indices_rank_placement = dst_indices_rank_placement[renumbered_edges]
 
         mesh_graph_dict = {
             "node_features": node_features,
@@ -169,7 +177,7 @@ class DistributedGraphCastGraphGenerator:
             "dst_indices": dst_indices,
             "node_rank_placement": contiguous_rank_mapping,
             "edge_rank_placement": contigous_edge_mapping,
-            "src_rank_placement": edge_placement_tensor,
+            "src_rank_placement": src_indices_rank_placement,
             "dst_rank_placement": dst_indices_rank_placement,
             "mesh_vertex_renumbering": renumbered_nodes,
             "renumbered_vertices": renumbered_nodes,

@@ -35,6 +35,9 @@ from torch.autograd import Function
 from DGraph.utils import largest_split
 
 
+TIMINGS = {"Gather_Index_Forward": [], "Gather_Forward_Local": []}
+
+
 class GatherFunction(Function):
     @staticmethod
     def forward(
@@ -82,24 +85,61 @@ class GatherFunction(Function):
         batch_size = 1
         num_features = local_send_tensor.shape[2]
 
-        # Get the edges that are local to the rank
-        local_slice_mask = edge_src_ranks == rank
+        stream = torch.cuda.Stream()
+        start_process_time = torch.cuda.Event(enable_timing=True)
+        end_process_time = torch.cuda.Event(enable_timing=True)
+        if cache is not None:
+            local_indices = cache.gather_local_indices % local_send_tensor.shape[1]
+            torch.cuda.synchronize()
+            start_process_time.record(stream)
+            local_gather_mask = cache.gather_local_comm_mask
+            needs_comm = cache.gather_needs_comm
+            local_output_rows = cache.gather_num_output_rows
+            local_rank_mapping = cache.gather_local_remapped_ranks
+            recv_tensor = torch.zeros(batch_size, local_output_rows, num_features).to(
+                local_send_tensor.device
+            )
+            local_recv_tensor = cache.gather_local_recv_mapping
 
-        num_local_output_rows = int(local_slice_mask.sum().item())
+            end_process_time.record(stream)
+            torch.cuda.synchronize()
+            process_time = start_process_time.elapsed_time(end_process_time)
 
-        recv_tensor = torch.zeros(batch_size, num_local_output_rows, num_features).to(
-            local_send_tensor.device
-        )
+            TIMINGS["Gather_Index_Forward"].append(process_time)
+        else:
+            # Get the edges that are local to the rank
 
-        local_indices_slice = indices[local_slice_mask.unsqueeze(0)]
-        local_rank_mapping = edge_src_ranks[local_slice_mask]
-        local_recv_tensor = edge_dest_ranks[local_slice_mask]
+            start_process_time.record(stream)
+            local_slice_mask = edge_src_ranks == rank
 
-        # assert torch.all(local_recv_tensor == rank), local_recv_tensor
+            num_local_output_rows = int(local_slice_mask.sum().item())
 
-        local_indices = local_indices_slice % local_send_tensor.shape[1]
+            recv_tensor = torch.zeros(
+                batch_size, num_local_output_rows, num_features
+            ).to(local_send_tensor.device)
 
-        local_gather_mask = local_rank_mapping == rank
+            local_indices_slice = indices[local_slice_mask.unsqueeze(0)]
+            local_rank_mapping = edge_src_ranks[local_slice_mask]
+            local_recv_tensor = edge_dest_ranks[local_slice_mask]
+
+            # assert torch.all(local_recv_tensor == rank), local_recv_tensor
+
+            local_indices = local_indices_slice % local_send_tensor.shape[1]
+
+            local_gather_mask = local_rank_mapping == rank
+
+            needs_comm = (local_recv_tensor != rank).any()
+
+            end_process_time.record(stream)
+            torch.cuda.synchronize()
+            process_time = start_process_time.elapsed_time(end_process_time)
+
+            TIMINGS["Gather_Index_Forward"].append(process_time)
+
+        stream = torch.cuda.Stream()
+        start_process_time = torch.cuda.Event(enable_timing=True)
+        end_process_time = torch.cuda.Event(enable_timing=True)
+        start_process_time.record(stream)
 
         if local_gather_mask.sum() > 0:
 
@@ -107,17 +147,24 @@ class GatherFunction(Function):
                 local_send_tensor, local_indices, local_rank_mapping, rank
             )
 
-        recv_tensor = _nccl_alltoall_v(
-            local_send_tensor=local_send_tensor,
-            local_recv_tensor=recv_tensor,
-            indices=indices,
-            local_rank_mapping=local_recv_tensor,
-            edge_rank_loc=edge_src_ranks,
-            src_rank_loc=edge_dest_ranks,
-            rank=rank,
-            world_size=world_size,
-            cache=cache,
-        )
+        end_process_time.record(stream)
+        torch.cuda.synchronize()
+        process_time = start_process_time.elapsed_time(end_process_time)
+        TIMINGS["Gather_Forward_Local"].append(process_time)
+
+        if needs_comm:
+
+            recv_tensor = _nccl_alltoall_v(
+                local_send_tensor=local_send_tensor,
+                local_recv_tensor=recv_tensor,
+                indices=indices,
+                local_rank_mapping=local_recv_tensor,
+                edge_rank_loc=edge_src_ranks,
+                src_rank_loc=edge_dest_ranks,
+                rank=rank,
+                world_size=world_size,
+                cache=cache,
+            )
 
         return recv_tensor
 
