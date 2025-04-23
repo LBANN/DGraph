@@ -28,8 +28,8 @@ from DGraph.distributed.nccl.alltoallv_impl import (
 from DGraph.distributed.RankLocalOps import (
     RankLocalMaskedGather,
     RankLocalMaskedScatter,
-    RankLocalReNumbering,
     RankLocalRenumberingWithMapping,
+    OptimizedRankLocalMaskedGather,
 )
 from torch.autograd import Function
 from DGraph.utils import largest_split
@@ -45,7 +45,7 @@ class GatherFunction(Function):
         local_send_tensor: torch.Tensor,
         indices: torch.LongTensor,
         # vertex_ranks: torch.Tensor,
-        edge_src_ranks: torch.Tensor,
+        edge_rank_loc: torch.Tensor,
         edge_dest_ranks: torch.Tensor,
         rank: int,
         world_size: int,
@@ -63,7 +63,7 @@ class GatherFunction(Function):
 
         ctx.save_for_backward(
             indices,
-            edge_src_ranks,
+            edge_rank_loc,
             edge_dest_ranks,
             torch.tensor(num_local_input_rows),
             torch.tensor(rank),
@@ -98,7 +98,7 @@ class GatherFunction(Function):
         else:
             # Get the edges that are local to the rank
 
-            local_slice_mask = edge_src_ranks == rank
+            local_slice_mask = edge_rank_loc == rank
 
             num_local_output_rows = int(local_slice_mask.sum().item())
 
@@ -107,22 +107,22 @@ class GatherFunction(Function):
             ).to(local_send_tensor.device)
 
             local_indices_slice = indices[local_slice_mask.unsqueeze(0)]
-            local_rank_mapping = edge_src_ranks[local_slice_mask]
+            local_rank_mapping = edge_rank_loc[local_slice_mask]
             local_recv_tensor = edge_dest_ranks[local_slice_mask]
 
             # assert torch.all(local_recv_tensor == rank), local_recv_tensor
 
             local_indices = local_indices_slice % local_send_tensor.shape[1]
 
-            local_gather_mask = local_rank_mapping == rank
-
             needs_comm = (local_recv_tensor != rank).any()
 
-        if local_gather_mask.sum() > 0:
-
-            recv_tensor[:, local_gather_mask, :] = RankLocalMaskedGather(
-                local_send_tensor, local_indices, local_rank_mapping, rank
-            )
+        recv_tensor = OptimizedRankLocalMaskedGather(
+            local_send_tensor,
+            local_indices,
+            local_rank_mapping,
+            recv_tensor,
+            rank,
+        )
 
         if needs_comm:
 
@@ -131,7 +131,7 @@ class GatherFunction(Function):
                 local_recv_tensor=recv_tensor,
                 indices=indices,
                 local_rank_mapping=local_recv_tensor,
-                edge_rank_loc=edge_src_ranks,
+                edge_rank_loc=edge_rank_loc,
                 src_rank_loc=edge_dest_ranks,
                 rank=rank,
                 world_size=world_size,
@@ -611,7 +611,7 @@ class NCCLBackendEngine(BackendEngine):
             scatter_cache,
         )
 
-        return output_tensor
+        return output_tensor  # type: ignore
 
     def gather(
         self,

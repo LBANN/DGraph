@@ -48,7 +48,11 @@ def __Local_Gather_impl(_src_tensor, local_indices):
 
 
 def OptimizedRankLocalMaskedGather(
-    src: torch.Tensor, indices: torch.Tensor, rank_mapping: torch.Tensor, rank: int
+    src: torch.Tensor,
+    indices: torch.Tensor,
+    rank_mapping: torch.Tensor,
+    output: torch.Tensor,
+    rank: int,
 ) -> torch.Tensor:
     """
     This function gathers the indices from the source rank to the destination rank.
@@ -61,13 +65,18 @@ def OptimizedRankLocalMaskedGather(
     bs = src.shape[0]
     indices = indices.view(bs, -1, 1)
     num_output_rows = indices.shape[1]
+    num_src_rows = src.shape[1]
     num_features = src.shape[-1]
-    output = torch.zeros(bs, num_output_rows, num_features).to(src.device)
-
     local_masked_gather(
         src,
         indices,
         rank_mapping,
+        output,
+        bs,
+        num_src_rows,
+        num_features,
+        num_output_rows,
+        rank,
     )
     return output
 
