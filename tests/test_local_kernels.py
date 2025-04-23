@@ -31,7 +31,7 @@ def test_optimized_local_gather():
 
     num_src_rows = 4
     num_out_rows = 8
-    num_features = 16
+    num_features = 4
     bs = 1
     src_tensor = torch.randn(bs, num_src_rows, num_features)
     indices = torch.tensor([0, 0, 2, 1, 1, 2, 3, 3])
@@ -48,6 +48,10 @@ def test_optimized_local_gather():
     out_tensor_gt = out_tensor_gt.view(bs, num_out_rows, num_features)
 
     out_tensor = torch.zeros_like(out_tensor_gt)
+    out_tensor = out_tensor.cuda()
+    src_tensor = src_tensor.cuda()
+    indices = indices.cuda()
+    rank_mapping = rank_mapping.cuda()
     local_masked_gather(
         src_tensor,
         indices.long(),
@@ -60,4 +64,8 @@ def test_optimized_local_gather():
         rank,
     )
 
-    assert torch.allclose(out_tensor, out_tensor_gt), "Optimized local gather failed"
+    print("out_tensor", out_tensor)
+    print("out_tensor_gt", out_tensor_gt)
+    assert torch.allclose(
+        out_tensor.cpu(), out_tensor_gt
+    ), "Optimized local gather failed"

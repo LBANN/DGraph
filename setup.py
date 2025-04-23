@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import os
+
 import torch
 import sys
 
@@ -49,7 +50,7 @@ extra_compile_args = {
     "nvcc": [
         "-O3",
         "-gencode",
-        "arch=compute_80,code=sm_80",
+        "arch=compute_90,code=sm_90",
         "-rdc=true",
     ]
 }
@@ -58,6 +59,7 @@ local_module = CUDAExtension(
     name="torch_local",
     sources=local_p2p_sources,
     include_dirs=dgraph_include_dir,
+    dlink=True,
     library_dirs=library_dirs,
     extra_compile_args=extra_compile_args,
     extra_link_args=library_flags,
