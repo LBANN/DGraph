@@ -31,7 +31,8 @@ torch::Tensor local_masked_gather(torch::Tensor input,
                                   const int num_batches,
                                   const int num_values_rows,
                                   const int num_cols,
-                                  const int num_output_rows) 
+                                  const int num_output_rows,
+                                  const int local_rank)
 {
   CHECK_INPUT(input);
   CHECK_INPUT(indices);
@@ -43,4 +44,23 @@ torch::Tensor local_masked_gather(torch::Tensor input,
   const long *rank_local_placement_ptr = rank_local_placement.data_ptr<long>();
   float *output_ptr = output.data_ptr<float>();
 
+  dim3 block_dims, grid_dims;
+  block_dims.x = 32;
+  block_dims.y = 32;
+
+  const auto num_grids_needed = (num_output_rows + block_dims.y - 1) / block_dims.y;
+  grid_dims.y = num_grids_needed < 65535 ? num_grids_needed : 65535;
+
+  // Get the default stream for the current device
+  at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(input.device().index());
+  Local::Rank_Local_Gather_Kernel<<<>>>(input_ptr,
+                                        indices_ptr,
+                                        rank_local_placement_ptr,
+                                        output_ptr,
+                                        num_batches,
+                                        num_values_rows,
+                                        num_cols,
+                                        num_output_rows,
+                                        local_rank);
+  return output;
 }

@@ -85,13 +85,8 @@ class GatherFunction(Function):
         batch_size = 1
         num_features = local_send_tensor.shape[2]
 
-        stream = torch.cuda.Stream()
-        start_process_time = torch.cuda.Event(enable_timing=True)
-        end_process_time = torch.cuda.Event(enable_timing=True)
         if cache is not None:
             local_indices = cache.gather_local_indices % local_send_tensor.shape[1]
-            torch.cuda.synchronize()
-            start_process_time.record(stream)
             local_gather_mask = cache.gather_local_comm_mask
             needs_comm = cache.gather_needs_comm
             local_output_rows = cache.gather_num_output_rows
@@ -100,16 +95,9 @@ class GatherFunction(Function):
                 local_send_tensor.device
             )
             local_recv_tensor = cache.gather_local_recv_mapping
-
-            end_process_time.record(stream)
-            torch.cuda.synchronize()
-            process_time = start_process_time.elapsed_time(end_process_time)
-
-            TIMINGS["Gather_Index_Forward"].append(process_time)
         else:
             # Get the edges that are local to the rank
 
-            start_process_time.record(stream)
             local_slice_mask = edge_src_ranks == rank
 
             num_local_output_rows = int(local_slice_mask.sum().item())
@@ -130,27 +118,11 @@ class GatherFunction(Function):
 
             needs_comm = (local_recv_tensor != rank).any()
 
-            end_process_time.record(stream)
-            torch.cuda.synchronize()
-            process_time = start_process_time.elapsed_time(end_process_time)
-
-            TIMINGS["Gather_Index_Forward"].append(process_time)
-
-        stream = torch.cuda.Stream()
-        start_process_time = torch.cuda.Event(enable_timing=True)
-        end_process_time = torch.cuda.Event(enable_timing=True)
-        start_process_time.record(stream)
-
         if local_gather_mask.sum() > 0:
 
             recv_tensor[:, local_gather_mask, :] = RankLocalMaskedGather(
                 local_send_tensor, local_indices, local_rank_mapping, rank
             )
-
-        end_process_time.record(stream)
-        torch.cuda.synchronize()
-        process_time = start_process_time.elapsed_time(end_process_time)
-        TIMINGS["Gather_Forward_Local"].append(process_time)
 
         if needs_comm:
 
