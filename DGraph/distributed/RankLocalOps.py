@@ -17,6 +17,14 @@ This file contains the implementation of the RankLocalOps.
 
 import torch
 
+try:
+    from torch_local import local_masked_gather, local_masked_scatter
+
+    _LOCAL_OPT_KERNELS_AVAILABLE = True
+except ImportError:
+    _LOCAL_OPT_KERNELS_AVAILABLE = False
+import warnings
+
 
 def RankLocalMaskedGather(
     _src: torch.Tensor, indices: torch.Tensor, rank_mapping: torch.Tensor, rank: int
@@ -29,6 +37,48 @@ def RankLocalMaskedGather(
     local_indices = local_indices.view(1, -1, 1).expand(1, -1, num_features)
     local_gathered_data = torch.gather(_src, 1, local_indices)
     return local_gathered_data
+
+
+def __Local_Gather_impl(_src_tensor, local_indices):
+    num_features = _src_tensor.shape[-1]
+    bs = _src_tensor.shape[0]
+    local_indices = local_indices.view(bs, -1, 1).expand(bs, -1, num_features)
+    local_gathered_data = torch.gather(_src_tensor, 1, local_indices)
+    return local_gathered_data
+
+
+def OptimizedRankLocalMaskedGather(
+    src: torch.Tensor,
+    indices: torch.Tensor,
+    rank_mapping: torch.Tensor,
+    output: torch.Tensor,
+    rank: int,
+) -> torch.Tensor:
+    """
+    This function gathers the indices from the source rank to the destination rank.
+    """
+    if not _LOCAL_OPT_KERNELS_AVAILABLE:
+        warnings.warn(
+            "Optimized local kernels are not available. Falling back to the default implementation."
+        )
+        return RankLocalMaskedGather(src, indices, rank_mapping, rank)
+    bs = src.shape[0]
+    indices = indices.view(bs, -1, 1)
+    num_output_rows = indices.shape[1]
+    num_src_rows = src.shape[1]
+    num_features = src.shape[-1]
+    local_masked_gather(
+        src,
+        indices,
+        rank_mapping,
+        output,
+        bs,
+        num_src_rows,
+        num_features,
+        num_output_rows,
+        rank,
+    )
+    return output
 
 
 def OutOfPlaceRankLocalMaskedGather(

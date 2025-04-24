@@ -12,12 +12,13 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import os
+
 import torch
-import glob
 import sys
 
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+import torch.utils.cpp_extension
 
 disable_dgraph_nvshmem = False
 if "DISABLE_DGRAPH_NVSHMEM" in os.environ:
@@ -28,7 +29,49 @@ nvshmem_p2p_sources = [
     "DGraph/distributed/csrc/torch_nvshmem_p2p_bindings.cpp",
 ]
 
+local_p2p_sources = [
+    "DGraph/distributed/csrc/torch_local_kernels.cu",
+    "DGraph/distributed/csrc/torch_local_bindings.cpp",
+]
+
 kwargs = {}
+
+kwargs["ext_modules"] = []
+
+cuda_home = os.environ["CUDA_HOME"]
+cuda_lib = os.path.join(cuda_home, "lib64")
+cur_dir = os.path.dirname(os.path.abspath(__file__))
+dgraph_include_dir = [os.path.join(cur_dir, "DGraph", "distributed", "include")]
+
+library_flags = [
+    "-Wl,--no-as-needed",
+]
+
+extra_compile_args = {
+    "nvcc": [
+        "-O3",
+        "-gencode",
+        "arch=compute_80,code=sm_80",
+        "-gencode",
+        "arch=compute_86,code=sm_86",
+        "-gencode",
+        "arch=compute_90,code=sm_90",
+        "-rdc=true",
+    ]
+}
+library_dirs = [cuda_lib]
+local_module = CUDAExtension(
+    name="torch_local",
+    sources=local_p2p_sources,
+    include_dirs=dgraph_include_dir,
+    dlink=True,
+    library_dirs=library_dirs,
+    extra_compile_args=extra_compile_args,
+    extra_link_args=library_flags,
+)
+
+kwargs["ext_modules"].append(local_module)
+
 if not disable_dgraph_nvshmem:
     # Check if CUDA is available
     if not torch.cuda.is_available() and "CUDA_HOME" not in os.environ:
@@ -63,7 +106,6 @@ if not disable_dgraph_nvshmem:
     mpi_lib = os.path.join(mpi_home, "lib")
 
     cuda_home = os.environ["CUDA_HOME"]
-    # print(f"Found CUDA_HOME: {cuda_home}")
     cuda_lib = os.path.join(cuda_home, "lib64")
 
     cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -81,9 +123,19 @@ if not disable_dgraph_nvshmem:
             "-O3",
             "-gencode",
             "arch=compute_80,code=sm_80",
+            "-gencode",
+            "arch=compute_86,code=sm_86",
+            "-gencode",
+            "arch=compute_90,code=sm_90",
             "-rdc=true",
         ]
     }
+
+    # Hack to let setuptools build extensions with half precision
+    # operators
+    torch.utils.cpp_extension.COMMON_NVCC_FLAGS = [
+        "--expt-relaxed-constexpr",
+    ]
 
     nvshmem_module = CUDAExtension(
         name="torch_nvshmem_p2p",
@@ -96,7 +148,7 @@ if not disable_dgraph_nvshmem:
         extra_link_args=library_flags,
     )
 
-    kwargs["ext_modules"] = [nvshmem_module]
+    kwargs["ext_modules"].append(nvshmem_module)
 
 
 EXTRAS_REQUIRE = {
@@ -110,7 +162,6 @@ if sys.version_info < (3, 11):
 setup(
     name="DGraph",
     py_modules=["DGraph"],
-    # ext_modules=[nvshmem_module],
     install_requires=["torch", "numpy", "ninja", "mpi4py>=3.1.4"],
     extras_require=EXTRAS_REQUIRE,
     cmdclass={"build_ext": BuildExtension},

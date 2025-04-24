@@ -208,9 +208,9 @@ class MeshEdgeBlock(nn.Module):
         dst_node_features = self.comm.gather(
             dst_node_features, dst_indices, dst_rank_mapping
         )
-        conccated_features = torch.cat(
+        concatenated_features = torch.cat(
             [src_node_features, dst_node_features, edge_features], dim=-1
         )
         # Apply the MLP
-        edge_features_new = self.mesh_mlp(conccated_features) + edge_features
+        edge_features_new = self.mesh_mlp(concatenated_features) + edge_features
         return edge_features_new
