@@ -1,3 +1,66 @@
 [build-system]
-requires = ["setuptools", "wheel", "torch"] # Add other build dependencies here
-build-backend = "setuptools.build_meta"
+requires = [
+  "scikit-build-core>=0.10",
+  "pybind11"
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "DGraph"
+version = "0.0.1"
+description = "A deep learning library for training graph neural networks at scale"
+authors = [
+  { name = "Shehtab Zaman", email = "zaman1@llnl.gov" },
+  { name = "Tal Ben Nun", email = "bennun2@llnl.gov" },
+  { name = "Tom Benson", email = "benson31@llnl.gov" },
+  { name = "Pier Fiedorowicz", email = "fiedorowicz1@llnl.gov" },
+  { name = "Brian Van Essen", email = "vanessen1@llnl.gov" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+  "Development Status :: 4 - Beta",
+
+  "License :: OSI Approved :: Apache Software License",
+
+  "Programming Language :: C++",
+
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+
+  "Environment :: GPU",
+  "Environment :: GPU :: NVIDIA CUDA :: 12 :: 12.2",
+
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: System :: Distributed Computing",
+
+  "Private :: Do Not Upload"
+]
+# dependencies=[
+#   "torch",
+#   "numpy",
+#   "mpi4py>=3.1.4",
+# ]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "skbuild"
+
+[tool.scikit-build.cmake]
+version = ">=3.25.0"
+
+[tool.scikit-build.ninja]
+version = ">=1.11"
+make-fallback = false
+
+[tool.scikit-build.wheel]
+expand-macos-universal-tags = true
+install-dir = "DGraph"
