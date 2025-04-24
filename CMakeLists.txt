@@ -1,4 +1,46 @@
 cmake_minimum_required(VERSION 3.25.0)
+
+# This is a bit messy, where it comes before project(), but it needs
+# to come before CUDA is enabled (I could also move that out of
+# project() into an explicit enable_language(), but this doesn't
+# require the CXX compiler, so it _can_ go here).
+if (NOT CMAKE_CUDA_ARCHITECTURES AND NOT TORCH_CUDA_ARCH_LIST)
+  execute_process(
+    COMMAND nvidia-smi --query-gpu "compute_cap" --format=csv,noheader
+    RESULT_VARIABLE _nvidia_smi_retcode
+    OUTPUT_VARIABLE _nvidia_smi_output
+    ERROR_QUIET
+  )
+
+  if (_nvidia_smi_retcode EQUAL 0 AND _nvidia_smi_output)
+    string(REPLACE "\n" ";" _nvidia_compute_caps "${_nvidia_smi_output}")
+    list(REMOVE_ITEM _nvidia_compute_caps "")
+    list(SORT _nvidia_compute_caps COMPARE NATURAL)
+    list(REMOVE_DUPLICATES _nvidia_compute_caps)
+    string(REPLACE "." "" _nvidia_archs "${_nvidia_compute_caps}")
+
+    # TRB: I don't _think_ these need to go in the cache... But I'm
+    # not opposed to it.
+    set(CMAKE_CUDA_ARCHITECTURES ${_nvidia_archs})
+    set(TORCH_CUDA_ARCH_LIST ${_nvidia_compute_caps})
+  else ()
+    set(CMAKE_CUDA_ARCHITECTURES 70 80 90)
+    set(TORCH_CUDA_ARCH_LIST 7.0 8.0 9.0)
+  endif ()
+elseif (NOT CMAKE_CUDA_ARCHITECTURES)
+  string(REPLACE "." "" _nvidia_archs "${TORCH_CUDA_ARCH_LIST}")
+  set(CMAKE_CUDA_ARCHITECTURES ${_nvidia_archs})
+elseif (NOT TORCH_CUDA_ARCH_LIST)
+  # AFAIK, these are all of the form XY, so just put a '.' in there...
+  list(TRANSFORM CMAKE_CUDA_ARCHITECTURES
+    REPLACE "([0-9])([0-9])" "\\1.\\2"
+    OUTPUT_VARIABLE TORCH_CUDA_ARCH_LIST
+  )
+endif ()
+
+message(STATUS "Detected CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}")
+message(STATUS "Detected TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}")
+
 project(
   DGraph
   VERSION 0.0.1
@@ -18,7 +60,6 @@ list(APPEND
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
 )
 
-find_package(CUDAToolkit REQUIRED)
 find_package(MPI 3.0 REQUIRED COMPONENTS CXX)
 find_package(Torch 2.6 REQUIRED CONFIG)
 
