@@ -64,8 +64,6 @@ def test_optimized_local_gather():
         rank,
     )
 
-    print("out_tensor", out_tensor)
-    print("out_tensor_gt", out_tensor_gt)
     assert torch.allclose(
         out_tensor.cpu(), out_tensor_gt
     ), "Optimized local gather failed"

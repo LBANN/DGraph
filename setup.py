@@ -18,6 +18,7 @@ import sys
 
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+import torch.utils.cpp_extension
 
 disable_dgraph_nvshmem = False
 if "DISABLE_DGRAPH_NVSHMEM" in os.environ:
@@ -129,6 +130,12 @@ if not disable_dgraph_nvshmem:
             "-rdc=true",
         ]
     }
+
+    # Hack to let setuptools build extensions with half precision
+    # operators
+    torch.utils.cpp_extension.COMMON_NVCC_FLAGS = [
+        "--expt-relaxed-constexpr",
+    ]
 
     nvshmem_module = CUDAExtension(
         name="torch_nvshmem_p2p",
