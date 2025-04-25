@@ -156,6 +156,20 @@ if (DGRAPH_ENABLE_NVSHMEM)
     pybind11::headers
   )
 
+  get_filename_component(_nvshmem_lib_dir
+    "${NVSHMEM_LIBRARY}"
+    DIRECTORY
+  )
+  get_target_property(_nvshmem_install_rpath
+    torch_nvshmem_p2p
+    INSTALL_RPATH
+  )
+  if (_nvshmem_install_rpath)
+    list(APPEND _nvshmem_install_rpath "${_nvshmem_lib_dir}")
+  else ()
+    set(_nvshmem_install_rpath "${_nvshmem_lib_dir}")
+  endif ()
+
   set_target_properties(torch_nvshmem_p2p
     PROPERTIES
     CXX_STANDARD 17
@@ -168,6 +182,7 @@ if (DGRAPH_ENABLE_NVSHMEM)
     CUDA_SEPARABLE_COMPILATION ON
 
     INSTALL_RPATH_USE_LINK_PATH ON
+    INSTALL_RPATH "${_nvshmem_install_rpath}"
   )
 
   install(TARGETS torch_nvshmem_p2p
