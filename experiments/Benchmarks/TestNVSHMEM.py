@@ -141,12 +141,13 @@ def main():
     rank = comm.get_rank()
     world_size = comm.get_world_size()
 
-    dist.init_process_group(
-        backend="nccl",
-        rank=rank,
-        world_size=world_size,
-        init_method=f"file://{os.getcwd()}/DGraph_tmpfile",
-    )
+    if not dist.is_initialized():
+        dist.init_process_group(
+            backend="nccl",
+            rank=rank,
+            world_size=world_size,
+            init_method=f"file://{os.getcwd()}/DGraph_tmpfile",
+        )
 
     safe_create_dir(log_dir, rank)
 
