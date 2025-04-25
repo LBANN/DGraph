@@ -16,7 +16,7 @@
 #include <torch/extension.h>
 #include "torch_nvshmem_p2p.hpp"
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+PYBIND11_MODULE(torch_nvshmem_p2p, m)
 {
   py::class_<NVSHMEMP2P>(m, "NVSHMEMP2P")
       .def(py::init<>())

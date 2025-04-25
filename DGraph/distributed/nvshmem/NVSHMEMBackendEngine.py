@@ -14,7 +14,7 @@
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
-import torch_nvshmem_p2p as nvshmem
+import DGraph.torch_nvshmem_p2p as nvshmem
 import warnings
 from torch.autograd import Function
 

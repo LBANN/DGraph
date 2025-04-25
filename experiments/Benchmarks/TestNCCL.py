@@ -180,7 +180,8 @@ def main():
     num_iters = args.num_iters
     log_dir = args.log_dir
 
-    dist.init_process_group(backend="nccl")
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
     comm = Communicator.init_process_group("nccl")
 
     world_size = dist.get_world_size()
