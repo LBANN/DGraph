@@ -17,7 +17,7 @@
 #include <torch/extension.h>
 #include "torch_local.hpp"
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+PYBIND11_MODULE(torch_local, m)
 {
   m.def("local_masked_gather", &local_masked_gather, "Masked Gather");
   m.def("local_masked_scatter", &local_masked_scatter, "Masked Scatter");
