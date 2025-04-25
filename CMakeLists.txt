@@ -63,6 +63,21 @@ list(APPEND
 find_package(MPI 3.0 REQUIRED COMPONENTS CXX)
 find_package(Torch 2.6 REQUIRED CONFIG)
 
+# Also, torch_python!
+# We also don't care about the limited API nonsense, so we can use
+# libtorch. Let's find it.
+if (TORCH_LIBRARY)
+  get_filename_component(TORCH_LIB_DIR "${TORCH_LIBRARY}" DIRECTORY)
+endif ()
+find_library(TORCH_PYTHON_LIBRARY
+  torch_python
+  HINTS
+  ${TORCH_LIB_DIR}
+  ${Python_SITELIB}/torch/lib64
+  ${Python_SITELIB}/torch/lib
+  NO_DEFAULT_PATH)
+find_library(TORCH_PYTHON_LIBRARY torch_python REQUIRED)
+
 if (DGRAPH_ENABLE_NVSHMEM)
   find_package(NVSHMEM 2.5 REQUIRED MODULE)
 endif ()
@@ -81,6 +96,7 @@ target_link_libraries(torch_local
   PUBLIC
   MPI::MPI_CXX
   torch
+  ${TORCH_PYTHON_LIBRARY}
   PRIVATE
   pybind11::headers
 )
@@ -135,6 +151,7 @@ if (DGRAPH_ENABLE_NVSHMEM)
     NVSHMEM::NVSHMEM
     MPI::MPI_CXX
     torch
+    ${TORCH_PYTHON_LIBRARY}
     PRIVATE
     pybind11::headers
   )
