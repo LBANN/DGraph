@@ -18,7 +18,7 @@ This file contains the implementation of the RankLocalOps.
 import torch
 
 try:
-    from torch_local import local_masked_gather, local_masked_scatter
+    from DGraph.torch_local import local_masked_gather, local_masked_scatter
 
     _LOCAL_OPT_KERNELS_AVAILABLE = True
 except ImportError:
