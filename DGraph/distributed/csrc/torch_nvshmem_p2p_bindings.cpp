@@ -16,12 +16,21 @@
 #include <torch/extension.h>
 #include "torch_nvshmem_p2p.hpp"
 
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+PYBIND11_MODULE(torch_nvshmem_p2p, m)
+{
   py::class_<NVSHMEMP2P>(m, "NVSHMEMP2P")
-    .def(py::init<>())
-    .def("init", &NVSHMEMP2P::init)
-    .def("finalize", &NVSHMEMP2P::finalize)
-    .def("dist_put", &NVSHMEMP2P::dist_put)
-    .def("dist_get", &NVSHMEMP2P::dist_get);
+      .def(py::init<>())
+      .def("init", &NVSHMEMP2P::init)
+      .def("finalize", &NVSHMEMP2P::finalize)
+      .def("dist_put", &NVSHMEMP2P::dist_put)
+      .def("allocate_symmetric_memory", &NVSHMEMP2P::AllocateSymmetricMemory)
+      .def("clone_tensor", &NVSHMEMP2P::clone_tensor)
+      .def("padded_clone_tensor", &NVSHMEMP2P::padded_clone_tensor)
+      .def("register_memory", &NVSHMEMP2P::register_memory)
+      .def("deregister_memory", &NVSHMEMP2P::deregister_memory)
+      .def("dist_get", &NVSHMEMP2P::dist_get)
+      .def("get_rank", &NVSHMEMP2P::get_rank)
+      .def("get_world_size", &NVSHMEMP2P::get_world_size)
+      .def("barrier", &NVSHMEMP2P::barrier)
+      .def("barrier_stream", &NVSHMEMP2P::barrier_stream);
 }

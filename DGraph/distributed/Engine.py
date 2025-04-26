@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
+from typing import Optional, Union
 
 
 class BackendEngine(object):
@@ -42,12 +43,25 @@ class BackendEngine(object):
         """Get the total number of processes."""
         raise NotImplementedError
 
-    def scatter(self, *args, **kwargs) -> torch.Tensor:
-        """Scatter the input tensor to all processes in the group."""
+    def scatter(
+        self,
+        src_tensor: torch.Tensor,
+        indices: Union[torch.Tensor, torch.LongTensor],
+        output_size: int,
+        rank_mappings: Optional[torch.Tensor] = None,
+        *args,
+        **kwargs
+    ) -> torch.Tensor:
         raise NotImplementedError
 
-    def gather(self, *args, **kwargs) -> torch.Tensor:
-        """Gather tensors from all processes in the group."""
+    def gather(
+        self,
+        src_tensor: torch.Tensor,
+        indices: Union[torch.Tensor, torch.LongTensor],
+        rank_mappings: Optional[torch.Tensor] = None,
+        *args,
+        **kwargs
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     def finalize(self) -> None:

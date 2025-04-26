@@ -16,20 +16,57 @@
 #pragma once
 #include <torch/extension.h>
 
+#include "mpi.h"
 
-#define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
-#define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
+#define MPICHECK(cmd)                          \
+  do                                           \
+  {                                            \
+    int e = cmd;                               \
+    if (e != MPI_SUCCESS)                      \
+    {                                          \
+      printf("Failed: MPI error %s:%d '%d'\n", \
+             __FILE__, __LINE__, e);           \
+      exit(EXIT_FAILURE);                      \
+    }                                          \
+  } while (0)
 
-class NVSHMEMP2P {
-  public:
+class NVSHMEMP2P
+{
+public:
+  NVSHMEMP2P() {};
+  static void init();
+  static void finalize();
+  static void dist_put(torch::Tensor src,
+                       torch::Tensor dst,
+                       torch::Tensor indices,
+                       torch::Tensor destination_ranks,
+                       const int mini_batches,
+                       const int num_input_rows,
+                       const int cols,
+                       const int num_output_rows);
+  static void dist_get(torch::Tensor src,
+                       torch::Tensor dst,
+                       torch::Tensor indices,
+                       torch::Tensor source_ranks,
+                       const int mini_batches,
+                       const int num_input_rows,
+                       const int cols,
+                       const int num_output_rows);
 
-    NVSHMEMP2P(){};
-    static void init(int rank, int world_size);
-    static void finalize();
-    void  dist_put(torch::Tensor src, torch::Tensor dst, torch::Tensor indices);
-    void  dist_get(torch::Tensor src, torch::Tensor dst, torch::Tensor indices);
-    static int m_rank;
-    static int m_world_size;
-    static bool m_initialized;
+  static void barrier();
+  static void barrier_stream(const int device_ordinal);
+  static torch::Tensor AllocateSymmetricMemory(const int size,
+                                               const int device_ordinal);
+  static torch::Tensor clone_tensor(torch::Tensor tensor);
+  static torch::Tensor padded_clone_tensor(torch::Tensor tensor,
+                                           const int padded_size);
+  static void register_memory(torch::Tensor tensor);
+  static void deregister_memory(torch::Tensor tensor);
+  static int get_rank();
+  static int get_world_size();
+  static void set_device(int device);
+
+  static int m_rank;
+  static int m_world_size;
+  static bool m_initialized;
 };

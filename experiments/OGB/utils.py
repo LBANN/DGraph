@@ -9,6 +9,12 @@ def cleanup():
         dist.destroy_process_group()
 
 
+def make_experiment_log(fname, rank):
+    if rank == 0:
+        with open(fname, "w") as f:
+            f.write("")
+
+
 def write_experiment_log(log: str, fname: str, rank: int):
     if rank == 0:
         with open(fname, "a") as f:

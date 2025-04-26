@@ -11,4 +11,10 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
-from DGraph.distributed.nccl.NCCLBackendEngine import NCCLBackendEngine
+from DGraph.distributed.nccl.NCCLBackendEngine import NCCLBackendEngine, TIMINGS
+from DGraph.distributed.nccl._nccl_cache import (
+    NCCLGatherCache,
+    NCCLScatterCache,
+    NCCLScatterCacheGenerator,
+    NCCLGatherCacheGenerator,
+)
