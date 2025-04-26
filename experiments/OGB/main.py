@@ -329,7 +329,8 @@ def main(
         comm = SingleProcessDummyCommunicator()
 
     else:
-        dist.init_process_group(backend="nccl")
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl")
         comm = Communicator.init_process_group(_communicator)
 
         # Must pass the node rank placement file the first time
