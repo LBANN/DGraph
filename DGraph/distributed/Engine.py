@@ -16,16 +16,31 @@ from typing import Optional, Union
 
 
 class BackendEngine(object):
+    """The abstract DGraph communication engine used by the Communicator. The engine
+    is responsible for initializing the communication backend library, and performing
+    the necessary communication operations.
+
+    The engine should be implemented by the backend-specific classes. We currently
+    supports the following backends:
+    - NCCL
+    - MPI
+    - NVSHMEM
+    """
+
     def __init__(self):
+        """Initialize the communication backend library."""
         pass
 
     def init_process_group(self, *args, **kwargs):
+        """Initialize the communication backend library."""
         raise NotImplementedError
 
     def get_rank(self) -> int:
+        """Get the rank of the current process."""
         raise NotImplementedError
 
     def get_world_size(self) -> int:
+        """Get the total number of processes."""
         raise NotImplementedError
 
     def scatter(
