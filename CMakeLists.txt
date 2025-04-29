@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.25.0)
 # require the CXX compiler, so it _can_ go here).
 if (NOT CMAKE_CUDA_ARCHITECTURES AND NOT TORCH_CUDA_ARCH_LIST)
   execute_process(
-    COMMAND nvidia-smi --query-gpu "compute_cap" --format=csv,noheader
+    COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader
     RESULT_VARIABLE _nvidia_smi_retcode
     OUTPUT_VARIABLE _nvidia_smi_output
     ERROR_QUIET
@@ -59,7 +59,7 @@ list(APPEND
   CMAKE_MODULE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
 )
-
+find_package(CUDAToolkit REQUIRED)
 find_package(MPI 3.0 REQUIRED COMPONENTS CXX)
 find_package(Torch 2.6 REQUIRED CONFIG)
 
@@ -152,6 +152,8 @@ if (DGRAPH_ENABLE_NVSHMEM)
     MPI::MPI_CXX
     torch
     ${TORCH_PYTHON_LIBRARY}
+    CUDA::nvml
+    CUDA::cuda_driver
     PRIVATE
     pybind11::headers
   )
