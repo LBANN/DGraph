@@ -69,8 +69,8 @@ def OptimizedRankLocalMaskedGather(
     num_features = src.shape[-1]
     local_masked_gather(
         src,
-        indices,
-        rank_mapping,
+        indices.cuda(),
+        rank_mapping.cuda(),
         output,
         bs,
         num_src_rows,
