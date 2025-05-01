@@ -41,3 +41,4 @@ python preprocess.py --g <graph_file> --p <partition_file> --np <num_partitions>
 
 The script will generate the necessary files for DGraph to run a distributed training partitioned in `<num_partitions>` partitions. 
 
+
