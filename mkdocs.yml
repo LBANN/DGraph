@@ -1,0 +1,17 @@
+site_name: DGraph
+
+plugins:
+- mkdocstrings:
+    handlers:
+      python:
+        options:
+          show_root_heading: false
+
+theme:
+  name: material
+
+nav:
+  - Home: index.md
+  - Project Structure: project-structure.md
+  - GitHub: https://github.com/LBANN/DGraph
+  - Reference: reference.md
