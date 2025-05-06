@@ -4,9 +4,7 @@ Enabling the NVSHMEM backend in DGraph requires MPI and NVSHMEM to be installed 
 
 ## Pre-requisites
 
-DGraph must be built with NVSHMEM, MPI, and CUDA in order to use the NVSHMEM backend. The
-setup script will install the appropriate submodules but the dependencies must be installed
-and available on the system.
+DGraph must be built with NVSHMEM, MPI, and CUDA in order to use the NVSHMEM backend. The setup script will install the appropriate submodules but the dependencies must be installed and available on the system.
 
 DGraph searches for NVSHMEM, MPI, and CUDA based on the following environment variables:
 - `NVSHMEM_HOME`
@@ -40,3 +38,19 @@ NVSHMEM compilation information can be usually found by running the `nvshmem-inf
 $NVSHMEM_HOME/bin/nvshmem-info -b
 ```
 
+## Building DGraph with NVSHMEM
+To build DGraph with NVSHMEM, make sure the environment variables are set and run the following command:
+
+```shell
+pip install -e .
+```
+
+## Running DGraph with NVSHMEM
+
+DGraph builds on top of the PyTorch distributed package, so it is important to initialize the PyTorch distributed package before using DGraph, but also initialize MPI. Using a distributed launcher simplifies this process. We recommend using [`torchrun-hpc](https://github.com/lbann/HPC-launcher) 
+
+```shell
+torchrun-hpc -N<NUM_NODES> -n<NUM_PROCESSES_PER_NODE> NVSHMEM_init.py
+```
+
+The script assumes that the launcher starts the processes and `torch.dist` is initialized. If not using a launcher, you must initialize the PyTorch distributed package. 
