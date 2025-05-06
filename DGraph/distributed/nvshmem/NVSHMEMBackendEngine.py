@@ -26,9 +26,13 @@ def _nvshmmem_gather(send_tensor, indices, rank_mappings):
     num_output_rows = indices.shape[1]
     num_features = send_tensor.shape[2]
 
-    gathered_tensor = torch.zeros((bs, num_output_rows, num_features)).to(
-        send_tensor.device
+    num_elem = bs * num_output_rows * num_features
+    gathered_tensor = nvshmem.NVSHMEMP2P.allocate_symmetric_memory(
+        num_elem, send_tensor.device.index
     )
+    gathered_tensor.fill_(0).float()
+    gathered_tensor = gathered_tensor.reshape((bs, num_output_rows, num_features))
+
     # Gather the tensors
 
     # TODO: Add an option to cache the max value
