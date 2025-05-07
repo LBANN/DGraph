@@ -91,6 +91,21 @@ def test_nvshmem_backend_init(init_nvshmem_backend):
     print(f"Rank: {rank}")
 
 
+def test_nvshmem_backend_dist_init(init_nvshmem_backend):
+    # Check if the initialization of the NVSHMEM backend is correct
+    # and matches the NCCL backend in terms of rank and world size
+    comm = init_nvshmem_backend
+    rank = comm.get_rank()
+    world_size = comm.get_world_size()
+
+    if not dist.is_initialized():
+        print("NCCL process group not initialized, skipping test...")
+        return True
+    assert dist.is_initialized(), "NCCL process group not initialized"
+    assert dist.get_rank() == rank, "NCCL process group rank mismatch"
+    assert dist.get_world_size() == world_size, "NCCL process group world size mismatch"
+
+
 def test_nvshmem_backend_gather(init_nvshmem_backend, setup_gather_data):
     comm: Comm.Communicator = init_nvshmem_backend
     all_rank_input_data, all_edge_coo, rank_mappings, all_rank_output = (
