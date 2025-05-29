@@ -30,6 +30,7 @@ cache_prefix = {
     "ogbn-arxiv": "arxiv",
     "ogbn-products": "products",
     "ogbn-papers100M": "papers100M",
+    "ogbn-proteins": "proteins",
 }
 
 
@@ -85,7 +86,7 @@ def generate_cache_file(
 
 
 def main(dset: str, world_size: int, node_rank_placement_file: str):
-    assert dset in ["ogbn-arxiv", "ogbn-products", "ogbn-papers100M"]
+    assert dset in ["ogbn-arxiv", "ogbn-products", "ogbn-papers100M", "ogbn-proteins"]
 
     assert world_size > 0
     assert os.path.exists(
