@@ -137,13 +137,13 @@ def RankLocalRenumberingWithMapping(_indices, rank_mapping):
     """
     This function removes duplicates from the indices tensor.
     """
-    unique_indices = torch.unique(_indices).to(_indices.device)
+    unique_indices, inverse_indices = torch.unique(_indices, return_inverse=True)
     rank_mapping = rank_mapping.to(_indices.device)
-    renumbered_indices = torch.zeros_like(_indices)
-    unique_rank_mapping = torch.zeros_like(unique_indices)
-    for i, idx in enumerate(unique_indices):
-        renumbered_indices[_indices == idx] = i
-        unique_rank_mapping[i] = rank_mapping[_indices == idx][0]
+    renumbered_indices = inverse_indices
+    unique_rank_mapping = torch.zeros_like(
+        unique_indices, dtype=rank_mapping.dtype, device=rank_mapping.device
+    )
+    unique_rank_mapping.scatter_(0, inverse_indices, rank_mapping)
 
     return renumbered_indices, unique_indices, unique_rank_mapping
 
