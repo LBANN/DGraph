@@ -91,6 +91,7 @@ def _run_experiment(
     hidden_dims: int = 128,
     num_classes: int = 40,
     use_cache: bool = False,
+    dset_name: str = "arxiv",
 ):
     local_rank = comm.get_rank() % torch.cuda.device_count()
     print(f"Rank: {local_rank} Local Rank: {local_rank}")
@@ -114,9 +115,9 @@ def _run_experiment(
     node_features, edge_indices, rank_mappings, labels = dataset[0]
 
     node_features = node_features.to(device).unsqueeze(0)
-    edge_indices = edge_indices.to(device)[:, :-1].unsqueeze(0)
+    edge_indices = edge_indices.to(device).unsqueeze(0)
     labels = labels.to(device).unsqueeze(0)
-    rank_mappings = rank_mappings[:, :-1]
+    rank_mappings = rank_mappings
 
     if rank == 0:
         print("*" * 80)
@@ -144,42 +145,55 @@ def _run_experiment(
 
     if use_cache:
         print(f"Rank: {rank} Using Cache. Generating Cache")
-        start_time = perf_counter()
-        src_indices = edge_indices[:, 0, :]
-        dst_indices = edge_indices[:, 1, :]
 
-        # This says where the edges are located
-        edge_placement = rank_mappings[0]
+        # Check if the cache files already exist
+        cache_prefix = f"cache/{dset_name}"
 
-        # These say where the source and destination nodes are located
-        edge_src_placement = rank_mappings[
-            0
-        ]  # Redundant but making explicit for clarity
-        edge_dest_placement = rank_mappings[1]
+        scatter_cache_file = f"{cache_prefix}_scatter_cache_{world_size}_{rank}.pt"
+        gather_cache_file = f"{cache_prefix}_gather_cache_{world_size}_{rank}.pt"
 
-        num_input_rows = node_features.size(1)
-        local_num_edges = (edge_placement == rank).sum().item()
+        if os.path.exists(scatter_cache_file):
+            scatter_cache = torch.load(scatter_cache_file, weights_only=False)
+        if os.path.exists(gather_cache_file):
+            gather_cache = torch.load(gather_cache_file, weights_only=False)
 
-        if gather_cache is None:
-            gather_cache = NCCLGatherCacheGenerator(
-                dst_indices,
-                edge_placement,
-                edge_dest_placement,
-                num_input_rows,
-                rank,
-                world_size,
-            )
-        if scatter_cache is None:
-            nodes_per_rank = dataset.graph_obj.get_nodes_per_rank()
+        if gather_cache is None or scatter_cache is None:
+            start_time = perf_counter()
+            src_indices = edge_indices[:, 0, :]
+            dst_indices = edge_indices[:, 1, :]
 
-            scatter_cache = NCCLScatterCacheGenerator(
-                src_indices,
-                edge_placement,
-                edge_src_placement,
-                nodes_per_rank[rank],
-                rank,
-                world_size,
-            )
+            # This says where the edges are located
+            edge_placement = rank_mappings[0]
+
+            # These say where the source and destination nodes are located
+            edge_src_placement = rank_mappings[
+                0
+            ]  # Redundant but making explicit for clarity
+            edge_dest_placement = rank_mappings[1]
+
+            num_input_rows = node_features.size(1)
+            local_num_edges = (edge_placement == rank).sum().item()
+
+            if gather_cache is None:
+                gather_cache = NCCLGatherCacheGenerator(
+                    dst_indices,
+                    edge_placement,
+                    edge_dest_placement,
+                    num_input_rows,
+                    rank,
+                    world_size,
+                )
+            if scatter_cache is None:
+                nodes_per_rank = dataset.graph_obj.get_nodes_per_rank()
+
+                scatter_cache = NCCLScatterCacheGenerator(
+                    src_indices,
+                    edge_placement,
+                    edge_src_placement,
+                    nodes_per_rank[rank],
+                    rank,
+                    world_size,
+                )
 
         # Sanity checks for the cache
         for key, value in gather_cache.gather_send_local_placement.items():
@@ -208,11 +222,10 @@ def _run_experiment(
         end_time = perf_counter()
         print(f"Rank: {rank} Cache Generation Time: {end_time - start_time:.4f} s")
 
-        if rank == 0:
-            with open(f"{log_prefix}_gather_cache_{world_size}.pt", "wb") as f:
-                torch.save(gather_cache, f)
-            with open(f"{log_prefix}_scatter_cache_{world_size}.pt", "wb") as f:
-                torch.save(scatter_cache, f)
+        with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
+            torch.save(gather_cache, f)
+        with open(f"{log_prefix}_scatter_cache_{world_size}_{rank}.pt", "wb") as f:
+            torch.save(scatter_cache, f)
         print(f"Rank: {rank} Cache Generated")
 
     training_times = []
@@ -366,6 +379,7 @@ def main(
             log_prefix,
             use_cache=use_cache,
             num_classes=num_classes,
+            dset_name=dataset,
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj
