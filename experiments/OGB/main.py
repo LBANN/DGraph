@@ -81,6 +81,10 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
         device = torch.cuda.current_device()
         return device
 
+    def barrier(self):
+        # No-op for single process
+        pass
+
 
 def _run_experiment(
     dataset,
@@ -125,7 +129,8 @@ def _run_experiment(
             print(f"Rank: {rank} Mapping: {rank_mappings.shape}")
             print(f"Rank: {rank} Node Features: {node_features.shape}")
             print(f"Rank: {rank} Edge Indices: {edge_indices.shape}")
-        dist.barrier()
+
+        comm.barrier()
     criterion = torch.nn.CrossEntropyLoss()
 
     train_mask = dataset.graph_obj.get_local_mask("train", rank)
@@ -217,7 +222,7 @@ def _run_experiment(
 
     training_times = []
     for i in range(epochs):
-        dist.barrier()
+        comm.barrier()
         torch.cuda.synchronize()
         start_time = torch.cuda.Event(enable_timing=True)
         end_time = torch.cuda.Event(enable_timing=True)
@@ -234,7 +239,7 @@ def _run_experiment(
         dist_print_ephemeral(f"Epoch {i} \t Loss: {loss.item()}", rank)
         optimizer.step()
 
-        dist.barrier()
+        comm.barrier()
         end_time.record(stream)
         torch.cuda.synchronize()
         training_times.append(start_time.elapsed_time(end_time))
