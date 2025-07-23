@@ -20,6 +20,8 @@ from typing import Optional
 from DGraph.Communicator import Communicator
 from dist_utils import SingleProcessDummyCommunicator
 
+# class MLPSiLuWithRecompute(nn.Module):
+
 
 class MeshGraphMLP(nn.Module):
     """MLP for graph processing"""

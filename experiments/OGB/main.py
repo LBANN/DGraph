@@ -163,6 +163,7 @@ def _run_experiment(
         gather_cache_file = f"{cache_prefix}_gather_cache_{world_size}_{rank}.pt"
 
         if os.path.exists(gather_cache_file):
+            print(f"Rank: {rank} Loading gather cache from {gather_cache_file}")
             gather_cache = torch.load(gather_cache_file, weights_only=False)
 
         if os.path.exists(scatter_cache_file):
@@ -379,6 +380,11 @@ def main(
     validation_trajectores = np.zeros((runs, epochs))
     validation_accuracies = np.zeros((runs, epochs))
     world_size = comm.get_world_size()
+
+    dist.barrier()
+    print(f"Running experiment with {world_size} processes on dataset {dataset}")
+    print(f"Using cache: {use_cache}")
+
     for i in range(runs):
         log_prefix = f"{log_dir}/{dataset}_{world_size}_cache={use_cache}_run_{i}"
         training_traj, val_traj, val_accuracy = _run_experiment(

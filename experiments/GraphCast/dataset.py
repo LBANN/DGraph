@@ -87,6 +87,7 @@ class SyntheticWeatherDataset(Dataset):
         self.lat_lon_grid = torch.stack(
             torch.meshgrid(self.latitudes, self.longitudes, indexing="ij"), dim=-1
         )
+
         self.graph_cast_graph = DistributedGraphCastGraphGenerator(
             self.lat_lon_grid,
             mesh_level=self.mesh_level,

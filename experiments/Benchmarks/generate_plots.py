@@ -76,5 +76,5 @@ def generate_cache_comparison_plot():
 
 if __name__ == "__main__":
     generate_plots("nccl")
-    generate_plots("nvshmem")
+    # generate_plots("nvshmem")
     generate_cache_comparison_plot()

@@ -60,8 +60,10 @@ def main(
         comm = Communicator.init_process_group(
             _communicator, ranks_per_graph=procs_per_graph
         )
+        mesh_graph_placement = torch.load("mesh_vertex_rank_placement_4.pt")
     else:
         comm = SingleProcessDummyCommunicator()
+        mesh_graph_placement = torch.zeros(40962, dtype=torch.int64)
     if not use_synthetic_data:
         raise NotImplementedError("Real data is not yet supported yet.")
 
@@ -106,6 +108,7 @@ def main(
     dataset = SyntheticWeatherDataset(
         channels=[x for x in range(cfg.data.num_channels_climate)],
         num_samples_per_year=cfg.data.num_samples_per_year_train,
+        mesh_vertex_placement=mesh_graph_placement,
         num_steps=cfg.data.num_history,
         device=torch.device("cpu"),
     )
@@ -127,12 +130,12 @@ def main(
         break_training = False
 
         for data in dataloader:
-            in_data = data["invar"]
-            ground_truth = data["outvar"]
+            in_data = data["invar"].to(device)
+            ground_truth = data["outvar"].to(device)
 
             model.train()
             optimizer.zero_grad()
-            predicted_grid = model(in_data, static_graph)
+            predicted_grid = model(in_data, static_graph, device=device)
             loss = compute_loss(ground_truth, predicted_grid, comm)
             loss.backward()
             optimizer.step()
