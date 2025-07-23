@@ -689,10 +689,18 @@ class NCCLBackendEngine(BackendEngine):
         return output_tensor  # type: ignore
 
     def destroy(self) -> None:
-        if self._initialized:
+        if NCCLBackendEngine._is_initialized:
             # dist.destroy_process_group()
-            self._initialized = False
+            NCCLBackendEngine._is_initialized = False
 
     def finalize(self) -> None:
-        if self._initialized:
+        if NCCLBackendEngine._is_initialized:
             dist.barrier()
+
+    def barrier(self) -> None:
+        if NCCLBackendEngine._is_initialized:
+            dist.barrier()
+        else:
+            raise RuntimeError(
+                "NCCLBackendEngine is not initialized, cannot call barrier"
+            )

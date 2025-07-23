@@ -23,8 +23,13 @@ DGraph supports distributed training using the `nccl`, `nvshmem`, and `mpi` back
 In order to run the experiments with the `nccl` backend, run the following command:
 
 ```bash
-torchrun --nnodes <nodes> --nproc-per-node <gpus> main.py --backend nccl --lr lr --epochs epochs --runs runs --log_dir log-dir
+torchrun-hpc -N <nodes> -n <gpus> main.py --backend nccl --lr lr --epochs epochs --runs runs ---node_rank_placement_file <file_dir> --log_dir log-dir
 ```
+You may have to turn ``--xargs=--mpibind=off`` and ``--xargs=--gpu-bind=none`` in your Slurm script to avoid binding issues.
+
+**Note that we use `torchrun-hpc` instead of `torchrun` **, the run command may vary based on your environment.
+
+
 
 ### Additional Notes
 The experiments use some additional libraries. Use the [ogb] option
