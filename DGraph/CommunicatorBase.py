@@ -26,3 +26,6 @@ class CommunicatorBase:
 
     def get_world_size(self) -> int:
         raise NotImplementedError
+
+    def barrier(self):
+        raise NotImplementedError
