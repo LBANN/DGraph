@@ -512,6 +512,11 @@ class NCCLBackendEngine(BackendEngine):
         if not NCCLBackendEngine._is_initialized:
             self.init_process_group(ranks_per_graph)
 
+    def barrier(self) -> None:
+        if not dist.is_initialized():
+            raise RuntimeError("NCCL backend engine is not initialized")
+        dist.barrier()
+
     def init_process_group(self, ranks_per_graph=-1, *args, **kwargs):
         if not dist.is_initialized():
             dist.init_process_group(backend="nccl", *args, **kwargs)

@@ -38,6 +38,8 @@ from utils import (
 )
 import numpy as np
 import os
+from DGraph.utils.TimingReport import TimingReport
+import json
 
 
 class SingleProcessDummyCommunicator(CommunicatorBase):
@@ -131,7 +133,6 @@ def _run_experiment(
             print(f"Rank: {rank} Mapping: {rank_mappings.shape}")
             print(f"Rank: {rank} Node Features: {node_features.shape}")
             print(f"Rank: {rank} Edge Indices: {edge_indices.shape}")
-
         comm.barrier()
     criterion = torch.nn.CrossEntropyLoss()
 
@@ -229,7 +230,9 @@ def _run_experiment(
             assert rank != rank
             assert value.shape[0] == scatter_cache.gather_recv_comm_vector
         end_time = perf_counter()
-        print(f"Rank: {rank} Cache Generation Time: {end_time - start_time:.4f} s")
+        elapsed_time_in_ms = (end_time - start_time) * 1000
+        print(f"Rank: {rank} Cache Generation Time: {elapsed_time_in_ms:.4f} ms")
+        TimingReport.add_time("cache_generation_time", elapsed_time_in_ms)
 
         # with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
         #    torch.save(gather_cache, f)
@@ -366,6 +369,7 @@ def main(
                 node_rank_placement_file, weights_only=False
             )
 
+    TimingReport.init(comm)
     safe_create_dir(log_dir, comm.get_rank())
     training_dataset = DistributedOGBWrapper(
         f"ogbn-{dataset}",
@@ -381,7 +385,7 @@ def main(
     validation_accuracies = np.zeros((runs, epochs))
     world_size = comm.get_world_size()
 
-    dist.barrier()
+    comm.barrier()
     print(f"Running experiment with {world_size} processes on dataset {dataset}")
     print(f"Using cache: {use_cache}")
 
@@ -402,6 +406,11 @@ def main(
         validation_trajectores[i] = val_traj
         validation_accuracies[i] = val_accuracy
 
+    write_experiment_log(
+        json.dumps(TimingReport._timers),
+        f"{log_dir}/timing_report_world_size_{world_size}_cache_{use_cache}.json",
+        comm.get_rank(),
+    )
     visualize_trajectories(
         training_trajectores,
         "Training Loss",
