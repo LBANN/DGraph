@@ -201,7 +201,7 @@ class DistributedOGBWrapper(Dataset):
         dir_name = dir_name if dir_name is not None else os.getcwd() + "/data"
 
         if not os.path.exists(dir_name):
-            os.makedirs(dir_name)
+            os.makedirs(dir_name, exist_ok=True)
 
         cached_graph_file = f"{dir_name}/{dname}_graph_data_{self._world_size}.pt"
 
