@@ -118,9 +118,9 @@ def _run_experiment(
     node_features, edge_indices, rank_mappings, labels = dataset[0]
 
     node_features = node_features.to(device).unsqueeze(0)
-    edge_indices = edge_indices.to(device)[:, :-1].unsqueeze(0)
+    edge_indices = edge_indices.to(device).unsqueeze(0)
     labels = labels.to(device).unsqueeze(0)
-    rank_mappings = rank_mappings[:, :-1]
+    rank_mappings = rank_mappings
 
     if rank == 0:
         print("*" * 80)
@@ -155,6 +155,16 @@ def _run_experiment(
 
         # This says where the edges are located
         edge_placement = rank_mappings[0]
+        
+        cache_prefix = f"cache/{dset_name}"
+        scatter_cache_file = f"{cache_prefix}_scatter_cache_{world_size}_{rank}.pt"
+        gather_cache_file = f"{cache_prefix}_gather_cache_{world_size}_{rank}.pt"
+
+        if os.path.exists(gather_cache_file):
+            gather_cache = torch.load(gather_cache_file, weights_only=False)
+
+        if os.path.exists(scatter_cache_file):
+            scatter_cache = torch.load(scatter_cache_file, weight_only=False)
 
         # These say where the source and destination nodes are located
         edge_src_placement = rank_mappings[
@@ -174,6 +184,9 @@ def _run_experiment(
                 rank,
                 world_size,
             )
+            with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
+                torch.save(gather_cache, f) 
+        
         if scatter_cache is None:
             nodes_per_rank = dataset.graph_obj.get_nodes_per_rank()
 
@@ -185,6 +198,8 @@ def _run_experiment(
                 rank,
                 world_size,
             )
+            with open(f"{log_prefix}_scatter_cache_{world_size}_{rank}.pt", "wb") as f:
+                torch.save(scatter_cache, f)
 
         # Sanity checks for the cache
         for key, value in gather_cache.gather_send_local_placement.items():
@@ -213,12 +228,12 @@ def _run_experiment(
         end_time = perf_counter()
         print(f"Rank: {rank} Cache Generation Time: {end_time - start_time:.4f} s")
 
-        if rank == 0:
-            with open(f"{log_prefix}_gather_cache_{world_size}.pt", "wb") as f:
-                torch.save(gather_cache, f)
-            with open(f"{log_prefix}_scatter_cache_{world_size}.pt", "wb") as f:
-                torch.save(scatter_cache, f)
-        print(f"Rank: {rank} Cache Generated")
+        
+        #with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
+        #    torch.save(gather_cache, f)
+        #with open(f"{log_prefix}_scatter_cache_{world_size}_{rank}.pt", "wb") as f:
+        #    torch.save(scatter_cache, f)
+        #print(f"Rank: {rank} Cache Generated")
 
     training_times = []
     for i in range(epochs):
