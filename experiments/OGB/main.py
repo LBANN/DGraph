@@ -95,6 +95,7 @@ def _run_experiment(
     hidden_dims: int = 128,
     num_classes: int = 40,
     use_cache: bool = False,
+    dset_name: str = "arxiv",
 ):
     local_rank = comm.get_rank() % torch.cuda.device_count()
     print(f"Rank: {local_rank} Local Rank: {local_rank}")
@@ -333,7 +334,7 @@ def main(
     use_cache: bool = False,
 ):
     _communicator = backend.lower()
-
+    dset_name = dataset
     assert _communicator.lower() in [
         "single",
         "nccl",
@@ -386,6 +387,7 @@ def main(
             log_prefix,
             use_cache=use_cache,
             num_classes=num_classes,
+            dset_name=dset_name,
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj
