@@ -342,6 +342,8 @@ def main(
         "mpi",
     ], "Invalid backend"
 
+    hidden_dims = {"arxiv": 128, "products": 100}
+
     assert dataset in ["arxiv", "products"], "Invalid dataset"
 
     node_rank_placement = None
@@ -388,6 +390,7 @@ def main(
             use_cache=use_cache,
             num_classes=num_classes,
             dset_name=dset_name,
+            hidden_dims=hidden_dims[dset_name]
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj
