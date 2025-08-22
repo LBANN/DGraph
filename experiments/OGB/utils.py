@@ -56,4 +56,7 @@ def safe_create_dir(directory, rank):
 def calculate_accuracy(pred, labels):
     pred = pred.argmax(dim=1)
     correct = pred.eq(labels).sum().item()
-    return correct / len(labels) * 100
+    if len(labels) > 0:
+        return correct / len(labels) * 100
+    else:
+        return 0.0
