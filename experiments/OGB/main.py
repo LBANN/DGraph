@@ -92,6 +92,7 @@ def _run_experiment(
     lr: float,
     epochs: int,
     log_prefix: str,
+    in_dim: int = 128,
     hidden_dims: int = 128,
     num_classes: int = 40,
     use_cache: bool = False,
@@ -102,7 +103,7 @@ def _run_experiment(
     torch.cuda.set_device(local_rank)
     device = torch.cuda.current_device()
     model = GCN(
-        in_channels=128, hidden_dims=hidden_dims, num_classes=num_classes, comm=comm
+        in_channels=in_dim, hidden_dims=hidden_dims, num_classes=num_classes, comm=comm
     )
     rank = comm.get_rank()
     model = model.to(device)
@@ -342,7 +343,7 @@ def main(
         "mpi",
     ], "Invalid backend"
 
-    hidden_dims = {"arxiv": 128, "products": 100}
+    in_dims = {"arxiv": 128, "products": 100}
 
     assert dataset in ["arxiv", "products"], "Invalid dataset"
 
@@ -390,7 +391,7 @@ def main(
             use_cache=use_cache,
             num_classes=num_classes,
             dset_name=dset_name,
-            hidden_dims=hidden_dims[dset_name]
+            in_dim=in_dims[dset_name]
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj
