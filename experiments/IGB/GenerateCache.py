@@ -24,14 +24,7 @@ from DGraph.distributed.nccl._nccl_cache import (
 from time import perf_counter
 from tqdm import tqdm
 from multiprocessing import get_context
-
-
-cache_prefix = {
-    "ogbn-arxiv": "arxiv",
-    "ogbn-products": "products",
-    "ogbn-papers100M": "papers100M",
-    "ogbn-proteins": "proteins",
-}
+from utils import DummyComm
 
 
 def generate_cache_file(
@@ -85,12 +78,6 @@ def generate_cache_file(
     return 0
 
 
-class DummyComm:
-    def __init__(self, world_size: int):
-        self.world_size = world_size
-        self.rank = 0
-
-
 def main(root, world_size: int, node_rank_placement_file=None):
     assert world_size > 0
 
@@ -125,7 +112,7 @@ def main(root, world_size: int, node_rank_placement_file=None):
     os.makedirs("cache", exist_ok=True)
     os.makedirs("cache/IGB", exist_ok=True)
 
-    with get_context("spawn").Pool(min(world_size, 8)) as pool:
+    with get_context("spawn").Pool(min(world_size, 2)) as pool:
         args = [
             (
                 dist_graph,
