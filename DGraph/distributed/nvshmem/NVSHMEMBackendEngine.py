@@ -17,9 +17,51 @@ from DGraph.distributed.Engine import BackendEngine
 import DGraph.torch_nvshmem_p2p as nvshmem
 import warnings
 from torch.autograd import Function
+from DGraph.distributed.nvshmem._nvshmem_cache import NVSHMEMScatterCache
+from DGraph.distributed.RankLocalOps import RankLocalMultiOutputScatter
 
 
-def _nvshmmem_gather(send_tensor, indices, rank_mappings):
+def _nvshmem_scatter_cache(send_tensor, cache: NVSHMEMScatterCache, workspace):
+    bs = send_tensor.shape[0]
+    num_features = send_tensor.shape[2]
+
+    num_elem = bs * num_features * cache.num_output_rows
+    scattered_tensor = nvshmem.NVSHMEMP2P.allocate_symmetric_memory(
+        num_elem, send_tensor.device.index
+    )
+    scattered_tensor.fill_(0).float()
+    scattered_tensor = scattered_tensor.reshape(
+        (bs, cache.num_output_rows, num_features)
+    )
+    cur_rank = nvshmem.NVSHMEMP2P.get_rank()
+    cur_rank_offset = int(cache.index_offsets_per_rank[cur_rank].item())
+    scattered_tensor, workspace = RankLocalMultiOutputScatter(
+        send_tensor,
+        scattered_tensor,
+        workspace,
+        cache.local_indices_slice,
+        cache.local_dest_ranks,
+        cur_rank_offset,
+        cur_rank,
+    )
+    # Now the scattered tesnor contains the local contributions
+    # The workspace contains the data to be communicated to other ranks
+    # but already locally accumulated
+
+    nvshmem.NVSHMEMP2P.dist_put(
+        workspace,
+        scattered_tensor,
+        cache.comm_indices,
+        cache.local_dest_ranks,
+        bs,
+        cache.min_workspace_size,
+        num_features,
+        cache.num_output_rows,
+    )
+    return scattered_tensor
+
+
+def _nvshmem_gather(send_tensor, indices, rank_mappings):
 
     bs = send_tensor.shape[0]
     num_input_rows = send_tensor.shape[1]
@@ -169,6 +211,7 @@ class NVSHMEMBackendEngine(BackendEngine):
     _partition_size = -1
     _local_rank = -1
     _partition_num = -1
+    _STATIC_CACHE = None
 
     def __init__(self, ranks_per_graph=-1, *args, **kwargs):
         # check if already initialized
@@ -220,6 +263,10 @@ class NVSHMEMBackendEngine(BackendEngine):
     @staticmethod
     def get_partition_size() -> int:
         return NVSHMEMBackendEngine._partition_size
+
+    def add_cache(self, cache: NVSHMEMScatterCache) -> None:
+        NVSHMEMBackendEngine._STATIC_CACHE = cache
+        return
 
     def gather(self, input_tensor, indices, rank_mappings):
         assert (
