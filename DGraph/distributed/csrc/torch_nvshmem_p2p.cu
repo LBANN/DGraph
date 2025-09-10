@@ -163,71 +163,7 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   CUDACHECK(cudaStreamSynchronize(defaultStream));
 }
 
-void NVSHMEMP2P::dist_put_precomputed(torch::Tensor input,
-                                  torch::Tensor output,
-                                  torch::Tensor workspace,
-                                  torch::Tensor indices,
-                                  torch::Tensor rank_mappings,
-                                  torch::Tensor dst_ranks,
-                                  torch::Tensor dst_offsets,
-                                  const int num_input_rows,
-                                  const int num_cols,
-                                  const int num_output_rows)
-{
-  CHECK_INPUT(input);
-  CHECK_INPUT(output);
-  CHECK_INPUT(workspace);
-  CHECK_INPUT(indices);
-  CHECK_INPUT(rank_mappings);
-  CHECK_INPUT(dst_ranks);
-  CHECK_INPUT(dst_offsets);
 
-  TORCH_CHECK(input.is_contiguous());
-  TORCH_CHECK(output.is_contiguous());
-  TORCH_CHECK(workspace.is_contiguous());
-  TORCH_CHECK(indices.is_contiguous());
-  TORCH_CHECK(rank_mappings.is_contiguous());
-  TORCH_CHECK(dst_ranks.is_contiguous());
-  TORCH_CHECK(dst_offsets.is_contiguous());
-
-  TORCH_INTERNAL_ASSERT(input.device().type() == at::DeviceType::CUDA);
-  TORCH_INTERNAL_ASSERT(output.device().type() == at::DeviceType::CUDA);
-  TORCH_INTERNAL_ASSERT(workspace.device().type() == at::DeviceType::CUDA);
-  TORCH_INTERNAL_ASSERT(indices.device().type() == at::DeviceType::CUDA);
-  TORCH_INTERNAL_ASSERT(rank_mappings.device().type() == at::DeviceType::CUDA);
-  TORCH_INTERNAL_ASSERT(dst_ranks.device().type() == at::DeviceType::CUDA);
-  TORCH_INTERNAL_ASSERT(dst_offsets.device().type() == at::DeviceType::CUDA);
-
-  if (!m_initialized)
-  {
-    throw std::runtime_error("NVSHMEMP2P is not initialized");
-  }
-
-  // Get the pointers to the data
-  const float *input_ptr = input.data_ptr<float>();
-  const float *workspace_ptr = workspace.data_ptr<float>();
-  const long *indices_ptr = indices.data_ptr<long>();
-  const long *rank_mappings_ptr = rank_mappings.data_ptr<long>();
-  const long *dst_ranks_ptr = dst_ranks.data_ptr<long>();
-  const long *dst_offsets_ptr = dst_offsets.data_ptr<long>();
-  float *output_ptr = output.data_ptr<float>();
-
-  const auto current_rank = NVSHMEMP2P::m_rank;
-  dim3 block_dims, grid_dims;
-  block_dims.x = 32;
-  block_dims.y = 16;
-  block_dims.z = 1;
-  
-  const auto num_grids_needed = (num_input_rows + block_dims.y - 1) / block_dims.y;
-  grid_dims.y = num_grids_needed < 65535 ? num_grids_needed : 65535;
-  grid_dims.x = (num_cols + block_dims.x - 1) / block_dims.x; 
-  at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(input.device().index());
-
-  nvshmemx_quiet_on_stream(defaultStream); 
-  CUDACHECK(cudaStreamSynchronize(defaultStream));
-  // Launch the kernel
-  
-}
 void NVSHMEMP2P::dist_get(torch::Tensor input,
                           torch::Tensor output,
                           torch::Tensor indices,

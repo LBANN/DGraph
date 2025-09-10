@@ -157,7 +157,7 @@ class NVSHMEMGatherFunction(Function):
         ctx.save_for_backward(indices, rank_mappings)
         num_rows = indices.shape[1]
         ctx.num_rows = num_rows
-        gathered_tensors = _nvshmmem_gather(send_tensor, indices, rank_mappings)
+        gathered_tensors = _nvshmem_gather(send_tensor, indices, rank_mappings)
         return gathered_tensors
 
     @staticmethod
@@ -194,7 +194,7 @@ class NVSHMEMScatterFunction(Function):
         # nvshmem_grad_output =
         nvshmem.register_memory(grad_output)
         indices, rank_mappings = ctx.saved_tensors
-        input_grad = _nvshmmem_gather(grad_output, indices, rank_mappings)
+        input_grad = _nvshmem_gather(grad_output, indices, rank_mappings)
         nvshmem.deregister_memory(grad_output)
         indices_grad = None
         rank_mappings_grad = None
