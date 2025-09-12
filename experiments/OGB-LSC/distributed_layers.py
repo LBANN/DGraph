@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.distributed as dist
 from torch.autograd import Function
+from typing import Callable
 
 
 def _compute_bn_forward(input, learned_gamma=None, learned_beta=None):
@@ -24,6 +25,39 @@ def _compute_bn_forward(input, learned_gamma=None, learned_beta=None):
         output = x_hat * learned_gamma + learned_beta
 
     return output, x_hat, global_mean, global_var, global_num_rows
+
+
+def _compute_bn_backward(
+    grad_output, x, x_hat, mean, var, num_rows, learned_gamma=None, learned_beta=None
+):
+    if learned_gamma is not None and learned_beta is not None:
+        local_dbeta = torch.sum(grad_output, dim=0)
+        global_dbeta = local_dbeta.clone()
+        dist.all_reduce(global_dbeta, op=dist.ReduceOp.SUM)
+        local_dgamma = torch.sum(grad_output * x_hat, dim=0)
+        global_dgamma = local_dgamma.clone()
+        dist.all_reduce(global_dgamma, op=dist.ReduceOp.SUM)
+        dx_hat = grad_output * learned_gamma
+    else:
+        dx_hat = grad_output
+        global_dgamma = None
+        global_dbeta = None
+
+    local_dvar = torch.sum(dx_hat * (x - mean) * -0.5 * (var + 1e-5) ** 2, dim=0)
+    global_dvar = local_dvar.clone()
+    dist.all_reduce(global_dvar, op=dist.ReduceOp.SUM)
+
+    local_dmean = torch.sum(
+        dx_hat * -1 / torch.sqrt(var + 1e-5), dim=0
+    ) + global_dvar * torch.mean(-2 * (x - mean), dim=0)
+    global_dmean = local_dmean.clone()
+    dist.all_reduce(global_dmean, op=dist.ReduceOp.SUM)
+    dx = (
+        (dx_hat / torch.sqrt(var + 1e-5))
+        + (global_dvar * 2 * (x - mean) / num_rows)
+        + (global_dmean / num_rows)
+    )
+    return dx, global_dgamma, global_dbeta
 
 
 class DistributedBN_with_Recompute(Function):
@@ -52,32 +86,8 @@ class DistributedBN_with_Recompute(Function):
         learned_beta = ctx.learned_beta
         num_rows = ctx.num_rows
 
-        if learned_gamma is not None and learned_beta is not None:
-            local_dbeta = torch.sum(grad_output, dim=0)
-            global_dbeta = local_dbeta.clone()
-            dist.all_reduce(global_dbeta, op=dist.ReduceOp.SUM)
-            local_dgamma = torch.sum(grad_output * x_hat, dim=0)
-            global_dgamma = local_dgamma.clone()
-            dist.all_reduce(global_dgamma, op=dist.ReduceOp.SUM)
-            dx_hat = grad_output * learned_gamma
-        else:
-            dx_hat = grad_output
-            global_dgamma = None
-            global_dbeta = None
-
-        local_dvar = torch.sum(dx_hat * (x - mean) * -0.5 * (var + 1e-5) ** 2, dim=0)
-        global_dvar = local_dvar.clone()
-        dist.all_reduce(global_dvar, op=dist.ReduceOp.SUM)
-
-        local_dmean = torch.sum(
-            dx_hat * -1 / torch.sqrt(var + 1e-5), dim=0
-        ) + global_dvar * torch.mean(-2 * (x - mean), dim=0)
-        global_dmean = local_dmean.clone()
-        dist.all_reduce(global_dmean, op=dist.ReduceOp.SUM)
-        dx = (
-            (dx_hat / torch.sqrt(var + 1e-5))
-            + (global_dvar * 2 * (x - mean) / num_rows)
-            + (global_dmean / num_rows)
+        dx, global_dgamma, global_dbeta = _compute_bn_backward(
+            grad_output, x, x_hat, mean, var, num_rows, learned_gamma, learned_beta
         )
 
         return dx, global_dgamma, global_dbeta
@@ -110,33 +120,8 @@ class DistributedBN_Impl(Function):
         x_hat = ctx.x_hat
         num_rows = ctx.num_rows
         x = ctx.input
-
-        if learned_gamma is not None and learned_beta is not None:
-            local_dbeta = torch.sum(grad_output, dim=0)
-            global_dbeta = local_dbeta.clone()
-            dist.all_reduce(global_dbeta, op=dist.ReduceOp.SUM)
-            local_dgamma = torch.sum(grad_output * x_hat, dim=0)
-            global_dgamma = local_dgamma.clone()
-            dist.all_reduce(global_dgamma, op=dist.ReduceOp.SUM)
-            dx_hat = grad_output * learned_gamma
-        else:
-            dx_hat = grad_output
-            global_dgamma = None
-            global_dbeta = None
-
-        local_dvar = torch.sum(dx_hat * (x - mean) * -0.5 * (var + 1e-5) ** 2, dim=0)
-        global_dvar = local_dvar.clone()
-        dist.all_reduce(global_dvar, op=dist.ReduceOp.SUM)
-
-        local_dmean = torch.sum(
-            dx_hat * -1 / torch.sqrt(var + 1e-5), dim=0
-        ) + global_dvar * torch.mean(-2 * (x - mean), dim=0)
-        global_dmean = local_dmean.clone()
-        dist.all_reduce(global_dmean, op=dist.ReduceOp.SUM)
-        dx = (
-            (dx_hat / torch.sqrt(var + 1e-5))
-            + (global_dvar * 2 * (x - mean) / num_rows)
-            + (global_dmean / num_rows)
+        dx, global_dgamma, global_dbeta = _compute_bn_backward(
+            grad_output, x, x_hat, mean, var, num_rows, learned_gamma, learned_beta
         )
 
         return dx, global_dgamma, global_dbeta
@@ -150,11 +135,52 @@ class DistributedBatchNorm1D(nn.Module):
         momentum=0.1,
         affine=True,
         track_running_stats=True,
+        recompute=False,
     ):
         super(DistributedBatchNorm1D, self).__init__()
-        self.bn = nn.BatchNorm1d(
-            num_features, eps, momentum, affine, track_running_stats
-        )
+        if affine:
+            self.gamma = nn.Parameter(torch.ones(num_features))
+            self.beta = nn.Parameter(torch.zeros(num_features))
+        else:
+            self.register_parameter("gamma", None)
+            self.register_parameter("beta", None)
+        self.eps = eps
+        self.momentum = momentum
+        self.track_running_stats = track_running_stats
+        if self.track_running_stats:
+            self.register_buffer("running_mean", torch.zeros(num_features))
+            self.register_buffer("running_var", torch.ones(num_features))
+            self.register_buffer(
+                "num_batches_tracked", torch.tensor(0, dtype=torch.long)
+            )
+        else:
+            self.register_parameter("running_mean", None)
+            self.register_parameter("running_var", None)
+            self.register_parameter("num_batches_tracked", None)
+        self.recompute = recompute
+        if recompute:
+            self.bn: Callable = DistributedBN_with_Recompute.apply
+        else:
+            self.bn: Callable = DistributedBN_Impl.apply
 
     def forward(self, x):
+        if self.training:
+            if self.track_running_stats:
+                self.num_batches_tracked += 1
+            y, mean, var = self.bn(x, self.gamma, self.beta)
+            if self.track_running_stats:
+                with torch.no_grad():
+                    self.running_mean = (
+                        1 - self.momentum
+                    ) * self.running_mean + self.momentum * mean
+                    self.running_var = (
+                        1 - self.momentum
+                    ) * self.running_var + self.momentum * var
+        else:
+            y = (x - self.running_mean) / torch.sqrt(self.running_var + self.eps)
+            if self.gamma is not None and self.beta is not None:
+                y = y * self.gamma + self.beta
+
+        return y
+
         return self.bn(x)
