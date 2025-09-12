@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.distributed as dist
+from .distributed_layers import DistributedBatchNorm1D
 
 
 class ConvLayer(nn.Module):
@@ -16,13 +17,16 @@ class ConvLayer(nn.Module):
 
 
 class CommAwareGAT(nn.Module):
-    def __init__(self, in_channels, out_channels, comm, bias=True, residual=False):
+    def __init__(
+        self, in_channels, out_channels, comm, heads=1, bias=True, residual=False
+    ):
         super(CommAwareGAT, self).__init__()
         self.conv1 = nn.Linear(in_channels, out_channels, bias=False)
         self.comm = comm
         self.project_message = nn.Linear(2 * out_channels, 1)
         self.leaky_relu = nn.LeakyReLU(0.2)
         self.residual = residual
+        self.heads = heads
         if self.residual:
             self.res_net = nn.Linear(in_channels, out_channels, bias=False)
         if bias:
@@ -69,3 +73,66 @@ class CommAwareGAT(nn.Module):
             out = out + self.bias
 
         return out
+
+
+class CommAwareRGAT(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        hidden_channels,
+        num_relations,
+        num_layers,
+        heads,
+        comm,
+        dropout=0.5,
+    ):
+        super(CommAwareRGAT, self).__init__()
+        self.layers = nn.ModuleList()
+        self.bn_layers = nn.ModuleList()
+        self.skip_layers = nn.ModuleList()
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.comm = comm
+        relation_specific_convs = nn.ModuleList()
+        for _ in range(num_relations):
+            relation_specific_convs.append(
+                CommAwareGAT(
+                    in_channels,
+                    hidden_channels,
+                    heads=heads,
+                    bias=True,
+                    residual=True,
+                    comm=comm,
+                )
+            )
+        self.layers.append(relation_specific_convs)
+
+        for _ in range(num_layers - 1):
+            relation_specific_convs = nn.ModuleList()
+            for _ in range(num_relations):
+                relation_specific_convs.append(
+                    CommAwareGAT(
+                        hidden_channels * heads,
+                        hidden_channels,
+                        heads=heads,
+                        bias=True,
+                        residual=True,
+                        comm=comm,
+                    )
+                )
+            self.layers.append(relation_specific_convs)
+
+        for _ in range(num_layers):
+            self.bn_layers.append(DistributedBatchNorm1D(hidden_channels))
+        self.skip_layers.append(nn.Linear(in_channels, hidden_channels))
+        for _ in range(num_layers - 1):
+            self.skip_layers.append(nn.Linear(hidden_channels, hidden_channels))
+
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            DistributedBatchNorm1D(hidden_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, out_channels),
+        )
