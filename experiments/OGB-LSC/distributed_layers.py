@@ -1,3 +1,17 @@
+# Copyright (c) 2014-2025, Lawrence Livermore National Security, LLC.
+# Produced at the Lawrence Livermore National Laboratory.
+# Written by the LBANN Research Team (B. Van Essen, et al.) listed in
+# the CONTRIBUTORS file. See the top-level LICENSE file for details.
+#
+# LLNL-CODE-697807.
+# All rights reserved.
+#
+# This file is part of LBANN: Livermore Big Artificial Neural Network
+# Toolkit. For details, see http://software.llnl.gov/LBANN or
+# https://github.com/LBANN and https://github.com/LLNL/LBANN.
+#
+# SPDX-License-Identifier: (Apache-2.0)
+
 import torch
 from torch import nn
 import torch.distributed as dist
@@ -164,6 +178,12 @@ class DistributedBatchNorm1D(nn.Module):
             self.bn: Callable = DistributedBN_Impl.apply
 
     def forward(self, x):
+        if x.dim() == 3:
+            assert x.size(0) == 1, "only mini-batch size 1 is supported"
+            x = x.squeeze(0)
+        elif x.dim() != 2:
+            raise ValueError("Expected 2D or 3D input (got {}D input)".format(x.dim()))
+
         if self.training:
             if self.track_running_stats:
                 self.num_batches_tracked += 1
@@ -181,6 +201,6 @@ class DistributedBatchNorm1D(nn.Module):
             if self.gamma is not None and self.beta is not None:
                 y = y * self.gamma + self.beta
 
+        if y.dim() == 2:
+            y = y.unsqueeze(0)
         return y
-
-        return self.bn(x)
