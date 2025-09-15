@@ -33,3 +33,12 @@ class TrainingConfig:
     lr: float = 0.0001
     lr_step_size: int = 25
     lr_gamma: float = 0.25
+
+
+@dataclass
+class SyntheticDatasetConfig:
+    num_papers: int = 2048
+    num_authors: int = 512
+    num_institutions: int = 16
+    num_features: int = 768
+    num_classes: int = 153

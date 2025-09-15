@@ -66,14 +66,16 @@ def _get_rank_mappings(num_vertices, world_size, rank):
     return rank_mappings, vertices_cur_rank
 
 
-def edge_mapping_from_vertex_mapping(edge_index, rank_mappings):
+def edge_mapping_from_vertex_mapping(edge_index, src_rank_mappings, dst_rank_mappings):
     # directed edges, so edge_index[0] -> edge_index[1]
     src_indices = edge_index[0]
     dest_indices = edge_index[1]
     # We put the edge on the rank where the destination vertex is located
-    edge_placement = rank_mappings[dest_indices]
-    src_data_mappings = rank_mappings[src_indices]
-    dest_data_mappings = rank_mappings[dest_indices]
+    # Since heterogeneous graphs have different rank mappings for different
+    # vertex types.
+    edge_placement = dst_rank_mappings[dest_indices]
+    src_data_mappings = src_rank_mappings[src_indices]
+    dest_data_mappings = dst_rank_mappings[dest_indices]
     return (edge_placement, src_data_mappings, dest_data_mappings)
 
 
@@ -92,6 +94,7 @@ class HeterogeneousDataset:
         self.num_institutions = num_institutions
         self.num_classes = num_classes
         self.num_features = num_features
+        self.num_relations = 5
         self.comm = comm
         self.rank = comm.get_rank()
         self.world_size = comm.get_world_size()
@@ -125,7 +128,8 @@ class HeterogeneousDataset:
             paper_2_paper_dest_data_mappings,
         ) = edge_mapping_from_vertex_mapping(
             edge_index=self.paper_2_paper_edges,
-            rank_mappings=self.paper_vertex_rank_mapping,
+            src_rank_mappings=self.paper_vertex_rank_mapping,
+            dst_rank_mappings=self.paper_vertex_rank_mapping,
         )
 
         self.paper_edge_locations = paper_2_paper_edge_location
@@ -142,7 +146,8 @@ class HeterogeneousDataset:
             paper_2_author_dest_data_mappings,
         ) = edge_mapping_from_vertex_mapping(
             edge_index=self.paper_2_author_edges,
-            rank_mappings=self.author_vertex_rank_mapping,
+            src_rank_mappings=self.author_vertex_rank_mapping,
+            dst_rank_mappings=self.paper_vertex_rank_mapping,
         )
         self.paper_2_author_edge_locations = paper_2_author_edge_location
         self.paper_2_author_src_data_mappings = paper_2_author_src_data_mappings
@@ -158,7 +163,8 @@ class HeterogeneousDataset:
             author_2_institution_dest_data_mappings,
         ) = edge_mapping_from_vertex_mapping(
             edge_index=self.author_2_institution_edges,
-            rank_mappings=self.institution_vertex_rank_mapping,
+            src_rank_mappings=self.author_vertex_rank_mapping,
+            dst_rank_mappings=self.institution_vertex_rank_mapping,
         )
         self.author_2_institution_edge_locations = author_2_institution_edge_location
         self.author_2_institution_src_data_mappings = (
@@ -179,13 +185,13 @@ class HeterogeneousDataset:
         )
 
         self.paper_features = torch.randn(
-            (self.num_papers, paper_vertices_cur_rank), dtype=torch.float32
+            (paper_vertices_cur_rank, num_features), dtype=torch.float32
         )
         self.author_features = torch.randn(
-            (self.num_authors, author_vertices_cur_rank), dtype=torch.float32
+            (author_vertices_cur_rank, num_features), dtype=torch.float32
         )
         self.institution_features = torch.randn(
-            (self.num_institutions, institution_vertices_cur_rank), dtype=torch.float32
+            (institution_vertices_cur_rank, num_features), dtype=torch.float32
         )
 
     def get_validation_mask(self):
@@ -208,6 +214,58 @@ class HeterogeneousDataset:
 
     def __len__(self):
         return 0
+
+    def add_batch_dimension(self):
+        """Add a batch dimension to all tensors. This is particularly useful
+        because we only have one graph and DGraph is built to handle batches of graphs.
+        We want to do this here because this allows us to avoid copying the data
+        and requiring a data loader.
+        """
+        self.paper_features = self.paper_features.unsqueeze(0)
+        self.author_features = self.author_features.unsqueeze(0)
+        self.institution_features = self.institution_features.unsqueeze(0)
+        self.y = self.y.unsqueeze(0)
+        self.train_mask = self.train_mask.unsqueeze(0)
+        self.val_mask = self.val_mask.unsqueeze(0)
+        self.test_mask = self.test_mask.unsqueeze(0)
+        self.paper_2_paper_edges = self.paper_2_paper_edges.unsqueeze(0)
+        self.paper_2_author_edges = self.paper_2_author_edges.unsqueeze(0)
+        self.author_2_institution_edges = self.author_2_institution_edges.unsqueeze(0)
+        self.paper_edge_locations = self.paper_edge_locations.unsqueeze(0)
+        self.paper_src_data_mappings = self.paper_src_data_mappings.unsqueeze(0)
+        self.paper_dest_data_mappings = self.paper_dest_data_mappings.unsqueeze(0)
+
+        self.paper_2_author_src_data_mappings = (
+            self.paper_2_author_src_data_mappings.unsqueeze(0)
+        )
+        self.paper_2_author_dest_data_mappings = (
+            self.paper_2_author_dest_data_mappings.unsqueeze(0)
+        )
+        self.author_2_institution_src_data_mappings = (
+            self.author_2_institution_src_data_mappings.unsqueeze(0)
+        )
+        self.author_2_institution_dest_data_mappings = (
+            self.author_2_institution_dest_data_mappings.unsqueeze(0)
+        )
+        return self
+
+    def to(self, device):
+        """Move the dataset tensors to the specified device.
+        We want to do this here because this allows us to avoid
+        copying the data when the different individual tensors are
+        accessed.
+        """
+        self.paper_features = self.paper_features.to(device)
+        self.author_features = self.author_features.to(device)
+        self.institution_features = self.institution_features.to(device)
+        self.y = self.y.to(device)
+        self.train_mask = self.train_mask.to(device)
+        self.val_mask = self.val_mask.to(device)
+        self.test_mask = self.test_mask.to(device)
+        self.paper_2_paper_edges = self.paper_2_paper_edges.to(device)
+        self.paper_2_author_edges = self.paper_2_author_edges.to(device)
+        self.author_2_institution_edges = self.author_2_institution_edges.to(device)
+        return self
 
     def __getitem__(self, idx):
         # There are 5 relations:
@@ -247,3 +305,24 @@ class HeterogeneousDataset:
             self.institution_features,
         ]
         return (features, edge_index, edge_type, rank_mappings)
+
+
+if __name__ == "__main__":
+    rank = 0
+    world_size = 16
+    COMM = type(
+        "dummy_comm",
+        (object,),
+        {"get_rank": lambda self: rank, "get_world_size": lambda self: world_size},
+    )
+    comm = COMM()
+
+    dataset = HeterogeneousDataset(
+        num_papers=512,
+        num_authors=128,
+        num_institutions=32,
+        num_features=16,
+        num_classes=4,
+        comm=comm,
+    )
+    print(dataset[0])

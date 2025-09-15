@@ -15,9 +15,9 @@
 import torch
 import torch.nn as nn
 import torch.distributed as dist
-from .distributed_layers import DistributedBatchNorm1D
+from distributed_layers import DistributedBatchNorm1D
 import os.path as osp
-from .CacheGenerator import get_cache
+from CacheGenerator import get_cache
 
 
 class ConvLayer(nn.Module):
@@ -190,7 +190,11 @@ class CommAwareRGAT(nn.Module):
             nn.Linear(hidden_channels, out_channels),
         )
         self.num_relations = num_relations
+        self._setup_caches(cache_file_path)
 
+    def _setup_caches(self, cache_file_path):
+        num_relations = self.num_relations
+        comm = self.comm
         # Caching for RGAT is a little bit tricky. There are three types of communication
         # 1. Source gather (gathering source node features from source ranks)
         # 2. Destination gather (gathering destination node features from destination ranks)
@@ -268,6 +272,7 @@ class CommAwareRGAT(nn.Module):
             for j, (edge_index, edge_type, rank_mapping) in enumerate(
                 zip(adjts, edge_types, rank_mappings)
             ):
+
                 if self.use_cache:
                     caches = get_cache(
                         src_gather_cache=self.src_gather_caches[j],
@@ -311,4 +316,4 @@ class CommAwareRGAT(nn.Module):
                 for feat in range(len(outs))
             ]
 
-        return self.mlp(outs)
+        return self.mlp(outs[0])

@@ -93,7 +93,9 @@ def main(
     comm = Comm.Communicator.init_process_group(comm_type)
 
     graph_dataset = graph_dataset(comm=comm)
+
     trainer = Trainer(graph_dataset, comm)
+    trainer.prepare_data()
     trainer.train()
     comm.destroy()
 

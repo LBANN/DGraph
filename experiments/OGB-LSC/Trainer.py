@@ -22,24 +22,32 @@ class Trainer:
         self.comm = comm
         self.model_config = ModelConfig()
         self.training_config = TrainingConfig()
-        self.device = torch.device(f"cuda:{comm.get_local_rank()}")
+        # TODO: We need some better way to set the device but
+        # difficult to do that since systems have different bindings.
+        # self.device = torch.device(f"cuda:{comm.get_local_rank()}")
+        self.device = torch.device("cuda")
         self.model = CommAwareRGAT(
-            in_channels=dataset.num_features,
-            out_channels=dataset.num_classes,
+            in_channels=self.model_config.num_features,
+            out_channels=self.model_config.num_classes,
             hidden_channels=self.model_config.hidden_channels,
-            num_relations=dataset.num_relations,
+            num_relations=self.model_config.num_relations,
             num_layers=self.model_config.num_layers,
             heads=self.model_config.heads,
             comm=comm,
             dropout=self.model_config.dropout,
         ).to(self.device)
 
+    def prepare_data(self):
+        self.dataset = self.dataset.add_batch_dimension()
+        self.dataset = self.dataset.to(self.device)
+
     def train(self):
         self.model.train()
+
+        xs, edge_index, edge_type, rank_mapping = self.dataset[0]
+
         for epoch in range(1, self.training_config.epochs + 1):
-            out = self.model(
-                self.dataset.x, self.dataset.edge_index, self.dataset.rank_mapping
-            )
+            out = self.model(xs, edge_index, edge_type, rank_mapping)
             loss = torch.nn.functional.cross_entropy(
                 out[self.dataset.train_mask], self.dataset.y[self.dataset.train_mask]
             )
