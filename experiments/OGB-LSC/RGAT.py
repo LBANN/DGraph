@@ -91,9 +91,10 @@ class CommAwareGAT(nn.Module):
             h_j, _src_indices, _src_rank_mappings, cache=src_gather_cache
         )
 
-        messages = torch.cat([h_i, h_j], dim=1)
-        edge_scores = self.leaky_relu(self.project_message(messages)).squeeze(-1)
+        messages = torch.cat([h_i, h_j], dim=-1)
+        edge_scores = self.leaky_relu(self.project_message(messages))
         numerator = torch.exp(edge_scores)
+
         denominator = self.comm.scatter(
             numerator,
             _dst_indices,
@@ -105,7 +106,7 @@ class CommAwareGAT(nn.Module):
             denominator, _src_indices, _src_rank_mappings, cache=dest_gather_cache
         )
         alpha_ij = numerator / (denominator + 1e-16)
-        attention_messages = h_j * alpha_ij.unsqueeze(-1)
+        attention_messages = h_j * alpha_ij
         out = self.comm.scatter(
             attention_messages,
             _dst_indices,
@@ -298,6 +299,18 @@ class CommAwareRGAT(nn.Module):
                     dest_gather_cache = None
 
                 src_edge_type, dst_edge_type = edge_type
+                self.comm.barrier()
+                if self.comm.get_rank() == 0:
+                    print(
+                        f"Layer {i} Relation {j} started on rank {self.comm.get_rank()}"
+                    )
+                    print(
+                        f"Edge index shape: {edge_index.shape}"
+                        f" Edge type: {edge_type}",
+                        f" src tensor shape: {outs[src_edge_type].shape}",
+                        f" dst tensor shape: {outs[dst_edge_type].shape}",
+                    )
+                self.comm.barrier()
                 temp_outs[dst_edge_type] += self.layers[i][j](
                     outs[dst_edge_type],
                     edge_index,
@@ -307,6 +320,10 @@ class CommAwareRGAT(nn.Module):
                     dest_gather_cache=dest_gather_cache,
                     dest_scatter_cache=dest_scatter_cache,
                 )
+                self.comm.barrier()
+                if self.comm.get_rank() == 0:
+                    print(f"Layer {i} Relation {j} done on rank {self.comm.get_rank()}")
+                self.comm.barrier()
             outs = [
                 self.bn_layers[i](temp_outs[feat]) for feat in range(len(temp_outs))
             ]

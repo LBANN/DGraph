@@ -14,6 +14,8 @@
 from DGraph.Communicator import Communicator
 import torch
 
+torch.random.manual_seed(0)
+
 
 def _generate_paper_2_paper_edges(num_papers):
     # Average degree of a paper is ~11

@@ -92,6 +92,9 @@ def main(
     assert comm_type in ["nccl", "nvshmem"]
     comm = Comm.Communicator.init_process_group(comm_type)
 
+    comm.barrier()
+    print(f"Running with {comm.get_world_size()} ranks. Rank: {comm.get_rank()}")
+
     graph_dataset = graph_dataset(comm=comm)
 
     trainer = Trainer(graph_dataset, comm)
