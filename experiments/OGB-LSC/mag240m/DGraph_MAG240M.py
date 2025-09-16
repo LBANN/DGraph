@@ -213,6 +213,12 @@ class DGraph_MAG240M:
             )
         print("Data processing complete")
 
+    def add_batch_dimension(self):
+        return self
+
+    def to(self, device):
+        return self
+
 
 if __name__ == "__main__":
     import fire

@@ -127,23 +127,33 @@ if __name__ == "__main__":
 
         dataset = dataset.add_batch_dimension()
         dataset = dataset.to("cpu")
-        xs, edge_index, edge_type, rank_mapping = dataset[0]
-        print("Dataset loaded")
 
-        breakpoint()
-        # get_cache(
-        #     src_gather_cache=None,
-        #     dest_gather_cache=None,
-        #     dest_scatter_cache=None,
-        #     src_gather_cache_file="paper_src_gather_cache.pt",
-        #     dest_gather_cache_file="paper_dest_gather_cache.pt",
-        #     dest_scatter_cache_file="paper_dest_scatter_cache.pt",
-        #     rank=rank,
-        #     world_size=world_size,
-        #     src_indices=edge_index[0][0][0],
-        #     dest_indices=edge_index[0][0][1],
-        #     edge_location=rank_mapping[0],
-        #     src_data_mappings=rank_mapping[2],
-        #     dest_data_mappings=rank_mapping[3],)
+        xs, edge_indices, edge_types, rank_mappings = dataset[0]
+
+        for edge_index, edge_type, rank_mapping in zip(
+            edge_indices, edge_types, rank_mappings
+        ):
+            print(f"Edge index shape: {edge_index.shape}")
+            print(f"Edge type shape: {edge_type}")
+            print(f"Rank mapping shape: {rank_mapping[0].shape}")
+            print(f"Rank mapping shape: {rank_mapping[1].shape}")
+
+            get_cache(
+                src_gather_cache=None,
+                dest_gather_cache=None,
+                dest_scatter_cache=None,
+                src_gather_cache_file="paper_src_gather_cache.pt",
+                dest_gather_cache_file="paper_dest_gather_cache.pt",
+                dest_scatter_cache_file="paper_dest_scatter_cache.pt",
+                rank=rank,
+                world_size=world_size,
+                src_indices=edge_index[:, 0],
+                dest_indices=edge_index[:, 1],
+                edge_location=rank_mapping[0],
+                src_data_mappings=rank_mapping[0],
+                dest_data_mappings=rank_mapping[1],
+                num_input_rows=xs[edge_type[0]].shape[0],
+                num_output_rows=xs[edge_type[1]].shape[0],
+            )
 
     Fire(main)

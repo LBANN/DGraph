@@ -55,7 +55,7 @@ def _generate_author_2_institution_edges(num_authors, num_institutions):
 
 def _get_rank_mappings(num_vertices, world_size, rank):
     vertices_per_rank = num_vertices // world_size
-    rank_mappings = torch.zeros(num_vertices, dtype=torch.uint8)
+    rank_mappings = torch.zeros(num_vertices, dtype=torch.long)
     vertices_cur_rank = 0
     for r in range(world_size):
         start = r * vertices_per_rank
@@ -231,22 +231,7 @@ class HeterogeneousDataset:
         self.paper_2_paper_edges = self.paper_2_paper_edges.unsqueeze(0)
         self.paper_2_author_edges = self.paper_2_author_edges.unsqueeze(0)
         self.author_2_institution_edges = self.author_2_institution_edges.unsqueeze(0)
-        self.paper_edge_locations = self.paper_edge_locations.unsqueeze(0)
-        self.paper_src_data_mappings = self.paper_src_data_mappings.unsqueeze(0)
-        self.paper_dest_data_mappings = self.paper_dest_data_mappings.unsqueeze(0)
 
-        self.paper_2_author_src_data_mappings = (
-            self.paper_2_author_src_data_mappings.unsqueeze(0)
-        )
-        self.paper_2_author_dest_data_mappings = (
-            self.paper_2_author_dest_data_mappings.unsqueeze(0)
-        )
-        self.author_2_institution_src_data_mappings = (
-            self.author_2_institution_src_data_mappings.unsqueeze(0)
-        )
-        self.author_2_institution_dest_data_mappings = (
-            self.author_2_institution_dest_data_mappings.unsqueeze(0)
-        )
         return self
 
     def to(self, device):
