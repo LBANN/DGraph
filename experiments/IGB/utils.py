@@ -4,6 +4,18 @@ import matplotlib.pyplot as plt
 import os
 
 
+class DummyComm:
+    def __init__(self, world_size: int, rank: int = 0):
+        self.world_size = world_size
+        self.rank = rank
+
+    def get_world_size(self):
+        return self.world_size
+
+    def get_rank(self):
+        return self.rank
+
+
 def cleanup():
     if dist.is_initialized():
         dist.destroy_process_group()

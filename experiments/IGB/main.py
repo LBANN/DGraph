@@ -14,7 +14,7 @@
 import sys
 from time import perf_counter
 from typing import Optional
-from DGraph.data.datasets import DistributedOGBWrapper
+from IGB260MDataset import DistributedIGBWrapper
 from DGraph.Communicator import CommunicatorBase, Communicator
 
 from DGraph.distributed.nccl._nccl_cache import (
@@ -40,52 +40,6 @@ import numpy as np
 import os
 from DGraph.utils.TimingReport import TimingReport
 import json
-
-
-class SingleProcessDummyCommunicator(CommunicatorBase):
-    def __init__(self):
-        super().__init__()
-        self._rank = 0
-        self._world_size = 1
-        self._is_initialized = True
-        self.backend = "single"
-
-    def get_rank(self):
-        return self._rank
-
-    def get_world_size(self):
-        return self._world_size
-
-    def scatter(
-        self,
-        tensor: torch.Tensor,
-        src: torch.Tensor,
-        rank_mappings,
-        num_local_nodes,
-        **kwargs,
-    ):
-        # TODO: Wrap this in the datawrapper class
-        src = src.unsqueeze(-1).expand(1, -1, tensor.shape[-1])
-        out = torch.zeros(1, num_local_nodes, tensor.shape[-1]).to(tensor.device)
-        out.scatter_add(1, src, tensor)
-        return out
-
-    def gather(self, tensor, dst, rank_mappings, **kwargs):
-        # TODO: Wrap this in the datawrapper class
-        dst = dst.unsqueeze(-1).expand(1, -1, tensor.shape[-1])
-        out = torch.gather(tensor, 1, dst)
-        return out
-
-    def __str__(self) -> str:
-        return self.backend
-
-    def rank_cuda_device(self):
-        device = torch.cuda.current_device()
-        return device
-
-    def barrier(self):
-        # No-op for single process
-        pass
 
 
 def _run_experiment(
@@ -328,8 +282,8 @@ def _run_experiment(
 
 
 def main(
-    backend: str = "single",
-    dataset: str = "arxiv",
+    root_dir: str = ".",
+    backend: str = "nccl",
     epochs: int = 3,
     lr: float = 0.001,
     runs: int = 1,
@@ -338,47 +292,36 @@ def main(
     use_cache: bool = False,
 ):
     _communicator = backend.lower()
-    dset_name = dataset
+    dset_name = "igb260m"
     assert _communicator.lower() in [
-        "single",
         "nccl",
         "nvshmem",
         "mpi",
     ], "Invalid backend"
 
-    in_dims = {"arxiv": 128, "products": 100}
-
-    assert dataset in ["arxiv", "products"], "Invalid dataset"
-
     node_rank_placement = None
-    if _communicator.lower() == "single":
-        # Dummy communicator for single process testing
-        comm = SingleProcessDummyCommunicator()
 
-    else:
-        if not dist.is_initialized():
-            dist.init_process_group(backend="nccl")
-        comm = Communicator.init_process_group(_communicator)
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+    comm = Communicator.init_process_group(_communicator)
 
-        # Must pass the node rank placement file the first time
-        if node_rank_placement_file is not None:
-            assert os.path.exists(
-                node_rank_placement_file
-            ), "Node rank placement file not found"
-            node_rank_placement = torch.load(
-                node_rank_placement_file, weights_only=False
-            )
+    # Must pass the node rank placement file the first time
+    if node_rank_placement_file is not None:
+        assert os.path.exists(
+            node_rank_placement_file
+        ), "Node rank placement file not found"
+        node_rank_placement = torch.load(node_rank_placement_file, weights_only=False)
 
     TimingReport.init(comm)
     safe_create_dir(log_dir, comm.get_rank())
-    training_dataset = DistributedOGBWrapper(
-        f"ogbn-{dataset}",
-        comm,
+    training_dataset = DistributedIGBWrapper(
+        root=root_dir,
+        comm=comm,
         node_rank_placement=node_rank_placement,
-        force_reprocess=True,
     )
 
     num_classes = training_dataset.num_classes
+    in_dims = training_dataset.num_features
 
     training_trajectores = np.zeros((runs, epochs))
     validation_trajectores = np.zeros((runs, epochs))
@@ -386,11 +329,11 @@ def main(
     world_size = comm.get_world_size()
 
     comm.barrier()
-    print(f"Running experiment with {world_size} processes on dataset {dataset}")
+
     print(f"Using cache: {use_cache}")
 
     for i in range(runs):
-        log_prefix = f"{log_dir}/{dataset}_{world_size}_cache={use_cache}_run_{i}"
+        log_prefix = f"{log_dir}/{dset_name}_{world_size}_cache={use_cache}_run_{i}"
         training_traj, val_traj, val_accuracy = _run_experiment(
             training_dataset,
             comm,
@@ -400,7 +343,7 @@ def main(
             use_cache=use_cache,
             num_classes=num_classes,
             dset_name=dset_name,
-            in_dim=in_dims[dset_name],
+            in_dim=in_dims,
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj
@@ -408,25 +351,25 @@ def main(
 
     write_experiment_log(
         json.dumps(TimingReport._timers),
-        f"{log_dir}/{dataset}_timing_report_world_size_{world_size}_cache_{use_cache}.json",
+        f"{log_dir}/{dset_name}_timing_report_world_size_{world_size}_cache_{use_cache}.json",
         comm.get_rank(),
     )
     visualize_trajectories(
         training_trajectores,
         "Training Loss",
-        f"{log_dir}/{dataset}_training_loss.png",
+        f"{log_dir}/{dset_name}_training_loss.png",
         comm.get_rank(),
     )
     visualize_trajectories(
         validation_trajectores,
         "Validation Loss",
-        f"{log_dir}/{dataset}_validation_loss.png",
+        f"{log_dir}/{dset_name}_validation_loss.png",
         comm.get_rank(),
     )
     visualize_trajectories(
         validation_accuracies,
         "Validation Accuracy",
-        f"{log_dir}/{dataset}_validation_accuracy.png",
+        f"{log_dir}/{dset_name}_validation_accuracy.png",
         comm.get_rank(),
     )
     cleanup()

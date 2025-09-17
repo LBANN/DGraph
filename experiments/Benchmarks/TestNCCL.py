@@ -169,7 +169,7 @@ def run_scatter_benchmark(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--message_size", type=int, default=128)
+    parser.add_argument("--message_size", type=int, default=2)
     parser.add_argument("--benchmark_cache", action="store_true")
     parser.add_argument("--num_iters", type=int, default=1000)
     parser.add_argument("--log_dir", type=str, default="logs")
@@ -196,92 +196,114 @@ def main():
     benchmark.print(f"Running NCCL Benchmark on {world_size} ranks")
 
     # Built in small message benchmarks, in future we can add more
-    gather_graph_data = get_nccl_gather_benchmark_data(message_size, world_size, device)
 
-    benchmark.print("*" * 50)
-    benchmark.print("Running Gather Benchmark")
-    times = run_gather_benchmark(benchmark, num_iters, gather_graph_data, cache=None)
-
-    benchmark.print("Saving Gather Benchmark Times")
-
-    for i in range(world_size):
-        benchmark.save_np(times, f"{log_dir}/NCCL_gather_times_{i}.npy", rank_to_save=i)
-
-    benchmark.print("Gather Benchmark Complete")
-    benchmark.print("*" * 50)
-
-    if benchmark_cache:
-        edge_placement = gather_graph_data.edge_rank_placement
-        edge_src_rank = gather_graph_data.edge_src_rank
-        indices = gather_graph_data.edge_indices
-
-        gather_cache = NCCLGatherCacheGenerator(
-            indices,
-            edge_placement.view(-1),
-            edge_src_rank.view(-1),
-            1,
-            rank,
-            world_size,
-        )
+    for i in range(1, 20):
+        message_size *= 2
         benchmark.print("*" * 50)
-        benchmark.print("Running Gather Benchmark with Cache")
+        benchmark.print(f"Running NCCL Benchmark for message size {message_size}")
+        gather_graph_data = get_nccl_gather_benchmark_data(
+            message_size, world_size, device
+        )
+        dist.barrier()
+
+        benchmark.print("Running Gather Benchmark")
         times = run_gather_benchmark(
-            benchmark, num_iters, gather_graph_data, cache=gather_cache
+            benchmark, num_iters, gather_graph_data, cache=None
         )
 
-        benchmark.print("Saving Gather Benchmark with Cache Times")
-        for i in range(world_size):
-            benchmark.save_np(
-                times, f"{log_dir}/NCCL_gather_with_cache_times_{i}.npy", rank_to_save=i
+        benchmark.print("Saving Gather Benchmark Times")
+
+        benchmark.save_np(
+            times,
+            f"{log_dir}/NCCL_gather_times_message_size_{message_size}"
+            + f"_world_size_{world_size}.npy",
+            rank_to_save=0,
+        )
+
+        benchmark.print("Gather Benchmark Complete")
+        benchmark.print("*" * 50)
+
+        if benchmark_cache:
+            edge_placement = gather_graph_data.edge_rank_placement
+            edge_src_rank = gather_graph_data.edge_src_rank
+            indices = gather_graph_data.edge_indices
+
+            gather_cache = NCCLGatherCacheGenerator(
+                indices,
+                edge_placement.view(-1),
+                edge_src_rank.view(-1),
+                1,
+                rank,
+                world_size,
+            )
+            benchmark.print("*" * 50)
+            benchmark.print("Running Gather Benchmark with Cache")
+            times = run_gather_benchmark(
+                benchmark, num_iters, gather_graph_data, cache=gather_cache
             )
 
-        benchmark.print("Gather Benchmark with Cache Complete")
-        benchmark.print("*" * 50)
-
-    scatter_graph_data = get_nccl_scatter_benchmark_data(
-        message_size, world_size, device
-    )
-    benchmark.print("*" * 50)
-    benchmark.print("Running Scatter Benchmark")
-    times = run_scatter_benchmark(benchmark, num_iters, scatter_graph_data, cache=None)
-
-    benchmark.print("Saving Scatter Benchmark Times")
-    for i in range(world_size):
-        benchmark.save_np(
-            times, f"{log_dir}/NCCL_scatter_times_{i}.npy", rank_to_save=i
-        )
-
-    benchmark.print("Scatter Benchmark Complete")
-    benchmark.print("*" * 50)
-    if benchmark_cache:
-        edge_placement = scatter_graph_data.edge_rank_placement
-        edge_dest_rank = scatter_graph_data.edge_dest_rank
-        indices = scatter_graph_data.edge_indices
-
-        scatter_cache = NCCLScatterCacheGenerator(
-            indices,
-            edge_placement.view(-1),
-            edge_dest_rank.view(-1),
-            1,
-            rank,
-            world_size,
-        )
-        benchmark.print("*" * 50)
-        benchmark.print("Running Scatter Benchmark with Cache")
-        times = run_scatter_benchmark(
-            benchmark, num_iters, scatter_graph_data, cache=scatter_cache
-        )
-
-        benchmark.print("Saving Scatter Benchmark with Cache Times")
-        for i in range(world_size):
+            benchmark.print("Saving Gather Benchmark with Cache Times")
             benchmark.save_np(
                 times,
-                f"{log_dir}/NCCL_scatter_with_cache_times_{i}.npy",
-                rank_to_save=i,
+                f"{log_dir}/NCCL_gather_with_cache_message_size_{message_size}"
+                + f"_world_size_{world_size}.npy",
+                rank_to_save=0,
             )
 
-        benchmark.print("Scatter Benchmark with Cache Complete")
-        benchmark.print("*" * 50)
+            benchmark.print("Gather Benchmark with Cache Complete")
+            benchmark.print("*" * 50)
+
+            scatter_graph_data = get_nccl_scatter_benchmark_data(
+                message_size, world_size, device
+            )
+
+            benchmark.print("*" * 50)
+            benchmark.print("Running Scatter Benchmark")
+            times = run_scatter_benchmark(
+                benchmark, num_iters, scatter_graph_data, cache=None
+            )
+
+            benchmark.print("Saving Scatter Benchmark Times")
+
+            benchmark.save_np(
+                times,
+                f"{log_dir}/NCCL_scatter_times_message_size_{message_size}"
+                + f"_world_size_{world_size}.npy",
+                rank_to_save=0,
+            )
+
+            benchmark.print("Scatter Benchmark Complete")
+            benchmark.print("*" * 50)
+            if benchmark_cache:
+                edge_placement = scatter_graph_data.edge_rank_placement
+                edge_dest_rank = scatter_graph_data.edge_dest_rank
+                indices = scatter_graph_data.edge_indices
+
+                scatter_cache = NCCLScatterCacheGenerator(
+                    indices,
+                    edge_placement.view(-1),
+                    edge_dest_rank.view(-1),
+                    1,
+                    rank,
+                    world_size,
+                )
+                benchmark.print("*" * 50)
+                benchmark.print("Running Scatter Benchmark with Cache")
+                times = run_scatter_benchmark(
+                    benchmark, num_iters, scatter_graph_data, cache=scatter_cache
+                )
+
+                benchmark.print("Saving Scatter Benchmark with Cache Times")
+
+                benchmark.save_np(
+                    times,
+                    f"{log_dir}/NCCL_scatter_with_cache_message_size_{message_size}"
+                    + f"_world_size_{world_size}.npy",
+                    rank_to_save=0,
+                )
+
+                benchmark.print("Scatter Benchmark with Cache Complete")
+                benchmark.print("*" * 50)
 
     dist.destroy_process_group()
 

@@ -38,3 +38,8 @@ Run with benchmarking with the following command:
 python main.py --benchmark
 ```
 ***Note: *** The graph requires a large amount of memory so better to do run on the CPU and a machine with a large amount of memory.
+
+Run with multiple processes per GPU with the following command:
+```bash
+torchrun-hpc --xargs=--mpibind=off --xargs=--gpu-bind=none train_graphcast.py --is_distributed True --procs_per_gpu 4
+```

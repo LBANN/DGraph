@@ -1,4 +1,4 @@
-import metis
+# import metis
 import torch
 import numpy as np
 
@@ -10,6 +10,7 @@ import pickle
 import networkx as nx
 import numpy as np
 from fire import Fire
+from tqdm import tqdm
 
 
 def partition_graph(coo_list: np.ndarray, num_ranks: int):
@@ -105,13 +106,39 @@ def load_networkx_graph(dname):
     return G
 
 
+def topological_sort_graph(coo_list, num_nodes):
+    in_degree = np.zeros(num_nodes, dtype=int)
+    adj_list = [[] for _ in range(num_nodes)]
+    for src, dst in tqdm(coo_list):
+        in_degree[dst] += 1
+        adj_list[src].append(dst)
+
+    queue = [node for node in range(num_nodes) if in_degree[node] == 0]
+    sorted_nodes = []
+    while queue:
+        node = queue.pop(0)
+        sorted_nodes.append(node)
+        for neighbor in adj_list[node]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+        if len(sorted_nodes) % 1000 == 0:
+            print(f"Processed {len(sorted_nodes)} nodes...")
+
+    if len(sorted_nodes) != num_nodes:
+        raise ValueError("Graph is not a DAG, topological sort failed.")
+
+    return np.array(sorted_nodes, dtype=np.int64)
+
+
 def main(dset_name: str):
     from ogb.nodeproppred import NodePropPredDataset
 
-    assert dset_name in ["ogbn-arxiv", "ogbn-products", "ogbn-proteins"]
+    assert dset_name in ["ogbn-arxiv", "ogbn-products", "ogbn-papers100M"]
 
     is_directed = False
-    if dset_name == "ogbn-arxiv":
+    if dset_name == "ogbn-arxiv" or dset_name == "ogbn-papers100M":
         is_directed = True
 
     dataset = NodePropPredDataset(
@@ -119,12 +146,27 @@ def main(dset_name: str):
     )
     graph_data, labels = dataset[0]
 
-    edge_index = torch.Tensor(graph_data["edge_index"]).long()
+    edge_index = torch.Tensor(graph_data["edge_index"]).long().clone()
+
     num_nodes = graph_data["num_nodes"]
 
-    coo_list = edge_index.numpy().T
+    del graph_data
 
-    save_networkx_graph(coo_list, num_nodes, dset_name, directed=is_directed)
+    print(f"Number of nodes: {num_nodes}")
+
+    print(f"Number of edges: {edge_index.shape[1]}")
+
+    # save_networkx_graph(coo_list, num_nodes, dset_name, directed=is_directed)
+
+    coo_list = edge_index.numpy().T
+    sorted_vertices = topological_sort_graph(coo_list, num_nodes)
+
+    np.save(f"{dset_name}_sorted_vertices.npy", sorted_vertices)
+
+    # print(f"Number of edges in COO format: {coo_list.shape}")
+    # with open(f"{dset_name}_coo_list.csv", "w") as f:
+    #     for edge in tqdm(coo_list):
+    #         f.write(f"{edge[0]},{edge[1]}\n")
 
 
 if __name__ == "__main__":

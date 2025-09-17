@@ -219,7 +219,8 @@ class DistributedGraphCastGraphGenerator:
         contigous_edge_mapping, renumbered_edges = torch.sort(meshtogrid_edge_placement)
 
         src_grid_indices = src_grid_indices[renumbered_edges]
-        grid_vertex_rank_placement = torch.zeros_like(lat_lon_grid_flat)
+        grid_vertex_rank_placement = torch.zeros_like(lat_lon_grid_flat[:, 0])
+
         for i, rank in enumerate(meshtogrid_edge_placement):
             loc = src_grid_indices[i]
             grid_vertex_rank_placement[loc] = rank
@@ -254,6 +255,7 @@ class DistributedGraphCastGraphGenerator:
         )
 
         edge_features, src_mesh_indices, dst_grid_indices = m2g_graph
+        breakpoint()
         src_mesh_indices = renumbered_vertices[src_mesh_indices]
         dst_grid_indices = renumbered_grid[dst_grid_indices]
 

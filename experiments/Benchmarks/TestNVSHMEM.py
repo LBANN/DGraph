@@ -127,7 +127,7 @@ def run_scatter_benchmark(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--message_size", type=int, default=128)
+    parser.add_argument("--message_size", type=int, default=2)
     parser.add_argument("--benchmark_cache", action="store_true")
     parser.add_argument("--num_iters", type=int, default=1000)
     parser.add_argument("--log_dir", type=str, default="logs")
@@ -160,37 +160,45 @@ def main():
     benchmark.print("*" * 50)
     benchmark.print("Running Gather Benchmark")
 
-    gather_graph_data = get_nvshmem_gather_benchmark_data(
-        message_size, rank, world_size, device
-    )
-    times = run_gather_benchmark(benchmark, num_iters, gather_graph_data)
+    for i in range(1, 20):
+        message_size *= 2
+        benchmark.print(f"Running NCCL Benchmark for message size {message_size}")
 
-    benchmark.print("Saving Gather Benchmark Times")
+        gather_graph_data = get_nvshmem_gather_benchmark_data(
+            message_size, rank, world_size, device
+        )
+        times = run_gather_benchmark(benchmark, num_iters, gather_graph_data)
 
-    for i in range(world_size):
+        benchmark.print("Saving Gather Benchmark Times")
+
         benchmark.save_np(
-            times, f"{log_dir}/NVSHMEM_gather_times_{i}.npy", rank_to_save=i
+            times,
+            f"{log_dir}/NVSHMEM_gather_times_message_size_{message_size}"
+            + f"_with_world_size_{world_size}.npy",
+            rank_to_save=0,
         )
 
-    benchmark.print("Gather Benchmark Complete")
-    benchmark.print("*" * 50)
+        benchmark.print("Gather Benchmark Complete")
+        benchmark.print("*" * 50)
 
-    scatter_graph_data = get_nvshmem_scatter_benchmark_data(
-        message_size, rank, world_size, device
-    )
-
-    benchmark.print("Running Scatter Benchmark")
-    times = run_scatter_benchmark(benchmark, num_iters, scatter_graph_data)
-
-    benchmark.print("Saving Scatter Benchmark Times")
-
-    for i in range(world_size):
-        benchmark.save_np(
-            times, f"{log_dir}/NVSHMEM_scatter_times_{i}.npy", rank_to_save=i
+        scatter_graph_data = get_nvshmem_scatter_benchmark_data(
+            message_size, rank, world_size, device
         )
 
-    benchmark.print("Scatter Benchmark Complete")
-    benchmark.print("*" * 50)
+        benchmark.print("Running Scatter Benchmark")
+        times = run_scatter_benchmark(benchmark, num_iters, scatter_graph_data)
+
+        benchmark.print("Saving Scatter Benchmark Times")
+
+        benchmark.save_np(
+            times,
+            f"{log_dir}/NVSHMEM_scatter_times_message_size_{message_size}"
+            + f"_with_world_size_{world_size}.npy",
+            rank_to_save=0,
+        )
+
+        benchmark.print("Scatter Benchmark Complete")
+        benchmark.print("*" * 50)
 
 
 if __name__ == "__main__":

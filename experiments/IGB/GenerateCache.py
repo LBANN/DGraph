@@ -13,7 +13,7 @@
 # SPDX-License-Identifier: (Apache-2.0)
 
 from DGraph.data.ogbn_datasets import process_homogenous_data
-from ogb.nodeproppred import NodePropPredDataset
+from IGB260MDataset import DistributedIGBWrapper
 from fire import Fire
 import os
 import torch
@@ -24,14 +24,7 @@ from DGraph.distributed.nccl._nccl_cache import (
 from time import perf_counter
 from tqdm import tqdm
 from multiprocessing import get_context
-
-
-cache_prefix = {
-    "ogbn-arxiv": "arxiv",
-    "ogbn-products": "products",
-    "ogbn-papers100M": "papers100M",
-    "ogbn-proteins": "proteins",
-}
+from utils import DummyComm
 
 
 def generate_cache_file(
@@ -85,36 +78,20 @@ def generate_cache_file(
     return 0
 
 
-def main(dset: str, world_size: int, node_rank_placement_file: str):
-    assert dset in ["ogbn-arxiv", "ogbn-products", "ogbn-papers100M", "ogbn-proteins"]
-
+def main(root, world_size: int, node_rank_placement_file=None):
     assert world_size > 0
-    assert os.path.exists(
-        node_rank_placement_file
-    ), "Node rank placement file does not exist."
 
-    node_rank_placement = torch.load(node_rank_placement_file)
-
-    dataset = NodePropPredDataset(
-        dset,
+    dataset = DistributedIGBWrapper(
+        root=root,
+        comm=DummyComm(world_size),
+        node_rank_placement=node_rank_placement_file,
+        sim_node_features=True,
     )
 
-    split_index = dataset.get_idx_split()
-    assert split_index is not None, "Split index is None."
-
-    graph, labels = dataset[0]
-
-    num_edges = graph["edge_index"].shape
+    num_edges = dataset.num_edges
     print(num_edges)
 
-    dist_graph = process_homogenous_data(
-        graph_data=graph,
-        labels=labels,
-        world_Size=world_size,
-        split_idx=split_index,
-        node_rank_placement=node_rank_placement,
-        rank=0,
-    )
+    dist_graph = dataset.graph_obj
 
     edge_indices = dist_graph.get_global_edge_indices()
     rank_mappings = dist_graph.get_global_rank_mappings()
@@ -131,8 +108,11 @@ def main(dset: str, world_size: int, node_rank_placement_file: str):
     edge_dest_placement = rank_mappings[1]
 
     start_time = perf_counter()
-    cache_prefix_str = f"cache/{cache_prefix[dset]}"
-    with get_context("spawn").Pool(min(world_size, 8)) as pool:
+    cache_prefix_str = f"cache/IGB"
+    os.makedirs("cache", exist_ok=True)
+    os.makedirs("cache/IGB", exist_ok=True)
+
+    with get_context("spawn").Pool(min(world_size, 2)) as pool:
         args = [
             (
                 dist_graph,

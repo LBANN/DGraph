@@ -330,7 +330,10 @@ class DGraphCast(nn.Module):
         )
 
     def forward(
-        self, input_grid_features: Tensor, static_graph: DistributedGraphCastGraph
+        self,
+        input_grid_features: Tensor,
+        static_graph: DistributedGraphCastGraph,
+        device: Optional[torch.device] = None,
     ) -> Tensor:
         """
         Args:
@@ -340,18 +343,19 @@ class DGraphCast(nn.Module):
         Returns:
             (Tensor): The predicted output grid
         """
-
-        input_grid_features = input_grid_features.squeeze(0)
-        input_mesh_features = static_graph.mesh_graph_node_features
-        mesh2mesh_edge_features = static_graph.mesh_graph_edge_features
-        grid2mesh_edge_features = static_graph.grid2mesh_graph_edge_features
-        mesh2grid_edge_features = static_graph.mesh2grid_graph_edge_features
-        mesh2mesh_edge_indices_src = static_graph.mesh_graph_src_indices
-        mesh2mesh_edge_indices_dst = static_graph.mesh_graph_dst_indices
-        mesh2grid_edge_indices_src = static_graph.mesh2grid_graph_src_indices
-        mesh2grid_edge_indices_dst = static_graph.mesh2grid_graph_dst_indices
-        grid2mesh_edge_indices_src = static_graph.grid2mesh_graph_src_indices
-        grid2mesh_edge_indices_dst = static_graph.grid2mesh_graph_dst_indices
+        if device is None:
+            device = input_grid_features.device
+        input_grid_features = input_grid_features.squeeze(0).to(device)
+        input_mesh_features = static_graph.mesh_graph_node_features.to(device)
+        mesh2mesh_edge_features = static_graph.mesh_graph_edge_features.to(device)
+        grid2mesh_edge_features = static_graph.grid2mesh_graph_edge_features.to(device)
+        mesh2grid_edge_features = static_graph.mesh2grid_graph_edge_features.to(device)
+        mesh2mesh_edge_indices_src = static_graph.mesh_graph_src_indices.to(device)
+        mesh2mesh_edge_indices_dst = static_graph.mesh_graph_dst_indices.to(device)
+        mesh2grid_edge_indices_src = static_graph.mesh2grid_graph_src_indices.to(device)
+        mesh2grid_edge_indices_dst = static_graph.mesh2grid_graph_dst_indices.to(device)
+        grid2mesh_edge_indices_src = static_graph.grid2mesh_graph_src_indices.to(device)
+        grid2mesh_edge_indices_dst = static_graph.grid2mesh_graph_dst_indices.to(device)
 
         out = self.embedder(
             input_grid_features,
