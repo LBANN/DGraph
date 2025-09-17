@@ -26,6 +26,7 @@ import torch
 import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from DGraph.utils.TimingReport import TimingReport
 from GCN import CommAwareGCN as GCN
 from utils import (
     dist_print_ephemeral,
@@ -38,6 +39,7 @@ from utils import (
 )
 import numpy as np
 import os
+import json
 
 
 class SingleProcessDummyCommunicator(CommunicatorBase):
@@ -157,7 +159,7 @@ def _run_experiment(
 
         # This says where the edges are located
         edge_placement = rank_mappings[0]
-        
+
         cache_prefix = f"cache/{dset_name}"
         scatter_cache_file = f"{cache_prefix}_scatter_cache_{world_size}_{rank}.pt"
         gather_cache_file = f"{cache_prefix}_gather_cache_{world_size}_{rank}.pt"
@@ -187,8 +189,8 @@ def _run_experiment(
                 world_size,
             )
             with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
-                torch.save(gather_cache, f) 
-        
+                torch.save(gather_cache, f)
+
         if scatter_cache is None:
             nodes_per_rank = dataset.graph_obj.get_nodes_per_rank()
 
@@ -230,12 +232,11 @@ def _run_experiment(
         end_time = perf_counter()
         print(f"Rank: {rank} Cache Generation Time: {end_time - start_time:.4f} s")
 
-        
-        #with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
+        # with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
         #    torch.save(gather_cache, f)
-        #with open(f"{log_prefix}_scatter_cache_{world_size}_{rank}.pt", "wb") as f:
+        # with open(f"{log_prefix}_scatter_cache_{world_size}_{rank}.pt", "wb") as f:
         #    torch.save(scatter_cache, f)
-        #print(f"Rank: {rank} Cache Generated")
+        # print(f"Rank: {rank} Cache Generated")
 
     training_times = []
     for i in range(epochs):
@@ -365,7 +366,7 @@ def main(
             node_rank_placement = torch.load(
                 node_rank_placement_file, weights_only=False
             )
-
+    TimingReport.init(comm)
     safe_create_dir(log_dir, comm.get_rank())
     training_dataset = DistributedOGBWrapper(
         f"ogbn-{dataset}",
@@ -391,11 +392,17 @@ def main(
             use_cache=use_cache,
             num_classes=num_classes,
             dset_name=dset_name,
-            in_dim=in_dims[dset_name]
+            in_dim=in_dims[dset_name],
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj
         validation_accuracies[i] = val_accuracy
+
+    write_experiment_log(
+        json.dumps(TimingReport._timers),
+        f"{log_dir}/{dset_name}_timing_report_world_size_{world_size}_cache_{use_cache}.json",
+        comm.get_rank(),
+    )
 
     visualize_trajectories(
         training_trajectores,
