@@ -102,10 +102,7 @@ def all_to_all_cache_helper(
             # No local sends
             continue
         _mask = (edge_vertex_ranks == rank) & (edge_placement == i)
-        try:
-            _send_row = indices[0][_mask] % num_rows
-        except:
-            breakpoint()
+        _send_row = indices[0][_mask] % num_rows
 
         send_local_placement[i] = _send_row
 
@@ -200,13 +197,13 @@ def NCCLScatterCacheGenerator(
 
     receving_ranks = torch.unique(local_dest_ranks_slice[local_send_mask])
 
+    breakpoint()
     recv_placement = _get_local_unique_recv_placement(
         indices, edge_placement, remote_recv_mask, num_output_rows, rank, world_size
     )
 
     # Information for the backward pass
     # It's a gather operation so quite a bit simpler
-    breakpoint()
 
     num_grad_output_rows = int(local_edges_mask.sum().item())
     send_comm_vector, recv_comm_vector, send_local_placement, recv_local_placement = (

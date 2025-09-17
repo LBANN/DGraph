@@ -82,6 +82,8 @@ def get_cache(
     else:
         _dest_gather_cache = dest_gather_cache
 
+    # Unit tests
+
     return _src_gather_cache, _dest_scatter_cache, _dest_gather_cache
 
 
@@ -117,7 +119,7 @@ if __name__ == "__main__":
             graph_dataset = partial(Dataset, data_dir="data/MAG240M")
 
         rank = 0
-        world_size = 16
+        world_size = 4
         COMM = type(
             "dummy_comm",
             (object,),
@@ -142,9 +144,6 @@ if __name__ == "__main__":
             for edge_index, edge_type, rank_mapping in zip(
                 edge_indices, edge_types, rank_mappings
             ):
-                if rel < 4:
-                    rel += 1
-                    continue
                 print(f"Edge index shape: {edge_index.shape}")
                 print(f"Edge type shape: {edge_type}")
                 print(f"Rank mapping shape: {rank_mapping[0].shape}")
@@ -164,8 +163,8 @@ if __name__ == "__main__":
                     edge_location=rank_mapping[0],
                     src_data_mappings=rank_mapping[0],
                     dest_data_mappings=rank_mapping[1],
-                    num_input_rows=xs[edge_type[0]].shape[0],
-                    num_output_rows=xs[edge_type[1]].shape[0],
+                    num_input_rows=xs[edge_type[0]].shape[1],
+                    num_output_rows=xs[edge_type[1]].shape[1],
                 )
 
                 rel += 1

@@ -315,8 +315,8 @@ class CommAwareRGAT(nn.Module):
                         edge_location=rank_mapping[0],
                         src_data_mappings=rank_mapping[0],
                         dest_data_mappings=rank_mapping[1],
-                        num_input_rows=outs[edge_type[0]].size(0),
-                        num_output_rows=outs[edge_type[1]].size(0),
+                        num_input_rows=outs[edge_type[0]].size(1),
+                        num_output_rows=outs[edge_type[1]].size(1),
                     )
                     src_gather_cache, dest_scatter_cache, dest_gather_cache = caches
                 else:
