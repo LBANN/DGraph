@@ -24,12 +24,15 @@ def _generate_paper_2_paper_edges(num_papers):
         low=0, high=num_papers, size=(2, num_edges), dtype=torch.long
     )
     coo_list = torch.unique(coo_list, dim=1)
+    transpose = coo_list.flip(0)
+    coo_list = torch.cat([coo_list, transpose], dim=1)
+    coo_list = torch.sort(coo_list, dim=1).values
     return coo_list
 
 
-def _generate_paper_2_author_edges(num_papers, num_authors):
+def _generate_author_2_paper_edges(num_authors, num_papers):
     # Average number of authors per paper is ~3.5
-    num_edges = int(num_papers * 3.5)
+    num_edges = int(num_authors * 3.5)
     dest_papers = torch.randint(
         low=0, high=num_papers, size=(1, num_edges), dtype=torch.long
     )
@@ -138,8 +141,8 @@ class HeterogeneousDataset:
         self.paper_src_data_mappings = paper_2_paper_src_data_mappings
         self.paper_dest_data_mappings = paper_2_paper_dest_data_mappings
 
-        self.paper_2_author_edges = _generate_paper_2_author_edges(
-            num_papers, num_authors
+        self.author_2_paper_edges = _generate_author_2_paper_edges(
+            num_authors, num_papers
         )
 
         (
@@ -261,12 +264,15 @@ class HeterogeneousDataset:
         # author -> paper
         # author -> institution
         # institution -> author
+
         edge_index = [
             self.paper_2_paper_edges,
             self.paper_2_author_edges,
-            self.paper_2_author_edges.flip(0),
+            self.paper_2_author_edges.flip(self.paper_2_author_edges.dim() - 2),
             self.author_2_institution_edges,
-            self.author_2_institution_edges.flip(0),
+            self.author_2_institution_edges.flip(
+                self.author_2_institution_edges.dim() - 2
+            ),
         ]
         # Locations of the edges
         rank_mappings = [
@@ -281,7 +287,7 @@ class HeterogeneousDataset:
                 self.author_2_institution_src_data_mappings,
             ],
             [
-                self.author_2_institution_dest_data_mappings,
+                self.author_2_institution_edge_locations,
                 self.author_2_institution_src_data_mappings,
             ],
         ]

@@ -201,6 +201,7 @@ def NCCLScatterCacheGenerator(
         indices, edge_placement, remote_recv_mask, num_output_rows, rank, world_size
     )
 
+    breakpoint()
     # Information for the backward pass
     # It's a gather operation so quite a bit simpler
 
@@ -215,6 +216,8 @@ def NCCLScatterCacheGenerator(
             world_size,
         )
     )
+
+    breakpoint()
 
     _cache = NCCLScatterCache(
         scatter_recv_local_placement=recv_placement,

@@ -78,22 +78,42 @@ class CommAwareGAT(nn.Module):
 
         _src_indices = edge_index[:, 0, :]
         _dst_indices = edge_index[:, 1, :]
+        self.comm.barrier()
         _src_rank_mappings = torch.cat(
             [rank_mapping[0].unsqueeze(0), rank_mapping[0].unsqueeze(0)], dim=0
         )
+        self.comm.barrier()
+        if self.comm.get_rank() == 0:
+            print("finished computing _src_rank_mappings")
+        self.comm.barrier()
         _dst_rank_mappings = torch.cat(
             [rank_mapping[0].unsqueeze(0), rank_mapping[1].unsqueeze(0)], dim=0
         )
+        self.comm.barrier()
+        if self.comm.get_rank() == 0:
+            print("finished computing _dst_rank_mappings")
+        self.comm.barrier()
         h_i = self.comm.gather(
             h, _dst_indices, _dst_rank_mappings, cache=dest_gather_cache
         )
+        self.comm.barrier()
+        if self.comm.get_rank() == 0:
+            print("finished gathering h_i")
+        self.comm.barrier()
+
         h_j = self.comm.gather(
             h_j, _src_indices, _src_rank_mappings, cache=src_gather_cache
         )
+        self.comm.barrier()
+        if self.comm.get_rank() == 0:
+            print("finished gathering h_j")
+        self.comm.barrier()
 
         messages = torch.cat([h_i, h_j], dim=-1)
         edge_scores = self.leaky_relu(self.project_message(messages))
         numerator = torch.exp(edge_scores)
+
+        self.comm.barrier()
 
         denominator = self.comm.scatter(
             numerator,
@@ -102,9 +122,15 @@ class CommAwareGAT(nn.Module):
             h.size(1),
             cache=dest_scatter_cache,
         )
+        self.comm.barrier()
+        if self.comm.get_rank() == 0:
+            print("finished scatter")
+        self.comm.barrier()
         denominator = self.comm.gather(
             denominator, _src_indices, _src_rank_mappings, cache=dest_gather_cache
         )
+        self.comm.barrier()
+
         alpha_ij = numerator / (denominator + 1e-16)
         attention_messages = h_j * alpha_ij
         out = self.comm.scatter(

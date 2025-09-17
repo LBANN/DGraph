@@ -38,6 +38,7 @@ def get_cache(
     num_input_rows,
     num_output_rows,
 ):
+    breakpoint()
     if src_gather_cache is None:
 
         _src_gather_cache = NCCLGatherCacheGenerator(
@@ -101,9 +102,12 @@ if __name__ == "__main__":
             synthetic_config = SyntheticDatasetConfig()
             graph_dataset = partial(
                 Dataset,
-                num_papers=synthetic_config.num_papers,
-                num_authors=synthetic_config.num_authors,
-                num_institutions=synthetic_config.num_institutions,
+                # num_papers=synthetic_config.num_papers,
+                num_papers=100,
+                # num_authors=synthetic_config.num_authors,
+                num_authors=32,
+                # num_institutions=synthetic_config.num_institutions,
+                num_institutions=16,
                 num_features=synthetic_config.num_features,
                 num_classes=synthetic_config.num_classes,
             )
@@ -130,6 +134,9 @@ if __name__ == "__main__":
 
         xs, edge_indices, edge_types, rank_mappings = dataset[0]
 
+        # for simulated_rank in range(world_size):
+        simulated_rank = 0
+        rel = 1
         for edge_index, edge_type, rank_mapping in zip(
             edge_indices, edge_types, rank_mappings
         ):
@@ -142,10 +149,10 @@ if __name__ == "__main__":
                 src_gather_cache=None,
                 dest_gather_cache=None,
                 dest_scatter_cache=None,
-                src_gather_cache_file="paper_src_gather_cache.pt",
-                dest_gather_cache_file="paper_dest_gather_cache.pt",
-                dest_scatter_cache_file="paper_dest_scatter_cache.pt",
-                rank=rank,
+                src_gather_cache_file=f"test_cache/synthetic_src_gather_cache_{rel}_{simulated_rank}_{world_size}.pt",
+                dest_gather_cache_file=f"test_cache/synthetic_dest_gather_cache_{rel}_{simulated_rank}_{world_size}.pt",
+                dest_scatter_cache_file=f"test_cache/synthetic_dest_scatter_cache_{rel}_{simulated_rank}_{world_size}.pt",
+                rank=simulated_rank,
                 world_size=world_size,
                 src_indices=edge_index[:, 0],
                 dest_indices=edge_index[:, 1],
@@ -155,5 +162,20 @@ if __name__ == "__main__":
                 num_input_rows=xs[edge_type[0]].shape[0],
                 num_output_rows=xs[edge_type[1]].shape[0],
             )
+            rel += 1
+        rel = 3
+        synthetic_scatter_cache_1 = torch.load(
+            f"test_cache/synthetic_dest_scatter_cache_{rel}_1_{world_size}.pt",
+            weights_only=False,
+        )
+        synthetic_scatter_cache_0 = torch.load(
+            f"test_cache/synthetic_dest_scatter_cache_{rel}_0_{world_size}.pt",
+            weights_only=False,
+        )
+
+        print(synthetic_scatter_cache_1.scatter_recv_local_placement)
+        print(synthetic_scatter_cache_0.scatter_recv_local_placement)
+
+        breakpoint()
 
     Fire(main)
