@@ -78,10 +78,9 @@ def edge_mapping_from_vertex_mapping(edge_index, src_rank_mappings, dst_rank_map
     # We put the edge on the rank where the destination vertex is located
     # Since heterogeneous graphs have different rank mappings for different
     # vertex types.
-    edge_placement = dst_rank_mappings[dest_indices]
     src_data_mappings = src_rank_mappings[src_indices]
     dest_data_mappings = dst_rank_mappings[dest_indices]
-    return (edge_placement, src_data_mappings, dest_data_mappings)
+    return (src_data_mappings, dest_data_mappings)
 
 
 class HeterogeneousDataset:
@@ -128,7 +127,6 @@ class HeterogeneousDataset:
         self.paper_2_paper_edges = _generate_paper_2_paper_edges(num_papers)
 
         (
-            paper_2_paper_edge_location,
             paper_2_paper_src_data_mappings,
             paper_2_paper_dest_data_mappings,
         ) = edge_mapping_from_vertex_mapping(
@@ -137,7 +135,6 @@ class HeterogeneousDataset:
             dst_rank_mappings=self.paper_vertex_rank_mapping,
         )
 
-        self.paper_edge_locations = paper_2_paper_edge_location
         self.paper_src_data_mappings = paper_2_paper_src_data_mappings
         self.paper_dest_data_mappings = paper_2_paper_dest_data_mappings
 
@@ -146,24 +143,21 @@ class HeterogeneousDataset:
         )
 
         (
-            paper_2_author_edge_location,
-            paper_2_author_src_data_mappings,
-            paper_2_author_dest_data_mappings,
+            author_2_paper_src_data_mappings,
+            author_2_paper_dest_data_mappings,
         ) = edge_mapping_from_vertex_mapping(
-            edge_index=self.paper_2_author_edges,
+            edge_index=self.author_2_paper_edges,
             src_rank_mappings=self.author_vertex_rank_mapping,
             dst_rank_mappings=self.paper_vertex_rank_mapping,
         )
-        self.paper_2_author_edge_locations = paper_2_author_edge_location
-        self.paper_2_author_src_data_mappings = paper_2_author_src_data_mappings
-        self.paper_2_author_dest_data_mappings = paper_2_author_dest_data_mappings
+        self.author_2_paper_src_data_mappings = author_2_paper_src_data_mappings
+        self.author_2_paper_dest_data_mappings = author_2_paper_dest_data_mappings
 
         self.author_2_institution_edges = _generate_author_2_institution_edges(
             num_authors, num_institutions
         )
 
         (
-            author_2_institution_edge_location,
             author_2_institution_src_data_mappings,
             author_2_institution_dest_data_mappings,
         ) = edge_mapping_from_vertex_mapping(
@@ -171,7 +165,7 @@ class HeterogeneousDataset:
             src_rank_mappings=self.author_vertex_rank_mapping,
             dst_rank_mappings=self.institution_vertex_rank_mapping,
         )
-        self.author_2_institution_edge_locations = author_2_institution_edge_location
+
         self.author_2_institution_src_data_mappings = (
             author_2_institution_src_data_mappings
         )
@@ -234,7 +228,7 @@ class HeterogeneousDataset:
         self.val_mask = self.val_mask.unsqueeze(0)
         self.test_mask = self.test_mask.unsqueeze(0)
         self.paper_2_paper_edges = self.paper_2_paper_edges.unsqueeze(0)
-        self.paper_2_author_edges = self.paper_2_author_edges.unsqueeze(0)
+        self.author_2_paper_edges = self.author_2_paper_edges.unsqueeze(0)
         self.author_2_institution_edges = self.author_2_institution_edges.unsqueeze(0)
 
         return self
@@ -253,7 +247,7 @@ class HeterogeneousDataset:
         self.val_mask = self.val_mask.to(device)
         self.test_mask = self.test_mask.to(device)
         self.paper_2_paper_edges = self.paper_2_paper_edges.to(device)
-        self.paper_2_author_edges = self.paper_2_author_edges.to(device)
+        self.author_2_paper_edges = self.author_2_paper_edges.to(device)
         self.author_2_institution_edges = self.author_2_institution_edges.to(device)
         return self
 
@@ -267,8 +261,8 @@ class HeterogeneousDataset:
 
         edge_index = [
             self.paper_2_paper_edges,
-            self.paper_2_author_edges,
-            self.paper_2_author_edges.flip(self.paper_2_author_edges.dim() - 2),
+            self.author_2_paper_edges,
+            self.author_2_paper_edges.flip(self.author_2_paper_edges.dim() - 2),
             self.author_2_institution_edges,
             self.author_2_institution_edges.flip(
                 self.author_2_institution_edges.dim() - 2
@@ -276,18 +270,21 @@ class HeterogeneousDataset:
         ]
         # Locations of the edges
         rank_mappings = [
-            [self.paper_edge_locations, self.paper_dest_data_mappings],
-            [self.paper_2_author_edge_locations, self.paper_2_author_src_data_mappings],
+            [self.paper_src_data_mappings, self.paper_dest_data_mappings],
             [
-                self.paper_2_author_edge_locations,
-                self.paper_2_author_dest_data_mappings,
+                self.author_2_paper_src_data_mappings,
+                self.author_2_paper_dest_data_mappings,
             ],
             [
-                self.author_2_institution_edge_locations,
+                self.author_2_paper_dest_data_mappings,
+                self.author_2_paper_src_data_mappings,
+            ],
+            [
                 self.author_2_institution_src_data_mappings,
+                self.author_2_institution_dest_data_mappings,
             ],
             [
-                self.author_2_institution_edge_locations,
+                self.author_2_institution_dest_data_mappings,
                 self.author_2_institution_src_data_mappings,
             ],
         ]

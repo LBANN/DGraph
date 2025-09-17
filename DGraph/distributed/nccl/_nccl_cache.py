@@ -102,7 +102,10 @@ def all_to_all_cache_helper(
             # No local sends
             continue
         _mask = (edge_vertex_ranks == rank) & (edge_placement == i)
-        _send_row = indices[0][_mask] % num_rows
+        try:
+            _send_row = indices[0][_mask] % num_rows
+        except:
+            breakpoint()
 
         send_local_placement[i] = _send_row
 
@@ -201,9 +204,9 @@ def NCCLScatterCacheGenerator(
         indices, edge_placement, remote_recv_mask, num_output_rows, rank, world_size
     )
 
-    breakpoint()
     # Information for the backward pass
     # It's a gather operation so quite a bit simpler
+    breakpoint()
 
     num_grad_output_rows = int(local_edges_mask.sum().item())
     send_comm_vector, recv_comm_vector, send_local_placement, recv_local_placement = (
@@ -216,8 +219,6 @@ def NCCLScatterCacheGenerator(
             world_size,
         )
     )
-
-    breakpoint()
 
     _cache = NCCLScatterCache(
         scatter_recv_local_placement=recv_placement,

@@ -38,7 +38,7 @@ def get_cache(
     num_input_rows,
     num_output_rows,
 ):
-    breakpoint()
+    # breakpoint()
     if src_gather_cache is None:
 
         _src_gather_cache = NCCLGatherCacheGenerator(
@@ -136,33 +136,39 @@ if __name__ == "__main__":
 
         # for simulated_rank in range(world_size):
         simulated_rank = 0
-        rel = 1
-        for edge_index, edge_type, rank_mapping in zip(
-            edge_indices, edge_types, rank_mappings
-        ):
-            print(f"Edge index shape: {edge_index.shape}")
-            print(f"Edge type shape: {edge_type}")
-            print(f"Rank mapping shape: {rank_mapping[0].shape}")
-            print(f"Rank mapping shape: {rank_mapping[1].shape}")
+        for simulated_rank in [0, 1]:
+            rel = 0
 
-            get_cache(
-                src_gather_cache=None,
-                dest_gather_cache=None,
-                dest_scatter_cache=None,
-                src_gather_cache_file=f"test_cache/synthetic_src_gather_cache_{rel}_{simulated_rank}_{world_size}.pt",
-                dest_gather_cache_file=f"test_cache/synthetic_dest_gather_cache_{rel}_{simulated_rank}_{world_size}.pt",
-                dest_scatter_cache_file=f"test_cache/synthetic_dest_scatter_cache_{rel}_{simulated_rank}_{world_size}.pt",
-                rank=simulated_rank,
-                world_size=world_size,
-                src_indices=edge_index[:, 0],
-                dest_indices=edge_index[:, 1],
-                edge_location=rank_mapping[0],
-                src_data_mappings=rank_mapping[0],
-                dest_data_mappings=rank_mapping[1],
-                num_input_rows=xs[edge_type[0]].shape[0],
-                num_output_rows=xs[edge_type[1]].shape[0],
-            )
-            rel += 1
+            for edge_index, edge_type, rank_mapping in zip(
+                edge_indices, edge_types, rank_mappings
+            ):
+                if rel < 4:
+                    rel += 1
+                    continue
+                print(f"Edge index shape: {edge_index.shape}")
+                print(f"Edge type shape: {edge_type}")
+                print(f"Rank mapping shape: {rank_mapping[0].shape}")
+                print(f"Rank mapping shape: {rank_mapping[1].shape}")
+
+                get_cache(
+                    src_gather_cache=None,
+                    dest_gather_cache=None,
+                    dest_scatter_cache=None,
+                    src_gather_cache_file=f"test_cache/synthetic_src_gather_cache_{rel}_{simulated_rank}_{world_size}.pt",
+                    dest_gather_cache_file=f"test_cache/synthetic_dest_gather_cache_{rel}_{simulated_rank}_{world_size}.pt",
+                    dest_scatter_cache_file=f"test_cache/synthetic_dest_scatter_cache_{rel}_{simulated_rank}_{world_size}.pt",
+                    rank=simulated_rank,
+                    world_size=world_size,
+                    src_indices=edge_index[:, 0],
+                    dest_indices=edge_index[:, 1],
+                    edge_location=rank_mapping[0],
+                    src_data_mappings=rank_mapping[0],
+                    dest_data_mappings=rank_mapping[1],
+                    num_input_rows=xs[edge_type[0]].shape[0],
+                    num_output_rows=xs[edge_type[1]].shape[0],
+                )
+
+                rel += 1
         rel = 3
         synthetic_scatter_cache_1 = torch.load(
             f"test_cache/synthetic_dest_scatter_cache_{rel}_1_{world_size}.pt",
