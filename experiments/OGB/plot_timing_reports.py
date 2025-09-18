@@ -63,12 +63,12 @@ def plot_stacked_bar_from_dicts(
     print("DataFrame of standard deviations:")
     print(df_std)
 
-    plt.rc("axes", titlesize=26)
-    plt.rc("axes", labelsize=24)
-    plt.rc("xtick", labelsize=22)
-    plt.rc("ytick", labelsize=22)
-    plt.rc("legend", fontsize=20)
-    plt.rc("legend", title_fontsize=22)
+    plt.rc("axes", titlesize=28)
+    plt.rc("axes", labelsize=26)
+    plt.rc("xtick", labelsize=24)
+    plt.rc("ytick", labelsize=24)
+    plt.rc("legend", fontsize=22)
+    plt.rc("legend", title_fontsize=24)
 
     fig, ax = plt.subplots(figsize=(15, 18))
 
