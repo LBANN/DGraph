@@ -14,6 +14,7 @@
 import torch
 import torch.nn as nn
 import torch.distributed as dist
+from DGraph.utils.TimingReport import TimingReport
 
 
 class ConvLayer(nn.Module):
@@ -54,24 +55,41 @@ class CommAwareGCN(nn.Module):
         num_local_nodes = node_features.size(1)
         _src_indices = edge_index[:, 0, :]
         _dst_indices = edge_index[:, 1, :]
+
+        TimingReport.start("pre-processing")
         _src_rank_mappings = torch.cat(
             [rank_mapping[0].unsqueeze(0), rank_mapping[0].unsqueeze(0)], dim=0
         )
         _dst_rank_mappings = torch.cat(
             [rank_mapping[0].unsqueeze(0), rank_mapping[1].unsqueeze(0)], dim=0
         )
+        TimingReport.stop("pre-processing")
+        TimingReport.start("Gather_1")
         x = self.comm.gather(
             node_features, _dst_indices, _dst_rank_mappings, cache=gather_cache
         )
+        TimingReport.stop("Gather_1")
+        TimingReport.start("Conv_1")
         x = self.conv1(x)
+        TimingReport.stop("Conv_1")
+        TimingReport.start("Scatter_1")
         x = self.comm.scatter(
             x, _src_indices, _src_rank_mappings, num_local_nodes, cache=scatter_cache
         )
+        TimingReport.stop("Scatter_1")
+        TimingReport.start("Gather_2")
         x = self.comm.gather(x, _dst_indices, _dst_rank_mappings, cache=gather_cache)
+        TimingReport.stop("Gather_2")
+        TimingReport.start("Conv_2")
         x = self.conv2(x)
+        TimingReport.stop("Conv_2")
+        TimingReport.start("Scatter_2")
         x = self.comm.scatter(
             x, _src_indices, _src_rank_mappings, num_local_nodes, cache=scatter_cache
         )
+        TimingReport.stop("Scatter_2")
+        TimingReport.start("Final_FC")
         x = self.fc(x)
+        TimingReport.stop("Final_FC")
         # x = self.softmax(x)
         return x
