@@ -77,7 +77,6 @@ def get_cache(
             rank=rank,
             world_size=world_size,
         )
-        breakpoint()
 
         torch.save(_dest_gather_cache, dest_gather_cache_file)
     else:

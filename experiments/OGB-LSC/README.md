@@ -4,6 +4,7 @@
 
 ## Requirements
 
+- fire
 
 ## Data preparation
 The dataset is fairly large (over 100GB). Please follow the instructions in the `mag240m` folder to download and preprocess the dataset.

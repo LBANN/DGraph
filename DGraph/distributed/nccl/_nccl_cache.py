@@ -82,7 +82,6 @@ def all_to_all_cache_helper(
 
     recv_local_placement = {}
 
-    breakpoint()
     for i, num_messages in enumerate(recv_comm_vector):
         if num_messages == 0:
             continue
@@ -107,7 +106,6 @@ def all_to_all_cache_helper(
 
         send_local_placement[i] = _send_row
 
-    breakpoint()
     return (
         send_comm_vector,
         recv_comm_vector,
