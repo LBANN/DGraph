@@ -28,7 +28,7 @@ def _compute_bn_forward(input, learned_gamma=None, learned_beta=None):
 
     dist.all_reduce(global_num_rows, op=dist.ReduceOp.SUM)
     global_mean = global_sum / global_num_rows
-    local_var = (input - global_mean) ** 2
+    local_var = ((input - global_mean) ** 2).sum(dim=0)
     global_var = local_var.clone()
     dist.all_reduce(global_sum, op=dist.ReduceOp.SUM)
     dist.all_reduce(global_var, op=dist.ReduceOp.SUM)
@@ -153,8 +153,8 @@ class DistributedBatchNorm1D(nn.Module):
     ):
         super(DistributedBatchNorm1D, self).__init__()
         if affine:
-            self.gamma = nn.Parameter(torch.ones(num_features))
-            self.beta = nn.Parameter(torch.zeros(num_features))
+            self.gamma = nn.Parameter(torch.ones(1, num_features))
+            self.beta = nn.Parameter(torch.zeros(1, num_features))
         else:
             self.register_parameter("gamma", None)
             self.register_parameter("beta", None)
@@ -162,8 +162,8 @@ class DistributedBatchNorm1D(nn.Module):
         self.momentum = momentum
         self.track_running_stats = track_running_stats
         if self.track_running_stats:
-            self.register_buffer("running_mean", torch.zeros(num_features))
-            self.register_buffer("running_var", torch.ones(num_features))
+            self.register_buffer("running_mean", torch.zeros(1, num_features))
+            self.register_buffer("running_var", torch.ones(1, num_features))
             self.register_buffer(
                 "num_batches_tracked", torch.tensor(0, dtype=torch.long)
             )
@@ -188,6 +188,7 @@ class DistributedBatchNorm1D(nn.Module):
             if self.track_running_stats:
                 self.num_batches_tracked += 1
             y, mean, var = self.bn(x, self.gamma, self.beta)
+
             if self.track_running_stats:
                 with torch.no_grad():
                     self.running_mean = (
