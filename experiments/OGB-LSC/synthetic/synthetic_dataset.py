@@ -288,7 +288,7 @@ class HeterogeneousDataset:
                 self.author_2_institution_src_data_mappings,
             ],
         ]
-        edge_type = [(0, 0), (0, 1), (1, 0), (1, 2), (2, 1)]
+        edge_type = [(0, 0), (1, 0), (0, 1), (1, 2), (2, 1)]
         features = [
             self.paper_features,
             self.author_features,

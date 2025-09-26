@@ -17,10 +17,10 @@ from dataclasses import dataclass
 
 @dataclass
 class ModelConfig:
-    hidden_channels: int = 1024
+    hidden_channels: int = 16
     dropout: float = 0.5
     num_layers: int = 2
-    num_features: int = 768
+    num_features: int = 16
     num_relations: int = 5
     num_classes: int = 153
     heads: int = 4
@@ -40,5 +40,5 @@ class SyntheticDatasetConfig:
     num_papers: int = 2048
     num_authors: int = 512
     num_institutions: int = 16
-    num_features: int = 768
+    num_features: int = 16
     num_classes: int = 153

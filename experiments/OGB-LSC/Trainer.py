@@ -25,6 +25,10 @@ class Trainer:
         # TODO: We need some better way to set the device but
         # difficult to do that since systems have different bindings.
         # self.device = torch.device(f"cuda:{comm.get_local_rank()}")
+        rank = comm.get_rank()
+        print(f"Rank {rank} using GPU {rank % torch.cuda.device_count()}")
+        num_gpus = torch.cuda.device_count()
+        torch.cuda.set_device(rank % num_gpus)
         self.device = torch.device("cuda")
         self.model = CommAwareRGAT(
             in_channels=self.model_config.num_features,

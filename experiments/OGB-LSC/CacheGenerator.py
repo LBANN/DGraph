@@ -38,7 +38,7 @@ def get_cache(
     num_input_rows,
     num_output_rows,
 ):
-    # breakpoint()
+
     if src_gather_cache is None:
 
         _src_gather_cache = NCCLGatherCacheGenerator(
@@ -77,6 +77,7 @@ def get_cache(
             rank=rank,
             world_size=world_size,
         )
+        breakpoint()
 
         torch.save(_dest_gather_cache, dest_gather_cache_file)
     else:
@@ -104,12 +105,9 @@ if __name__ == "__main__":
             synthetic_config = SyntheticDatasetConfig()
             graph_dataset = partial(
                 Dataset,
-                # num_papers=synthetic_config.num_papers,
-                num_papers=100,
-                # num_authors=synthetic_config.num_authors,
-                num_authors=32,
-                # num_institutions=synthetic_config.num_institutions,
-                num_institutions=16,
+                num_papers=synthetic_config.num_papers,
+                num_authors=synthetic_config.num_authors,
+                num_institutions=synthetic_config.num_institutions,
                 num_features=synthetic_config.num_features,
                 num_classes=synthetic_config.num_classes,
             )
@@ -144,11 +142,15 @@ if __name__ == "__main__":
             for edge_index, edge_type, rank_mapping in zip(
                 edge_indices, edge_types, rank_mappings
             ):
+                if rel != 3:
+                    rel += 1
+                    continue
                 print(f"Edge index shape: {edge_index.shape}")
                 print(f"Edge type shape: {edge_type}")
                 print(f"Rank mapping shape: {rank_mapping[0].shape}")
                 print(f"Rank mapping shape: {rank_mapping[1].shape}")
 
+                breakpoint()
                 get_cache(
                     src_gather_cache=None,
                     dest_gather_cache=None,

@@ -18,6 +18,7 @@ import torch.distributed as dist
 from distributed_layers import DistributedBatchNorm1D
 import os.path as osp
 from CacheGenerator import get_cache
+import sys
 
 
 class ConvLayer(nn.Module):
@@ -83,19 +84,37 @@ class CommAwareGAT(nn.Module):
             [rank_mapping[0].unsqueeze(0), rank_mapping[0].unsqueeze(0)], dim=0
         )
         self.comm.barrier()
-        if self.comm.get_rank() == 0:
-            print("finished computing _src_rank_mappings")
-        self.comm.barrier()
         _dst_rank_mappings = torch.cat(
             [rank_mapping[0].unsqueeze(0), rank_mapping[1].unsqueeze(0)], dim=0
         )
+
         self.comm.barrier()
         if self.comm.get_rank() == 0:
-            print("finished computing _dst_rank_mappings")
+            print("starting gather")
         self.comm.barrier()
+
+        if self.comm.get_rank() == 0:
+            print(f"h shape: {h.shape}")
+            print(f"h_j shape: {h_j.shape}")
+            # breakpoint()
+        self.comm.barrier()
+
+        # sys.exit(0)  # --- IGNORE ---
+
         h_i = self.comm.gather(
             h, _dst_indices, _dst_rank_mappings, cache=dest_gather_cache
         )
+
+        if self.comm.get_rank() == 0:
+            print("finished computing _dst_rank_mappings")
+        self.comm.barrier()
+
+        for i in range(self.comm.get_world_size()):
+            self.comm.barrier()
+            if self.comm.get_rank() == i:
+                print(f"Rank {i} h_i shape: {h_i.shape}")
+            self.comm.barrier()
+
         self.comm.barrier()
         if self.comm.get_rank() == 0:
             print("finished gathering h_i")
@@ -113,8 +132,13 @@ class CommAwareGAT(nn.Module):
         edge_scores = self.leaky_relu(self.project_message(messages))
         numerator = torch.exp(edge_scores)
 
-        self.comm.barrier()
+        if self.comm.get_rank() == 0:
+            print(f"Numerator shape: {numerator.shape}")
 
+        self.comm.barrier()
+        if self.comm.get_rank() == 0:
+            print("starting scatter")
+        self.comm.barrier()
         denominator = self.comm.scatter(
             numerator,
             _dst_indices,
@@ -299,7 +323,9 @@ class CommAwareRGAT(nn.Module):
             for j, (edge_index, edge_type, rank_mapping) in enumerate(
                 zip(adjts, edge_types, rank_mappings)
             ):
-
+                if j != 3:
+                    continue
+                src_edge_type, dst_edge_type = edge_type
                 if self.use_cache:
                     caches = get_cache(
                         src_gather_cache=self.src_gather_caches[j],
@@ -315,8 +341,8 @@ class CommAwareRGAT(nn.Module):
                         edge_location=rank_mapping[0],
                         src_data_mappings=rank_mapping[0],
                         dest_data_mappings=rank_mapping[1],
-                        num_input_rows=outs[edge_type[0]].size(1),
-                        num_output_rows=outs[edge_type[1]].size(1),
+                        num_input_rows=outs[src_edge_type].size(1),
+                        num_output_rows=outs[dst_edge_type].size(1),
                     )
                     src_gather_cache, dest_scatter_cache, dest_gather_cache = caches
                 else:
@@ -324,7 +350,6 @@ class CommAwareRGAT(nn.Module):
                     dest_scatter_cache = None
                     dest_gather_cache = None
 
-                src_edge_type, dst_edge_type = edge_type
                 self.comm.barrier()
                 if self.comm.get_rank() == 0:
                     print(

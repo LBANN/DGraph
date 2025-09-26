@@ -16,6 +16,7 @@ This file contains the implementation of the RankLocalOps.
 """
 
 import torch
+import torch.distributed as dist
 
 try:
     from DGraph.torch_local import local_masked_gather, local_masked_scatter
@@ -140,7 +141,9 @@ def RankLocalRenumberingWithMapping(_indices, rank_mapping):
     unique_indices, inverse_indices = torch.unique(_indices, return_inverse=True)
     rank_mapping = rank_mapping.to(_indices.device)
     renumbered_indices = inverse_indices
-    unique_rank_mapping = torch.zeros_like(unique_indices, dtype=rank_mapping.dtype, device=rank_mapping.device)
+    unique_rank_mapping = torch.zeros_like(
+        unique_indices, dtype=rank_mapping.dtype, device=rank_mapping.device
+    )
     unique_rank_mapping.scatter_(0, inverse_indices, rank_mapping)
 
     return renumbered_indices, unique_indices, unique_rank_mapping

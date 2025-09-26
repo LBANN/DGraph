@@ -82,6 +82,7 @@ def all_to_all_cache_helper(
 
     recv_local_placement = {}
 
+    breakpoint()
     for i, num_messages in enumerate(recv_comm_vector):
         if num_messages == 0:
             continue
@@ -106,6 +107,7 @@ def all_to_all_cache_helper(
 
         send_local_placement[i] = _send_row
 
+    breakpoint()
     return (
         send_comm_vector,
         recv_comm_vector,
@@ -197,11 +199,9 @@ def NCCLScatterCacheGenerator(
 
     receving_ranks = torch.unique(local_dest_ranks_slice[local_send_mask])
 
-    breakpoint()
     recv_placement = _get_local_unique_recv_placement(
         indices, edge_placement, remote_recv_mask, num_output_rows, rank, world_size
     )
-
     # Information for the backward pass
     # It's a gather operation so quite a bit simpler
 
@@ -254,7 +254,7 @@ def NCCLGatherCacheGenerator(
             indices, edge_placement, edge_dest_ranks, num_input_rows, rank, world_size
         )
     )
-
+    breakpoint()
     local_slice_mask = edge_placement == rank
 
     local_mask = edge_placement[local_slice_mask]
