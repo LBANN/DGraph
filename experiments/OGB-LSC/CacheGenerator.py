@@ -73,7 +73,7 @@ def get_cache(
             indices=dest_indices,
             edge_placement=edge_location,
             edge_dest_ranks=dest_data_mappings,
-            num_input_rows=num_input_rows,
+            num_input_rows=num_output_rows,
             rank=rank,
             world_size=world_size,
         )
@@ -149,7 +149,6 @@ if __name__ == "__main__":
                 print(f"Rank mapping shape: {rank_mapping[0].shape}")
                 print(f"Rank mapping shape: {rank_mapping[1].shape}")
 
-                breakpoint()
                 get_cache(
                     src_gather_cache=None,
                     dest_gather_cache=None,
