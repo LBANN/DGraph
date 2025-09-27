@@ -46,10 +46,10 @@ def _compute_bn_backward(
 ):
     if learned_gamma is not None and learned_beta is not None:
         local_dbeta = torch.sum(grad_output, dim=0)
-        global_dbeta = local_dbeta.clone()
+        global_dbeta = local_dbeta.clone().unsqueeze(0)
         dist.all_reduce(global_dbeta, op=dist.ReduceOp.SUM)
         local_dgamma = torch.sum(grad_output * x_hat, dim=0)
-        global_dgamma = local_dgamma.clone()
+        global_dgamma = local_dgamma.clone().unsqueeze(0)
         dist.all_reduce(global_dgamma, op=dist.ReduceOp.SUM)
         dx_hat = grad_output * learned_gamma
     else:
@@ -90,7 +90,7 @@ class DistributedBN_with_Recompute(Function):
         return output, global_mean, global_var
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, grad_mean, grad_var):
         x = ctx.input
         mean = ctx.mean
         var = ctx.var
@@ -125,7 +125,7 @@ class DistributedBN_Impl(Function):
         return output, global_mean, global_var
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output, grad_mean, grad_var):
 
         learned_gamma = ctx.learned_gamma
         learned_beta = ctx.learned_beta
