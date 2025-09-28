@@ -14,6 +14,9 @@
 import torch
 from RGAT import CommAwareRGAT
 from config import ModelConfig, TrainingConfig
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from distributed_layers import GetGlobalVal
 
 
 class Trainer:
@@ -40,6 +43,10 @@ class Trainer:
             comm=comm,
             dropout=self.model_config.dropout,
         ).to(self.device)
+        self.model = DDP(self.model, device_ids=[rank % num_gpus])
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=self.training_config.lr, weight_decay=5e-4
+        )
 
     def prepare_data(self):
         self.dataset = self.dataset.add_batch_dimension()
@@ -52,29 +59,58 @@ class Trainer:
 
         for epoch in range(1, self.training_config.epochs + 1):
             out = self.model(xs, edge_index, edge_type, rank_mapping)
+            train_mask = self.dataset.get_mask("train")
+            local_train_vertices = out[:, train_mask, :].squeeze(0)
+            target = self.dataset.get_target("train")
+
             loss = torch.nn.functional.cross_entropy(
-                out[self.dataset.train_mask], self.dataset.y[self.dataset.train_mask]
+                local_train_vertices, target, reduction="sum"
             )
+            local_num_targets = target.size(0)
+            global_num_targets = GetGlobalVal(local_num_targets)
+            loss = loss / global_num_targets  # Average the loss
+            self.model.zero_grad()
             loss.backward()
+            self.optimizer.step()
         return loss.item()
 
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
-        out = self.model(
-            self.dataset.x, self.dataset.edge_index, self.dataset.rank_mapping
-        )
-        y_true = self.dataset.y.cpu().numpy()
-        y_pred = out.argmax(dim=-1, keepdim=True).cpu().numpy()
 
-        train_acc = (
-            y_pred[self.dataset.train_mask] == y_true[self.dataset.train_mask]
-        ).sum() / int(self.dataset.train_mask.sum())
-        val_acc = (
-            y_pred[self.dataset.val_mask] == y_true[self.dataset.val_mask]
-        ).sum() / int(self.dataset.val_mask.sum())
-        test_acc = (
-            y_pred[self.dataset.test_mask] == y_true[self.dataset.test_mask]
-        ).sum() / int(self.dataset.test_mask.sum())
+        xs, edge_index, edge_type, rank_mapping = self.dataset[0]
+        out = self.model(xs, edge_index, edge_type, rank_mapping)
+
+        y_pred = out.argmax(dim=-1, keepdim=True).cpu().numpy()
+        train_mask = self.dataset.get_mask("train").cpu().numpy()
+        val_mask = self.dataset.get_mask("val").cpu().numpy()
+        test_mask = self.dataset.get_mask("test").cpu().numpy()
+        y_true_train = self.dataset.get_target("train").cpu().numpy()
+        y_pred_val = self.dataset.get_target("val").cpu().numpy()
+        y_pred_test = self.dataset.get_target("test").cpu().numpy()
+
+        train_acc = (y_pred[train_mask] == y_true_train).sum() / int(train_mask.sum())
+        # Not guaranteed to have validation or test samples on every rank
+        num_local_val_samples = int(val_mask.sum())
+        num_local_test_samples = int(test_mask.sum())
+        if num_local_val_samples == 0:
+            val_acc = 0.0
+        else:
+            val_acc = (y_pred[val_mask] == y_pred_val).sum().item()
+        val_acc = GetGlobalVal(val_acc)
+
+        num_global_val_samples = GetGlobalVal(num_local_val_samples)
+        val_acc = val_acc / int(num_global_val_samples)
+
+        if num_local_test_samples == 0:
+            test_acc = 0.0
+        else:
+            test_acc = (y_pred[test_mask] == y_pred_test).sum().item()
+
+        test_acc = GetGlobalVal(test_acc)
+        num_global_test_samples = GetGlobalVal(num_local_test_samples)
+        test_acc = test_acc / int(num_global_test_samples)
+
+        # All ranks should have the same accuracy values
 
         return train_acc, val_acc, test_acc

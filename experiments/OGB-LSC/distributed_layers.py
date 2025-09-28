@@ -205,3 +205,10 @@ class DistributedBatchNorm1D(nn.Module):
         if y.dim() == 2:
             y = y.unsqueeze(0)
         return y
+
+
+def GetGlobalVal(local_val):
+    """Get the global sum of a local value across all ranks."""
+    global_val = torch.tensor([local_val]).cuda()
+    dist.all_reduce(global_val, op=dist.ReduceOp.SUM)
+    return global_val.item()
