@@ -215,7 +215,7 @@ class CommAwareRGAT(nn.Module):
             for _ in range(num_relations):
                 relation_specific_convs.append(
                     CommAwareGAT(
-                        hidden_channels * heads,
+                        hidden_channels,
                         hidden_channels,
                         heads=heads,
                         bias=True,
@@ -323,8 +323,7 @@ class CommAwareRGAT(nn.Module):
             for j, (edge_index, edge_type, rank_mapping) in enumerate(
                 zip(adjts, edge_types, rank_mappings)
             ):
-                if j != 3:
-                    continue
+
                 src_edge_type, dst_edge_type = edge_type
                 if self.use_cache:
                     caches = get_cache(
@@ -341,8 +340,8 @@ class CommAwareRGAT(nn.Module):
                         edge_location=rank_mapping[0],
                         src_data_mappings=rank_mapping[0],
                         dest_data_mappings=rank_mapping[1],
-                        num_input_rows=outs[src_edge_type].size(1),
-                        num_output_rows=outs[dst_edge_type].size(1),
+                        num_src_rows=outs[src_edge_type].size(1),
+                        num_dest_rows=outs[dst_edge_type].size(1),
                     )
                     src_gather_cache, dest_scatter_cache, dest_gather_cache = caches
                 else:

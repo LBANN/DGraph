@@ -35,17 +35,17 @@ def get_cache(
     edge_location,
     src_data_mappings,
     dest_data_mappings,
-    num_input_rows,
-    num_output_rows,
+    num_src_rows,
+    num_dest_rows,
 ):
-
+    """ """
     if src_gather_cache is None:
 
         _src_gather_cache = NCCLGatherCacheGenerator(
             indices=src_indices,
             edge_placement=edge_location,
             edge_dest_ranks=src_data_mappings,
-            num_input_rows=num_input_rows,
+            num_input_rows=num_src_rows,
             rank=rank,
             world_size=world_size,
         )
@@ -59,7 +59,7 @@ def get_cache(
             indices=dest_indices,
             edge_placement=edge_location,
             edge_dest_ranks=dest_data_mappings,
-            num_output_rows=num_output_rows,
+            num_output_rows=num_dest_rows,
             rank=rank,
             world_size=world_size,
         )
@@ -73,7 +73,7 @@ def get_cache(
             indices=dest_indices,
             edge_placement=edge_location,
             edge_dest_ranks=dest_data_mappings,
-            num_input_rows=num_output_rows,
+            num_input_rows=num_dest_rows,
             rank=rank,
             world_size=world_size,
         )
@@ -163,8 +163,8 @@ if __name__ == "__main__":
                     edge_location=rank_mapping[0],
                     src_data_mappings=rank_mapping[0],
                     dest_data_mappings=rank_mapping[1],
-                    num_input_rows=xs[edge_type[0]].shape[1],
-                    num_output_rows=xs[edge_type[1]].shape[1],
+                    num_src_rows=xs[edge_type[0]].shape[1],
+                    num_dest_rows=xs[edge_type[1]].shape[1],
                 )
 
                 rel += 1

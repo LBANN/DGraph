@@ -84,11 +84,6 @@ def _nccl_alltoall_v(
         recv_local_placement = cache.gather_recv_local_placement
         send_local_placement = cache.gather_send_local_placement
 
-        dist.barrier()
-        if rank == 0:
-            breakpoint()
-        dist.barrier()
-
         # Allocate the receive buffers
         for i, num_messages in enumerate(recv_comm_vector):
             if num_messages == 0:
@@ -128,28 +123,11 @@ def _nccl_alltoall_v(
                 recv_tensor = recv_buffer_dict[send_rank_index]
                 p2p_op_list.append(dist.P2POp(dist.irecv, recv_tensor, send_rank_index))
 
-    # For debugging: Delete later
-    dist.barrier()
-    for i in range(world_size):
-        if i == rank:
-            print(f"Rank {rank} starting batch_isend_irecv")
-            for op in p2p_op_list:
-                print(f"Rank {rank} {op.op.__name__} {op.tensor.shape} to {op.peer}")
-            for key, recv_buffer in recv_buffer_dict.items():
-                print(f"Rank {rank} expecting {recv_buffer.shape} from {key}")
-        dist.barrier()
     if len(p2p_op_list) > 0:
         reqs = dist.batch_isend_irecv(p2p_op_list)
 
         for req in reqs:
             req.wait()
-
-    # For debugging: Delete later
-    dist.barrier()
-    for i in range(world_size):
-        if i == rank:
-            print(f"Rank {rank} reached here")
-        dist.barrier()
 
     for key, recv_buffer in recv_buffer_dict.items():
 

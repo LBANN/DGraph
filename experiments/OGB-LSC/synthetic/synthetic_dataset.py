@@ -13,6 +13,7 @@
 # SPDX-License-Identifier: (Apache-2.0)
 from DGraph.Communicator import Communicator
 import torch
+from typing import Tuple
 
 torch.random.manual_seed(0)
 
@@ -182,6 +183,7 @@ class HeterogeneousDataset:
         institution_vertices_cur_rank = int(
             (self.institution_vertex_rank_mapping == self.rank).sum()
         )
+        self.paper_vertices_cur_rank = paper_vertices_cur_rank
 
         self.paper_features = torch.randn(
             (paper_vertices_cur_rank, num_features), dtype=torch.float32
@@ -193,23 +195,83 @@ class HeterogeneousDataset:
             (institution_vertices_cur_rank, num_features), dtype=torch.float32
         )
 
-    def get_validation_mask(self):
-        # Only papers are classified
-        validation_vertices_mappings = self.paper_vertex_rank_mapping[self.val_mask]
-        num_validation_vertices = (validation_vertices_mappings == self.rank).sum()
-        if num_validation_vertices > 0:
-            return self.val_mask[validation_vertices_mappings == self.rank]
-        else:
-            return torch.tensor([], dtype=torch.long)
+    # def get_validation_mask(self):
+    #     # Only papers are classified
+    #     validation_vertices_mappings = self.paper_vertex_rank_mapping[self.val_mask]
+    #     validation_vertices_mappings = validation_vertices_mappings.to(
+    #         self.val_mask.device
+    #     )
+    #     num_validation_vertices = (validation_vertices_mappings == self.rank).sum()
+    #     if num_validation_vertices > 0:
+    #         return (
+    #             self.val_mask[validation_vertices_mappings == self.rank]
+    #             % self.paper_vertices_cur_rank
+    #         )
+    #     else:
+    #         return torch.tensor([], dtype=torch.long)
 
-    def get_test_mask(self):
-        # Only papers are classified
-        paper_vertices = self.paper_vertex_rank_mapping == self.rank
-        num_test_vertices = (paper_vertices[self.test_mask] == self.rank).sum()
-        if num_test_vertices > 0:
-            return self.test_mask[paper_vertices[self.test_mask] == self.rank]
+    # def get_test_mask(self):
+    #     # Only papers are classified
+
+    #     paper_vertices = self.paper_vertex_rank_mapping == self.rank
+    #     paper_vertices = paper_vertices.to(self.test_mask.device)
+    #     num_test_vertices = (paper_vertices[self.test_mask] == self.rank).sum()
+    #     if num_test_vertices > 0:
+    #         return (
+    #             self.test_mask[paper_vertices[self.test_mask] == self.rank]
+    #             % self.paper_vertices_cur_rank
+    #         )
+    #     else:
+    #         return torch.tensor([], dtype=torch.long)
+
+    # def get_train_mask(self):
+    #     # Only papers are classified
+    #     paper_vertices = self.paper_vertex_rank_mapping == self.rank
+    #     paper_vertices = paper_vertices.to(self.train_mask.device)
+    #     num_train_vertices = (paper_vertices[self.train_mask] == self.rank).sum()
+    #     if num_train_vertices > 0:
+    #         return (
+    #             self.train_mask[paper_vertices[self.train_mask] == self.rank]
+    #             % self.paper_vertices_cur_rank
+    #         )
+    #     else:
+    #         return torch.tensor([], dtype=torch.long)
+
+    def get_vertex_rank_mask(self, mask_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
+        if mask_type == "train":
+            global_int_mask = self.train_mask
+        elif mask_type == "val":
+            global_int_mask = self.val_mask
+        elif mask_type == "test":
+            global_int_mask = self.test_mask
         else:
-            return torch.tensor([], dtype=torch.long)
+            raise ValueError(f"Invalid mask type: {mask_type}")
+
+        # Get the ranks of the vertices
+        # paper_vertex_rank_mapping -> vector of size num_papers,
+        # where each entry is the location / rank of the vertex
+        paper_vertex_rank_mapping = self.paper_vertex_rank_mapping.to(
+            global_int_mask.device
+        )
+        vertex_ranks = paper_vertex_rank_mapping[global_int_mask]
+        # vertex_ranks is location of the vertices in the global_int_mask
+        vertex_ranks_mask = vertex_ranks == self.rank
+        return global_int_mask, vertex_ranks_mask
+
+    def get_mask(self, mask_type: str) -> torch.Tensor:
+
+        global_int_mask, vertex_ranks_mask = self.get_vertex_rank_mask(mask_type)
+        local_int_mask = global_int_mask[vertex_ranks_mask]
+        local_int_mask = local_int_mask % self.paper_vertices_cur_rank
+        return local_int_mask
+
+    def get_target(self, _type: str) -> torch.Tensor:
+        global_int_mask, vertex_ranks_mask = self.get_vertex_rank_mask(_type)
+
+        global_training_targets = self.y[:, global_int_mask.squeeze(0)]
+        local_training_targets = global_training_targets[vertex_ranks_mask]
+
+        return local_training_targets
 
     def __len__(self):
         return 0
@@ -249,6 +311,7 @@ class HeterogeneousDataset:
         self.paper_2_paper_edges = self.paper_2_paper_edges.to(device)
         self.author_2_paper_edges = self.author_2_paper_edges.to(device)
         self.author_2_institution_edges = self.author_2_institution_edges.to(device)
+
         return self
 
     def __getitem__(self, idx):

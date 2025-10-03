@@ -485,6 +485,7 @@ class ScatterFunction(Function):
             src_rank_loc=recv_ranks,
             rank=rank,
             world_size=world_size,
+            cache=cache,
         )
 
         # if rank == 0:
