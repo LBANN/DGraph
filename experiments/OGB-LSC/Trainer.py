@@ -17,6 +17,7 @@ from config import ModelConfig, TrainingConfig
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from distributed_layers import GetGlobalVal
+import os
 
 
 class Trainer:
@@ -43,7 +44,13 @@ class Trainer:
             comm=comm,
             dropout=self.model_config.dropout,
         ).to(self.device)
-        self.model = DDP(self.model, device_ids=[rank % num_gpus])
+        # Enable unused-parameter detection only if requested (reduces sync errors with moderate overhead)
+        ddp_find_unused = bool(int(os.getenv("RGAT_DDP_FIND_UNUSED", "0")))
+        self.model = DDP(
+            self.model,
+            device_ids=[rank % num_gpus],
+            find_unused_parameters=ddp_find_unused,
+        )
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.training_config.lr, weight_decay=5e-4
         )

@@ -19,6 +19,7 @@ from distributed_layers import DistributedBatchNorm1D
 import os.path as osp
 from CacheGenerator import get_cache
 import sys
+import os
 
 
 class ConvLayer(nn.Module):
@@ -382,5 +383,13 @@ class CommAwareRGAT(nn.Module):
                 torch.dropout(outs[feat], p=self.dropout, train=self.training)
                 for feat in range(len(outs))
             ]
+
+        dummy_prameters_use = bool(int(os.getenv("RGAT_DUMMY_ALL_PARAMS_USE", "0")))
+        if dummy_prameters_use:
+            # Dummy operation to touch all outs to avoid DDP's 'unused parameters'
+            dummy = torch.zeros(1, device=outs[0].device, dtype=outs[0].dtype)
+            for t in outs:
+                dummy = dummy + (t[0].sum() * 0.0)  # zero-valued scalar that depends on t
+            outs[0][0] = outs[0][0] + dummy
 
         return self.mlp(outs[0])
