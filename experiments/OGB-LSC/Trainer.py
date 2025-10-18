@@ -64,11 +64,16 @@ class Trainer:
 
         xs, edge_index, edge_type, rank_mapping = self.dataset[0]
 
+        # Fetch once; masks/targets are static across epochs
+        train_mask = self.dataset.get_mask("train")
+        target = self.dataset.get_target("train")
+
         for epoch in range(1, self.training_config.epochs + 1):
+            # zero grads before forward to avoid dangling reduction state
+            self.optimizer.zero_grad(set_to_none=True)
+
             out = self.model(xs, edge_index, edge_type, rank_mapping)
-            train_mask = self.dataset.get_mask("train")
             local_train_vertices = out[:, train_mask, :].squeeze(0)
-            target = self.dataset.get_target("train")
 
             loss = torch.nn.functional.cross_entropy(
                 local_train_vertices, target, reduction="sum"
@@ -76,9 +81,11 @@ class Trainer:
             local_num_targets = target.size(0)
             global_num_targets = GetGlobalVal(local_num_targets)
             loss = loss / global_num_targets  # Average the loss
-            self.model.zero_grad()
+
             loss.backward()
             self.optimizer.step()
+            if self.comm.get_rank() == 0:
+                print(f"Epoch {epoch:03d} | loss {loss.item():.4f}")
         return loss.item()
 
     @torch.no_grad()

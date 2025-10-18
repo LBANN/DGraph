@@ -252,7 +252,6 @@ def NCCLGatherCacheGenerator(
             indices, edge_placement, edge_dest_ranks, num_input_rows, rank, world_size
         )
     )
-    breakpoint()
     local_slice_mask = edge_placement == rank
 
     local_mask = edge_placement[local_slice_mask]
