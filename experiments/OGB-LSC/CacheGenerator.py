@@ -56,10 +56,10 @@ def get_cache(
 
     if dest_scatter_cache is None:
         _dest_scatter_cache = NCCLScatterCacheGenerator(
-            indices=dest_indices,
+            indices=src_indices,
             edge_placement=edge_location,
-            edge_dest_ranks=dest_data_mappings,
-            num_output_rows=num_dest_rows,
+            edge_dest_ranks=src_data_mappings,
+            num_output_rows=num_src_rows,
             rank=rank,
             world_size=world_size,
         )
@@ -180,7 +180,5 @@ if __name__ == "__main__":
 
         print(synthetic_scatter_cache_1.scatter_recv_local_placement)
         print(synthetic_scatter_cache_0.scatter_recv_local_placement)
-
-        breakpoint()
 
     Fire(main)
