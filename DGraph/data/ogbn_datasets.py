@@ -209,11 +209,12 @@ class DistributedOGBWrapper(Dataset):
         if os.path.exists(cached_graph_file) and not force_reprocess:
             graph_obj = torch.load(cached_graph_file)
         else:
-            if self._rank == 0:
-                print(f"Node rank placement not provided, generating a round robin placement")
-            node_rank_placement = get_round_robin_node_rank_map(
-                graph_data["num_nodes"], self._world_size
-            )
+            if node_rank_placement is None:
+                if self._rank == 0:
+                    print(f"Node rank placement not provided, generating a round robin placement")
+                node_rank_placement = get_round_robin_node_rank_map(
+                    graph_data["num_nodes"], self._world_size
+                )
 
             graph_obj = process_homogenous_data(
                 graph_data,
