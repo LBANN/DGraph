@@ -116,14 +116,6 @@ class GatherFunction(Function):
 
             needs_comm = (local_recv_tensor != rank).any()
 
-        # For debugging: Delete later
-        dist.barrier()
-        for i in range(world_size):
-            if i == rank:
-                print(f"Rank {rank} reached local gather")
-            dist.barrier()
-        dist.barrier()
-
         recv_tensor = OptimizedRankLocalMaskedGather(
             local_send_tensor,
             local_indices,
@@ -131,13 +123,6 @@ class GatherFunction(Function):
             recv_tensor,
             rank,
         )
-        # For debugging: Delete later
-        dist.barrier()
-        for i in range(world_size):
-            if i == rank:
-                print(f"Rank {rank} finished local gather")
-            dist.barrier()
-        dist.barrier()
 
         if needs_comm:
 
@@ -488,9 +473,6 @@ class ScatterFunction(Function):
             cache=cache,
         )
 
-        # if rank == 0:
-        #     breakpoint()
-        # dist.barrier()
         # NOTE: even if the inputs are non-tensors, the number of backward outputs
         # must be the same as the number of inputs.
         send_tensor_grad = recv_tensor

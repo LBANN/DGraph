@@ -18,13 +18,6 @@ def _nccl_alltoall_v(
     num_features = local_send_tensor.shape[2]
     num_src_rows = local_send_tensor.shape[1]
 
-    # For debugging: Delete later
-    dist.barrier()
-    for i in range(world_size):
-        if i == rank:
-            print(f"Rank {rank} starting comm")
-        dist.barrier()
-
     recv_buffer_dict = {}
     if cache is None:
 

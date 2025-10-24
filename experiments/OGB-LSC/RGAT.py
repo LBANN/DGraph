@@ -80,66 +80,25 @@ class CommAwareGAT(nn.Module):
 
         _src_indices = edge_index[:, 0, :]
         _dst_indices = edge_index[:, 1, :]
-        self.comm.barrier()
         _src_rank_mappings = torch.cat(
             [rank_mapping[0].unsqueeze(0), rank_mapping[0].unsqueeze(0)], dim=0
         )
-        self.comm.barrier()
         _dst_rank_mappings = torch.cat(
             [rank_mapping[0].unsqueeze(0), rank_mapping[1].unsqueeze(0)], dim=0
         )
-
-        self.comm.barrier()
-        if self.comm.get_rank() == 0:
-            print("starting gather")
-        self.comm.barrier()
-
-        if self.comm.get_rank() == 0:
-            print(f"h shape: {h.shape}")
-            print(f"h_j shape: {h_j.shape}")
-            # breakpoint()
-        self.comm.barrier()
-
-        # sys.exit(0)  # --- IGNORE ---
 
         h_i = self.comm.gather(
             h, _dst_indices, _dst_rank_mappings, cache=dest_gather_cache
         )
 
-        if self.comm.get_rank() == 0:
-            print("finished computing _dst_rank_mappings")
-        self.comm.barrier()
-
-        for i in range(self.comm.get_world_size()):
-            self.comm.barrier()
-            if self.comm.get_rank() == i:
-                print(f"Rank {i} h_i shape: {h_i.shape}")
-            self.comm.barrier()
-
-        self.comm.barrier()
-        if self.comm.get_rank() == 0:
-            print("finished gathering h_i")
-        self.comm.barrier()
-
         h_j = self.comm.gather(
             h_j, _src_indices, _src_rank_mappings, cache=src_gather_cache
         )
-        self.comm.barrier()
-        if self.comm.get_rank() == 0:
-            print("finished gathering h_j")
-        self.comm.barrier()
 
         messages = torch.cat([h_i, h_j], dim=-1)
         edge_scores = self.leaky_relu(self.project_message(messages))
         numerator = torch.exp(edge_scores)
 
-        if self.comm.get_rank() == 0:
-            print(f"Numerator shape: {numerator.shape}")
-
-        self.comm.barrier()
-        if self.comm.get_rank() == 0:
-            print("starting scatter")
-        self.comm.barrier()
         denominator = self.comm.scatter(
             numerator,
             _dst_indices,
@@ -147,14 +106,10 @@ class CommAwareGAT(nn.Module):
             h.size(1),
             cache=dest_scatter_cache,
         )
-        self.comm.barrier()
-        if self.comm.get_rank() == 0:
-            print("finished scatter")
-        self.comm.barrier()
+
         denominator = self.comm.gather(
             denominator, _src_indices, _src_rank_mappings, cache=dest_gather_cache
         )
-        self.comm.barrier()
 
         alpha_ij = numerator / (denominator + 1e-16)
         attention_messages = h_j * alpha_ij
@@ -350,18 +305,6 @@ class CommAwareRGAT(nn.Module):
                     dest_scatter_cache = None
                     dest_gather_cache = None
 
-                self.comm.barrier()
-                if self.comm.get_rank() == 0:
-                    print(
-                        f"Layer {i} Relation {j} started on rank {self.comm.get_rank()}"
-                    )
-                    print(
-                        f"Edge index shape: {edge_index.shape}"
-                        f" Edge type: {edge_type}",
-                        f" src tensor shape: {outs[src_edge_type].shape}",
-                        f" dst tensor shape: {outs[dst_edge_type].shape}",
-                    )
-                self.comm.barrier()
                 temp_outs[dst_edge_type] += self.layers[i][j](
                     outs[dst_edge_type],
                     edge_index,
@@ -371,10 +314,6 @@ class CommAwareRGAT(nn.Module):
                     dest_gather_cache=dest_gather_cache,
                     dest_scatter_cache=dest_scatter_cache,
                 )
-                self.comm.barrier()
-                if self.comm.get_rank() == 0:
-                    print(f"Layer {i} Relation {j} done on rank {self.comm.get_rank()}")
-                self.comm.barrier()
             outs = [
                 self.bn_layers[i](temp_outs[feat]) for feat in range(len(temp_outs))
             ]
