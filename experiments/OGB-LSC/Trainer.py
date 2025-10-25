@@ -35,10 +35,10 @@ class Trainer:
         torch.cuda.set_device(rank % num_gpus)
         self.device = torch.device("cuda")
         self.model = CommAwareRGAT(
-            in_channels=self.model_config.num_features,
-            out_channels=self.model_config.num_classes,
+            in_channels=self.dataset.num_features,
+            out_channels=self.dataset.num_classes,
+            num_relations=self.dataset.num_relations,
             hidden_channels=self.model_config.hidden_channels,
-            num_relations=self.model_config.num_relations,
             num_layers=self.model_config.num_layers,
             heads=self.model_config.heads,
             comm=comm,
@@ -63,6 +63,18 @@ class Trainer:
         self.model.train()
 
         xs, edge_index, edge_type, rank_mapping = self.dataset[0]
+
+        # Early sanity check: first feature tensor last dim vs configured num_features
+        configured = self.dataset.num_features
+        actual = xs[0].size(-1) if isinstance(xs, (list, tuple)) else xs.size(-1)
+        if (
+            configured != actual
+            and self.comm.get_rank() == 0
+        ):
+            print(
+                f"[RGAT] Warning: configured in_channels={configured} but feature dim={actual}; "
+                f"layers will adapt lazily."
+            )
 
         # Fetch once; masks/targets are static across epochs
         train_mask = self.dataset.get_mask("train")

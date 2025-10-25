@@ -97,9 +97,9 @@ class HeterogeneousDataset:
         self.num_papers = num_papers
         self.num_authors = num_authors
         self.num_institutions = num_institutions
-        self.num_classes = num_classes
-        self.num_features = num_features
-        self.num_relations = 5
+        self._num_classes = num_classes
+        self._num_features = num_features
+        self._num_relations = 5
         self.comm = comm
         self.rank = comm.get_rank()
         self.world_size = comm.get_world_size()
@@ -194,6 +194,18 @@ class HeterogeneousDataset:
         self.institution_features = torch.randn(
             (institution_vertices_cur_rank, num_features), dtype=torch.float32
         )
+
+    @property
+    def num_features(self) -> int:
+        return self._num_features
+
+    @property
+    def num_classes(self) -> int:
+        return self._num_classes
+
+    @property
+    def num_relations(self) -> int:
+        return self._num_relations
 
     # def get_validation_mask(self):
     #     # Only papers are classified

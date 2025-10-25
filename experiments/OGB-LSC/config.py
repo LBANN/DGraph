@@ -17,14 +17,15 @@ from dataclasses import dataclass
 
 @dataclass
 class ModelConfig:
-    hidden_channels: int = 16
+    hidden_channels: int = 1024
     dropout: float = 0.5
     num_layers: int = 2
-    num_features: int = 16
-    num_relations: int = 5
-    num_classes: int = 153
     heads: int = 4
     use_cache: bool = True
+    # Those numbers are available in the dataset classes (synthetic or mag240m)
+    # num_features: int = 768
+    # num_relations: int = 5
+    # num_classes: int = 153
 
 
 @dataclass

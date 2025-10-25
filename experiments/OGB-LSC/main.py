@@ -70,14 +70,22 @@ def main(
     elif dataset == "mag240m":
         from mag240m.DGraph_MAG240M import DGraph_MAG240M as Dataset
 
-        assert osp.exists(paper_rank_mapping_file)
-        assert osp.exists(author_rank_mapping_file)
-        assert osp.exists(institution_rank_mapping_file)
-        paper_rank_mapping = torch.load(paper_rank_mapping_file, weights_only=False)
-        author_rank_mapping = torch.load(author_rank_mapping_file, weights_only=False)
-        institution_rank_mapping = torch.load(
-            institution_rank_mapping_file, weights_only=False
-        )
+        paper_rank_mapping = None
+        if len(paper_rank_mapping_file) > 0:
+            assert osp.exists(paper_rank_mapping_file)
+            paper_rank_mapping = torch.load(paper_rank_mapping_file, weights_only=False)
+
+        author_rank_mapping = None
+        if len(author_rank_mapping_file) > 0:
+            assert osp.exists(author_rank_mapping_file)
+            author_rank_mapping = torch.load(author_rank_mapping_file, weights_only=False)
+
+        institution_rank_mapping = None
+        if len(institution_rank_mapping_file) > 0:
+            assert osp.exists(institution_rank_mapping_file)
+            institution_rank_mapping = torch.load(
+                institution_rank_mapping_file, weights_only=False
+            )
 
         graph_dataset = partial(
             Dataset,
