@@ -18,6 +18,7 @@ from torch_sparse import SparseTensor
 import numpy as np
 from tqdm import tqdm
 import os.path as osp
+from DGraph.Communicator import Communicator
 
 
 def get_col_slice(x, start_row_idx, end_row_idx, start_col_idx, end_col_idx):
@@ -112,7 +113,7 @@ def _generate_features_from_paper_features(
 class DGraph_MAG240M:
     def __init__(
         self,
-        comm,
+        comm: Communicator,
         data_dir: str = "data/MAG240M",
         paper_rank_mappings: Optional[torch.Tensor] = None,
         author_rank_mappings: Optional[torch.Tensor] = None,
@@ -126,6 +127,7 @@ class DGraph_MAG240M:
         self.num_authors = self.dataset.num_authors
         self.num_institutions = self.dataset.num_institutions
         self.num_classes = self.dataset.num_classes
+
         self.paper_rank_mappings = (
             paper_rank_mappings
             if paper_rank_mappings is not None
@@ -158,6 +160,8 @@ class DGraph_MAG240M:
         self.num_features = 768
         # paper -> paper
         self.process_feature_data()
+
+        self.paper_features = 
 
     def process_feature_data(self):
         dataset = self.dataset
@@ -218,6 +222,54 @@ class DGraph_MAG240M:
 
     def to(self, device):
         return self
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, idx):
+        # There are 5 relations:
+        # paper -> paper
+        # paper -> author
+        # author -> paper
+        # author -> institution
+        # institution -> author
+        edge_index = [
+            self.paper_2_paper_edges,
+            self.author_2_paper_edges,
+            self.author_2_paper_edges.flip(self.author_2_paper_edges.dim() - 2),
+            self.author_2_institution_edges,
+            self.author_2_institution_edges.flip(
+                self.author_2_institution_edges.dim() - 2
+            ),
+        ]
+        # Locations of the edges
+        rank_mappings = [
+            [self.paper_src_data_mappings, self.paper_dest_data_mappings],
+            [
+                self.author_2_paper_src_data_mappings,
+                self.author_2_paper_dest_data_mappings,
+            ],
+            [
+                self.author_2_paper_dest_data_mappings,
+                self.author_2_paper_src_data_mappings,
+            ],
+            [
+                self.author_2_institution_src_data_mappings,
+                self.author_2_institution_dest_data_mappings,
+            ],
+            [
+                self.author_2_institution_dest_data_mappings,
+                self.author_2_institution_src_data_mappings,
+            ],
+        ]
+        edge_type = [(0, 0), (1, 0), (0, 1), (1, 2), (2, 1)]
+        features = [
+            self.paper_features,
+            self.author_features,
+            self.institution_features,
+        ]
+
+        return (features, edge_index, edge_type, rank_mappings)
 
 
 if __name__ == "__main__":
