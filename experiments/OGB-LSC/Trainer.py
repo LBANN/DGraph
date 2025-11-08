@@ -64,18 +64,6 @@ class Trainer:
 
         xs, edge_index, edge_type, rank_mapping = self.dataset[0]
 
-        # Early sanity check: first feature tensor last dim vs configured num_features
-        configured = self.dataset.num_features
-        actual = xs[0].size(-1) if isinstance(xs, (list, tuple)) else xs.size(-1)
-        if (
-            configured != actual
-            and self.comm.get_rank() == 0
-        ):
-            print(
-                f"[RGAT] Warning: configured in_channels={configured} but feature dim={actual}; "
-                f"layers will adapt lazily."
-            )
-
         # Fetch once; masks/targets are static across epochs
         train_mask = self.dataset.get_mask("train")
         target = self.dataset.get_target("train")
