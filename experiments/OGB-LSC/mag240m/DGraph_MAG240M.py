@@ -169,10 +169,9 @@ class DGraph_MAG240M:
             self.institution_rank_mappings,
         )
 
-        _vertices = torch.randperm(self.num_papers)
-        self.train_mask = _vertices[: int(0.7 * self.num_papers)]
-        self.val_mask = _vertices[int(0.7 * self.num_papers) : int(0.85 * self.num_papers)]
-        self.test_mask = _vertices[int(0.85 * self.num_papers) :]
+        self.train_mask = self.dataset.get_idx_split('train')
+        self.val_mask = self.dataset.get_idx_split('valid')
+        self.test_mask = self.dataset.get_idx_split('test-dev')
 
         local_papers_mask = self.paper_rank_mappings == self.rank
         local_authors_mask = self.author_rank_mappings == self.rank
