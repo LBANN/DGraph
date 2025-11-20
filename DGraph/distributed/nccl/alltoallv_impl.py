@@ -159,3 +159,23 @@ def _nccl_alltoallv_with_dict(send_buffer_dict, recv_buffer_dict, rank, world_si
     for key, recv_buffer in recv_buffer_dict.items():
         recv_buffer_dict[key] = recv_buffer.float()
     return recv_buffer_dict
+
+
+def torch_alltoallv_with_comm_map(contiguous_send_tensor: torch.Tensor,
+                                  contiguous_recv_tensor: torch.Tensor,
+                                  send_comm_map: torch.Tensor,
+                                  recv_comm_map: torch.Tensor,
+                                  rank: int,
+                                  world_size: int):
+    assert len(send_comm_map) == world_size, "Send comm map should be of size world_size"
+    assert len(recv_comm_map) == world_size, "Recv comm map should be of size world_size"
+
+    send_sizes = send_comm_map.tolist()
+    recv_sizes = recv_comm_map.tolist()
+
+    send_list = list(torch.split(contiguous_send_tensor, send_sizes, dim=1))
+    recv_list = list(torch.split(contiguous_recv_tensor, recv_sizes, dim=1))
+    
+    dist.all_to_all(recv_list, send_list)
+    return recv_list
+

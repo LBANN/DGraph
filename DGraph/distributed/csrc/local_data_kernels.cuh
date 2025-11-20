@@ -251,4 +251,113 @@ namespace Local
       }
     }
   }
+
+  /**
+   * 
+   * Masked Gather Kernel operation that performs the operation:
+    Y [mask[i]] = X [indices[i]]
+    
+    where Y is the output matrix, X is the input matrix, indices is the index matrix, and mask is the mask matrix.
+   */
+
+  __global__ void Masked_Scatter_Gather_Kernel(
+      const float *__restrict__ values,
+      const long *__restrict__ indices,
+      const long *__restrict__ mask,
+      float *__restrict__ output,
+      const int mini_batch_size,
+      const int num_indices,
+      const int num_cols,
+      const int num_output_rows)
+  {
+    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
+    const size_t gidz = threadIdx.z + blockIdx.z * blockDim.z;
+
+    const size_t nthreadsx = gridDim.x * blockDim.x;
+    const size_t nthreadsy = gridDim.y * blockDim.y;
+    const size_t nthreadsz = gridDim.z * blockDim.z;
+
+    for (size_t mb_i = gidz; mb_i < mini_batch_size; mb_i += nthreadsz)
+    {
+      const auto values_offset = mb_i * num_cols * num_indices;
+      const auto output_offset = mb_i * num_cols * num_output_rows;
+      const auto ind_offset = mb_i * num_indices;
+      const auto mask_offset = mb_i * num_indices;
+
+      for (size_t row = gidy; row < num_indices; row += nthreadsy)
+      {
+        const auto output_row = mask[mask_offset + row];
+        const auto input_row = indices[ind_offset + row];
+        
+        for (size_t col = gidx; col < num_cols; col += nthreadsx)
+        {
+          output[output_offset + output_row * num_cols + col] = values[values_offset + input_row * num_cols + col];
+        }
+      }
+    }
+  }
+
+  /*
+   *
+   Optimized masked scatter gather kernel that performs the operation:
+    Y [mask[i]] = X [indices[i]]
+
+    This kernel is optimized for the case where the num_cols is a multiple of 4.
+    
+    where Y is the output matrix, X is the input matrix, indices is the index matrix, and mask is the mask matrix.
+   */
+   __global__ void Optimized_Masked_Scatter_Gather_Kernel(
+       const float *__restrict__ values,
+       const long *__restrict__ indices,
+       const long *__restrict__ mask,
+       float *__restrict__ output,
+       const int mini_batch_size,
+       const int num_indices,
+       const int num_cols,
+       const int num_output_rows)
+   {
+    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
+    const size_t gidz = threadIdx.z + blockIdx.z * blockDim.z;
+
+    const size_t nthreadsx = gridDim.x * blockDim.x;
+    const size_t nthreadsy = gridDim.y * blockDim.y;
+    const size_t nthreadsz = gridDim.z * blockDim.z;
+
+    // Grid-stride loop over mini-batches
+    for (size_t mb_i = gidz; mb_i < mini_batch_size; mb_i += nthreadsz)
+    {
+      const auto values_offset = mb_i * num_cols / 4 * num_indices;
+      const auto output_offset = mb_i * num_cols / 4 * num_output_rows;
+      const auto ind_offset = mb_i * num_indices;
+      const auto mask_offset = mb_i * num_indices;
+
+      // Grid-stride loop over rows
+      for (size_t row = gidy; row < num_indices; row += nthreadsy)
+      {
+        long output_row, input_row;
+        
+        if (threadIdx.x == 0) {
+            output_row = mask[mask_offset + row];
+            input_row = indices[ind_offset + row];
+        }
+
+        output_row = __shfl_sync(0xFFFFFFFF, output_row, 0);
+        input_row = __shfl_sync(0xFFFFFFFF, input_row, 0);
+    
+        output_row = mask[mask_offset + row]; 
+        input_row = indices[ind_offset + row];
+
+        size_t col = gidx;
+        
+        for (; col < num_cols / 4; col += nthreadsx)
+        {
+          const float4 values_vec = reinterpret_cast<const float4*>(values)[values_offset + input_row * num_cols / 4 + col];
+          float4& output_vec = reinterpret_cast<float4*>(output)[output_offset + output_row * num_cols / 4  + col];
+          output_vec = values_vec;
+        }
+      }
+    }
+   }
 } // namespace Local

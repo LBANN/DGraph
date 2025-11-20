@@ -115,3 +115,64 @@ torch::Tensor local_masked_scatter(torch::Tensor input,
   CUDACHECK(cudaGetLastError());
   return output;
 }
+
+torch::Tensor local_masked_scatter_gather(torch::Tensor input,
+                                          torch::Tensor indices,
+                                          torch::Tensor mask,
+                                          torch::Tensor output,
+                                          const int num_batches,
+                                          const int num_values_rows,
+                                          const int num_cols,
+                                          const int num_output_rows,
+                                          const int rank)
+  {
+    CHECK_INPUT(input);
+    CHECK_INPUT(indices);
+    CHECK_INPUT(mask);
+    CHECK_INPUT(output);
+    
+    const float *input_ptr = input.data_ptr<float>();
+    const long *indices_ptr = indices.data_ptr<long>();
+    const float *mask_ptr = mask.data_ptr<float>();
+    float *output_ptr = output.data_ptr<float>();
+    
+    dim3 block_dims, grid_dims;
+    block_dims.x = 32;
+    block_dims.y = 32;
+    block_dims.z = 1;
+    
+    const auto num_grids_needed = (num_output_rows + block_dims.y - 1) / block_dims.y;
+    const auto num_col_grids_needed = (num_cols + block_dims.x - 1) / block_dims.x;
+    grid_dims.x = num_col_grids_needed < 65535 ? num_col_grids_needed : 65535;
+    grid_dims.y = num_grids_needed < 65535 ? num_grids_needed : 65535;
+    grid_dims.z = 1;
+    
+    at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(input.device().index());
+    
+    if (num_cols % 4 != 0) 
+    {
+      Local::Masked_Scatter_Gather_Kernel<<<grid_dims, block_dims>>>(input_ptr,
+                                                                        indices_ptr,
+                                                                        mask_ptr,
+                                                                        output_ptr,
+                                                                        num_batches,
+                                                                        num_values_rows,
+                                                                        num_cols,
+                                                                        num_output_rows,
+                                                                        rank);
+    }
+    else
+    {
+      Local::Optimized_Masked_Scatter_Gather_Kernel<<<grid_dims, block_dims>>>(input_ptr,
+                                                                        indices_ptr,
+                                                                        mask_ptr,
+                                                                        output_ptr,
+                                                                        num_batches,
+                                                                        num_values_rows,
+                                                                        num_cols,
+                                                                        num_output_rows,
+                                                                        rank);
+    }
+    CUDACHECK(cudaGetLastError());
+    return output;
+  }

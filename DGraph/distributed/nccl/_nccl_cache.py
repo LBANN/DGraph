@@ -64,6 +64,9 @@ class NCCLScatterCache:
     world_size: int
 
 
+# @dataclass 
+# class 
+
 def all_to_all_cache_helper(
     indices, edge_placement, edge_vertex_ranks, num_rows, rank, world_size
 ):
