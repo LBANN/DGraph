@@ -4,57 +4,111 @@ from torch.autograd import Function
 import torch.distributed as dist
 from dataclasses import dataclass
 from DGraph.distributed.nccl._nccl_cache import NCCLGatherCache, NCCLScatterCache
-from DGraph.distributed.RankLocalOps import OptimizedRankLocalMaskedGather
+from DGraph.distributed.RankLocalOps import (
+    OptimizedRankLocalMaskedGather,
+    OptimizedLocalScatterGather,
+)
+from DGraph.distributed.nccl._NCCLCommPlan import NCCLGraphCommPlan
 
-@dataclass
-class GatherCommPlan:
-    """
-    Class to store communication plan for distributed gather
 
-    Attributes:
-        rank (int): Local rank
-        world_size (int): World size
-        local_tensor_size (int): Size of the return local tensor after local and global gather
-        send_comm_vector (torch.Tensor): Communication vector of shape [world_size] of messages to send to each rank
-        recv_comm_vector (torch.Tensor): Communication vector of shape [world_size] of messages to receive from each rank
-        local_send_buffer_size (int): Size of the local send buffer
-        local_recv_buffer_size (int): Size of the local recv buffer
-        local_output_rows (torch.Tensor): Local rows that don't need communication
-        local_gather_indices (torch.Tensor): Indices of rows in local input to write to local_output_rows 
-        comm_output_rows (torch.Tensor): Local rows that need data from remote ranks
-        comm_output_indices (torch.Tensor): Indices of rows in local input to write to comm_output_rows        
-
-    """ 
-    
-    rank: int
-    world_size: int
-    local_tensor_size: int
-    send_comm_vector: torch.Tensor
-    recv_comm_vector: torch.Tensor
-    local_send_buffer_size: int
-    local_recv_buffer_size: int
-    local_output_rows: torch.Tensor
-    local_gather_indices: torch.Tensor
-    comm_output_rows: torch.Tensor
-    comm_output_indices: torch.Tensor
-    
-    
 class Cached_Static_GatherFunction(Function):
     @staticmethod
     def forward(
         ctx,
         local_send_tensor: torch.Tensor,
-        comm_plan: GatherCommPlan,
-    ):
+        comm_plan: NCCLGraphCommPlan,
+    ) -> torch.Tensor:
         """
-        Forward pass for distributed gather
-        
+        Forward pass for distributed gather using the common plan to effectively perform:
+            y[i] = x[indices[i]]
+
+        The process is as follows:
+            1) Perform local gather from local vertices to local edges
+            2) Gather
+
         Args:
             ctx (torch.autograd.FunctionContext): Context object
             local_send_tensor (torch.Tensor): Local send tensor
             comm_plan (GatherCommPlan): Communication plan
         """
-        assert (len(local_send_tensor.shape) == 3), "Local send tensor must be of shape (batch_size, num_rows, num_features)"
+        assert (
+            len(local_send_tensor.shape) == 3
+        ), "Local send tensor must be of shape (batch_size, num_rows, num_features)"
+        ctx.comm_plan = comm_plan
+
+        num_features = local_send_tensor.shape[-1]
+        num_batches = local_send_tensor.shape[0]
+
+        output_tensor = torch.zeros(
+            num_batches, comm_plan.num_local_edges, num_features
+        ).to(local_send_tensor.device)
+
+        # Local vertex to edge gather
+        output_tensor = OptimizedLocalScatterGather(
+            local_send_tensor,
+            output_tensor,
+            comm_plan.local_edge_idx,
+            comm_plan.local_vertex_idx,
+        )
+
+        # To do: Combine this with the local gather above to reduce kernel launches
+        send_buf = local_send_tensor[:, comm_plan.boundary_edge_idx, :]
+
+        total_recv = sum(comm_plan.boundary_edge_splits)
+
+        recv_buffer = torch.empty(num_batches, total_recv, num_features).to(
+            local_send_tensor.device
+        )
+        dist.all_to_all_single(
+            recv_buffer,
+            send_buf,
+            output_split_sizes=comm_plan.boundary_edge_splits,
+            input_split_sizes=comm_plan.boundary_edge_splits,
+        )
+
+        output_tensor = OptimizedLocalScatterGather(
+            recv_buffer,
+            output_tensor,
+            comm_plan.boundary_edge_buffer_map,
+            comm_plan.boundary_vertex_idx,
+        )
+
+        return output_tensor
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        Backward pass for distributed gather
+
+        Args:
+            ctx (torch.autograd.FunctionContext): Context object
+            grad_output (torch.Tensor): Gradient of the output tensor
+        """
+        comm_plan = ctx.comm_plan
+
+        grad_output = torch.zeros_like(grad_output)
+
+        return grad_output, None
+
+
+class Cached_Static_ScatterFunction(Function):
+    @staticmethod
+    def forward(
+        ctx,
+        local_send_tensor: torch.Tensor,
+        comm_plan: NCCLGraphCommPlan,
+    ) -> torch.Tensor:
+        """
+        Forward pass for distributed scatter
+
+        Args:
+            ctx (torch.autograd.FunctionContext): Context object
+            local_send_tensor (torch.Tensor): Local send tensor
+            comm_plan (NCCLGraphCommPlan): Communication plan
+        """
+        assert (
+            len(local_send_tensor.shape) == 3
+        ), "Local send tensor must be of shape (batch_size, num_rows, num_features)"
         ctx.comm_plan = comm_plan
         num_features = local_send_tensor.shape[-1]
         num_batches = local_send_tensor.shape[0]
@@ -65,17 +119,17 @@ class Cached_Static_GatherFunction(Function):
 
         return output_tensor
 
-    
+    @staticmethod
     def backward(ctx, grad_output):
         """
-        Backward pass for distributed gather
-        
+        Backward pass for distributed scatter
+
         Args:
             ctx (torch.autograd.FunctionContext): Context object
             grad_output (torch.Tensor): Gradient of the output tensor
         """
         comm_plan = ctx.comm_plan
-        
+
         grad_output = torch.zeros_like(grad_output)
 
         return grad_output, None
@@ -104,7 +158,6 @@ class GatherFunction(Function):
             torch.tensor(world_size),
         )
 
-
         # Since NCCL is two-sided, we need to push from local rank and pull from
         # remote rank to get the global gather
 
@@ -120,14 +173,13 @@ class GatherFunction(Function):
         batch_size = 1
         num_features = local_send_tensor.shape[2]
 
-
         local_slice_mask = edge_rank_loc == rank
 
         num_local_output_rows = int(local_slice_mask.sum().item())
 
-        recv_tensor = torch.zeros(
-            batch_size, num_local_output_rows, num_features
-        ).to(local_send_tensor.device)
+        recv_tensor = torch.zeros(batch_size, num_local_output_rows, num_features).to(
+            local_send_tensor.device
+        )
 
         local_indices_slice = indices[local_slice_mask.unsqueeze(0)]
         local_rank_mapping = edge_rank_loc[local_slice_mask]
@@ -321,7 +373,6 @@ class ScatterFunction(Function):
         num_local_output_rows: int,
         rank: int,
         world_size: int,
-        scatter_cache: Optional[NCCLScatterCache] = None,
     ) -> torch.Tensor:
 
         ctx.save_for_backward(

@@ -31,14 +31,19 @@ from DGraph.distributed.RankLocalOps import (
     RankLocalRenumberingWithMapping,
     OptimizedRankLocalMaskedGather,
 )
+from DGraph.distributed.nccl._torch_func_impl import (
+    GatherFunction,
+    ScatterFunction,
+    Cached_Static_ScatterFunction,
+    Cached_Static_GatherFunction,
+)
+
 from torch.autograd import Function
 from DGraph.utils import largest_split
+from typing import overload
 
 
 TIMINGS = {"Gather_Index_Forward": [], "Gather_Forward_Local": []}
-
-
-
 
 
 class NCCLBackendEngine(BackendEngine):
@@ -102,57 +107,73 @@ class NCCLBackendEngine(BackendEngine):
         end_index = start_index + local_size
         return tensor[:, start_index:end_index]
 
+    @overload
     def scatter(
         self,
         local_send_tensor: torch.Tensor,
         indices: torch.Tensor,
         rank_mappings: torch.Tensor,
         output_size: int,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def scatter(
+        self,
+        local_send_tensor: torch.Tensor,
+        *,
+        cache: NCCLScatterCache,
+    ) -> torch.Tensor: ...
+
+    def scatter(
+        self,
+        local_send_tensor: torch.Tensor,
+        indices: Optional[torch.Tensor] = None,
+        rank_mappings: Optional[torch.Tensor] = None,
+        output_size: Optional[int] = None,
         cache: Optional[NCCLScatterCache] = None,
-        *args,
-        **kwargs,
     ) -> torch.Tensor:
-        send_tensor_shape = local_send_tensor.shape
-        b_size = send_tensor_shape[0]
 
-        world_size = self.get_world_size()
-        rank = self.get_rank()
-        assert b_size == 1, "Multi-batch gather disabled for testing"
-        assert len(send_tensor_shape) == 3, "Currently only support 3D tensors"
-        assert indices.shape[-1] == rank_mappings.shape[-1], (
-            f"Indices shape: {indices.shape} and rank mappings shape: "
-            + f" {rank_mappings.shape} must match"
-        )
-        assert rank_mappings.shape[0] == 2, (
-            "Rank mappings shape[0] expected to be 2, "
-            + f"but got {rank_mappings.shape[0]}"
-        )
-        assert (
-            local_send_tensor.device.type == "cuda"
-        ), f"Device: {local_send_tensor.device.type} expected cuda"
-        assert output_size > 0, "Output size must be greater than 0"
+        if cache is not None:
+            return Cached_Static_ScatterFunction.apply(local_send_tensor, cache)  # type: ignore
 
-        src_ranks = rank_mappings[0]
-        dest_ranks = rank_mappings[1]
-
-        use_cache = cache is not None
-
-        if use_cache:
-            assert type(cache) == NCCLScatterCache
-            scatter_cache = cache
         else:
-            scatter_cache = None
+            if indices is None or rank_mappings is None or output_size is None:
+                raise ValueError(
+                    "Indices, rank mappings, and output size must be provided for NCCL backend"
+                )
 
-        output_tensor = ScatterFunction.apply(
-            local_send_tensor,
-            indices,
-            src_ranks,
-            dest_ranks,
-            output_size,
-            rank,
-            world_size,
-            scatter_cache,
-        )
+            send_tensor_shape = local_send_tensor.shape
+            b_size = send_tensor_shape[0]
+
+            world_size = self.get_world_size()
+            rank = self.get_rank()
+            assert b_size == 1, "Multi-batch gather disabled for testing"
+            assert len(send_tensor_shape) == 3, "Currently only support 3D tensors"
+            assert indices.shape[-1] == rank_mappings.shape[-1], (
+                f"Indices shape: {indices.shape} and rank mappings shape: "
+                + f" {rank_mappings.shape} must match"
+            )
+            assert rank_mappings.shape[0] == 2, (
+                "Rank mappings shape[0] expected to be 2, "
+                + f"but got {rank_mappings.shape[0]}"
+            )
+            assert (
+                local_send_tensor.device.type == "cuda"
+            ), f"Device: {local_send_tensor.device.type} expected cuda"
+            assert output_size > 0, "Output size must be greater than 0"
+
+            src_ranks = rank_mappings[0]
+            dest_ranks = rank_mappings[1]
+
+            output_tensor = ScatterFunction.apply(
+                local_send_tensor,
+                indices,
+                src_ranks,
+                dest_ranks,
+                output_size,
+                rank,
+                world_size,
+            )
 
         return output_tensor  # type: ignore
 

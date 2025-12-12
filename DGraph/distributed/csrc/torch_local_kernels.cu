@@ -123,8 +123,7 @@ torch::Tensor local_masked_scatter_gather(torch::Tensor input,
                                           const int num_batches,
                                           const int num_values_rows,
                                           const int num_cols,
-                                          const int num_output_rows,
-                                          const int rank)
+                                          const int num_output_rows)
   {
     CHECK_INPUT(input);
     CHECK_INPUT(indices);
@@ -158,8 +157,7 @@ torch::Tensor local_masked_scatter_gather(torch::Tensor input,
                                                                         num_batches,
                                                                         num_values_rows,
                                                                         num_cols,
-                                                                        num_output_rows,
-                                                                        rank);
+                                                                        num_output_rows);
     }
     else
     {
@@ -170,8 +168,7 @@ torch::Tensor local_masked_scatter_gather(torch::Tensor input,
                                                                         num_batches,
                                                                         num_values_rows,
                                                                         num_cols,
-                                                                        num_output_rows,
-                                                                        rank);
+                                                                        num_output_rows);
     }
     CUDACHECK(cudaGetLastError());
     return output;
