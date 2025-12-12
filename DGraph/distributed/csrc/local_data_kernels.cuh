@@ -252,14 +252,42 @@ namespace Local
     }
   }
 
+  __device__ __forceinline__ float4 atomicAdd_float4(float4& cur_val, const float4 new_val)
+  {
+    atomicAdd(&(cur_val.x), new_val.x);
+    atomicAdd(&(cur_val.y), new_val.y);
+    atomicAdd(&(cur_val.z), new_val.z);
+    atomicAdd(&(cur_val.w), new_val.w);
+    return cur_val;
+  }
+
+  __device__ __forceinline__ float4 set_float4(float& cur_val, const float new_val)
+  {
+    cur_val = new_val;
+    return reinterpret_cast<float4&>(cur_val);
+  }
+
+  __device__ __forceinline__ float atomicAdd_float(float& cur_val, const float new_val)
+  {
+    atomicAdd(&cur_val, new_val);
+    return cur_val;
+  }
+
+  __device__ __forceinline__ float set_float(float& cur_val, const float new_val)
+  {
+    cur_val = new_val;
+    return cur_val;
+  }
+
   /**
    * 
    * Masked Gather Kernel operation that performs the operation:
-    Y [mask[i]] = X [indices[i]]
+    Y [mask[i]] = Op(Y [mask[i]], X [indices[i]])
     
     where Y is the output matrix, X is the input matrix, indices is the index matrix, and mask is the mask matrix.
    */
 
+   template <auto op>
   __global__ void Masked_Scatter_Gather_Kernel(
       const float *__restrict__ values,
       const long *__restrict__ indices,
@@ -292,7 +320,9 @@ namespace Local
         
         for (size_t col = gidx; col < num_cols; col += nthreadsx)
         {
-          output[output_offset + output_row * num_cols + col] = values[values_offset + input_row * num_cols + col];
+          auto &output_val = output[output_offset + output_row * num_cols + col];
+          const auto input_val = values[values_offset + input_row * num_cols + col];
+          output_val = op(output_val, input_val);
         }
       }
     }
@@ -307,6 +337,7 @@ namespace Local
     
     where Y is the output matrix, X is the input matrix, indices is the index matrix, and mask is the mask matrix.
    */
+   template <auto op>
    __global__ void Optimized_Masked_Scatter_Gather_Kernel(
        const float *__restrict__ values,
        const long *__restrict__ indices,
@@ -355,9 +386,10 @@ namespace Local
         {
           const float4 values_vec = reinterpret_cast<const float4*>(values)[values_offset + input_row * num_cols / 4 + col];
           float4& output_vec = reinterpret_cast<float4*>(output)[output_offset + output_row * num_cols / 4  + col];
-          output_vec = values_vec;
+          output_vec = op(output_vec, values_vec);
         }
       }
     }
    }
+   
 } // namespace Local

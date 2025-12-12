@@ -11,7 +11,7 @@ from DGraph.distributed.RankLocalOps import (
 from DGraph.distributed.nccl._NCCLCommPlan import NCCLGraphCommPlan
 
 
-class Cached_Static_GatherFunction(Function):
+class CommPlan_GatherFunction(Function):
     @staticmethod
     def forward(
         ctx,
@@ -82,16 +82,44 @@ class Cached_Static_GatherFunction(Function):
 
         Args:
             ctx (torch.autograd.FunctionContext): Context object
-            grad_output (torch.Tensor): Gradient of the output tensor
+            grad_output (torch.Tensor): Gradient of the output tensor.
+                Shape: (batch_size, num_local_edges, num_features)
         """
         comm_plan = ctx.comm_plan
+        num_features = grad_output.shape[-1]
+        num_batches = grad_output.shape[0]
+        device = grad_output.device
 
-        grad_output = torch.zeros_like(grad_output)
+        grad_input = torch.zeros(
+            num_batches, comm_plan.num_local_vertices, num_features, device=device
+        )
 
-        return grad_output, None
+        grad_input = OptimizedLocalScatterGather(
+            grad_output,
+            grad_input,
+            comm_plan.local_vertex_idx,
+            comm_plan.local_edge_idx,
+        )
+        send_buf = grad_output[:, comm_plan.boundary_vertex_idx, :]
+        total_recv = sum(comm_plan.boundary_vertex_splits)
+        recv_buffer = torch.empty(num_batches, total_recv, num_features).to(device)
+        dist.all_to_all_single(
+            recv_buffer,
+            send_buf,
+            output_split_sizes=comm_plan.boundary_vertex_splits,
+            input_split_sizes=comm_plan.boundary_edge_splits,
+        )
+        grad_input = OptimizedLocalScatterGather(
+            recv_buffer,
+            grad_input,
+            comm_plan.boundary_edge_buffer_map,
+            comm_plan.boundary_vertex_idx,
+        )
+
+        return grad_input, None
 
 
-class Cached_Static_ScatterFunction(Function):
+class CommPlan_ScatterFunction(Function):
     @staticmethod
     def forward(
         ctx,
