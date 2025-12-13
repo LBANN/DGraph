@@ -129,6 +129,51 @@ def OptimizedLocalScatterGather(
     return output
 
 
+def OptimizedRankLocalScatterSumGather(
+    src: torch.Tensor,
+    src_indices: torch.Tensor,
+    dst_indices: torch.Tensor,
+    output: torch.Tensor,
+):
+    """
+    Performs the operation
+
+    for i in range(len(src_indices)):
+        output[dst_indices[i]] += src[src_indices[i]]
+    Args:
+        src (torch.Tensor): Source tensor
+        src_indices (torch.Tensor): Source indices
+        dst_indices (torch.Tensor): Destination indices
+        output (torch.Tensor): Output tensor
+    Returns:
+        torch.Tensor: Output tensor after scatter-gather
+    """
+
+    if not _LOCAL_OPT_KERNELS_AVAILABLE:
+        warnings.warn(
+            "Optimized local kernels are not available. Falling back to the default implementation."
+        )
+        for i in range(src_indices.shape[0]):
+            output[:, dst_indices[i], :] += src[:, src_indices[i], :]
+    else:
+        bs = src.shape[0]
+        num_src_rows = src.shape[1]
+        num_features = src.shape[-1]
+        num_output_rows = output.shape[1]
+        local_masked_scatter_gather(
+            src,
+            src_indices.cuda(),
+            dst_indices.cuda(),
+            output,
+            bs,
+            num_src_rows,
+            num_features,
+            num_output_rows,
+            scatter_add=True,
+        )
+    return output
+
+
 def OutOfPlaceRankLocalMaskedGather(
     _src: torch.Tensor, indices: torch.Tensor, rank_mapping: torch.Tensor, rank: int
 ) -> torch.Tensor:
