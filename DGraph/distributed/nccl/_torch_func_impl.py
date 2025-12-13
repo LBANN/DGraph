@@ -140,12 +140,50 @@ class CommPlan_ScatterFunction(Function):
             len(local_send_tensor.shape) == 3
         ), "Local send tensor must be of shape (batch_size, num_rows, num_features)"
         ctx.comm_plan = comm_plan
+
         num_features = local_send_tensor.shape[-1]
         num_batches = local_send_tensor.shape[0]
 
         output_tensor = torch.zeros(
-            num_batches, comm_plan.local_tensor_size, num_features
+            num_batches, comm_plan.num_local_vertices, num_features
         ).to(local_send_tensor.device)
+
+        output_tensor = OptimizedRankLocalScatterSumGather(
+            src=local_send_tensor,
+            output=output_tensor,
+            src_indices=comm_plan.local_edge_idx,
+            dst_indices=comm_plan.local_vertex_idx,
+        )
+
+        total_send_rows = sum(comm_plan.boundary_edge_splits)
+
+        send_buf = torch.zeros(
+            num_batches, total_send_rows, num_features, device=local_send_tensor.device
+        )
+
+        send_buf = OptimizedRankLocalScatterSumGather(
+            src=local_send_tensor,
+            output=send_buf,
+            src_indices=comm_plan.boundary_edge_idx,
+            dst_indices=comm_plan.boundary_edge_buffer_map,
+        )
+
+        total_recv_rows = sum(comm_plan.boundary_vertex_splits)
+        recv_buffer = torch.empty(
+            num_batches, total_recv_rows, num_features, device=local_send_tensor.device
+        )
+        dist.all_to_all_single(
+            recv_buffer,
+            send_buf,
+            output_split_sizes=comm_plan.boundary_vertex_splits,
+            input_split_sizes=comm_plan.boundary_edge_splits,
+        )
+        output_tensor = OptimizedRankLocalScatterSumGather(
+            src=recv_buffer,
+            output=output_tensor,
+            src_indices=comm_plan.boundary_edge_buffer_map,
+            dst_indices=comm_plan.boundary_vertex_idx,
+        )
 
         return output_tensor
 
