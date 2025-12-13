@@ -169,7 +169,6 @@ def OptimizedRankLocalScatterSumGather(
             num_src_rows,
             num_features,
             num_output_rows,
-            scatter_add=True,
         )
     return output
 

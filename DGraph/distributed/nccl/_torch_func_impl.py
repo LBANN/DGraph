@@ -7,6 +7,7 @@ from DGraph.distributed.nccl._nccl_cache import NCCLGatherCache, NCCLScatterCach
 from DGraph.distributed.RankLocalOps import (
     OptimizedRankLocalMaskedGather,
     OptimizedLocalScatterGather,
+    OptimizedRankLocalScatterSumGather,
 )
 from DGraph.distributed.nccl._NCCLCommPlan import NCCLGraphCommPlan
 
@@ -45,10 +46,10 @@ class CommPlan_GatherFunction(Function):
 
         # Local vertex to edge gather
         output_tensor = OptimizedLocalScatterGather(
-            local_send_tensor,
-            output_tensor,
-            comm_plan.local_edge_idx,
-            comm_plan.local_vertex_idx,
+            src=local_send_tensor,
+            src_indices=comm_plan.local_edge_idx,
+            dst_indices=comm_plan.local_vertex_idx,
+            output=output_tensor,
         )
 
         # To do: Combine this with the local gather above to reduce kernel launches
@@ -67,10 +68,10 @@ class CommPlan_GatherFunction(Function):
         )
 
         output_tensor = OptimizedLocalScatterGather(
-            recv_buffer,
-            output_tensor,
-            comm_plan.boundary_edge_buffer_map,
-            comm_plan.boundary_vertex_idx,
+            src=recv_buffer,
+            src_indices=comm_plan.boundary_edge_buffer_map,
+            dst_indices=comm_plan.boundary_edge_idx,
+            output=output_tensor,
         )
 
         return output_tensor
@@ -94,12 +95,13 @@ class CommPlan_GatherFunction(Function):
             num_batches, comm_plan.num_local_vertices, num_features, device=device
         )
 
-        grad_input = OptimizedLocalScatterGather(
-            grad_output,
-            grad_input,
-            comm_plan.local_vertex_idx,
-            comm_plan.local_edge_idx,
+        grad_input = OptimizedRankLocalScatterSumGather(
+            src=grad_output,
+            output=grad_input,
+            src_indices=comm_plan.local_edge_idx,
+            dst_indices=comm_plan.local_vertex_idx,
         )
+
         send_buf = grad_output[:, comm_plan.boundary_vertex_idx, :]
         total_recv = sum(comm_plan.boundary_vertex_splits)
         recv_buffer = torch.empty(num_batches, total_recv, num_features).to(device)
@@ -109,11 +111,11 @@ class CommPlan_GatherFunction(Function):
             output_split_sizes=comm_plan.boundary_vertex_splits,
             input_split_sizes=comm_plan.boundary_edge_splits,
         )
-        grad_input = OptimizedLocalScatterGather(
-            recv_buffer,
-            grad_input,
-            comm_plan.boundary_edge_buffer_map,
-            comm_plan.boundary_vertex_idx,
+        grad_input = OptimizedRankLocalScatterSumGather(
+            src=recv_buffer,
+            output=grad_input,
+            src_indices=comm_plan.boundary_edge_buffer_map,
+            dst_indices=comm_plan.boundary_vertex_idx,
         )
 
         return grad_input, None

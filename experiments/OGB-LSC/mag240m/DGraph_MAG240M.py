@@ -19,6 +19,7 @@ import numpy as np
 from tqdm import tqdm
 import os.path as osp
 from DGraph.Communicator import Communicator
+from DGraph.distributed.nccl import NCCLGraphCommPlan, COO_to_NCCLCommPlan
 
 
 def get_col_slice(x, start_row_idx, end_row_idx, start_col_idx, end_col_idx):
@@ -61,6 +62,7 @@ def get_rank_mappings(num_nodes, world_size, rank):
         rank_mappings[start:end] = r
     return rank_mappings
 
+
 def edge_mapping_from_vertex_mapping(edge_index, src_rank_mappings, dst_rank_mappings):
     # directed edges, so edge_index[0] -> edge_index[1]
     src_indices = edge_index[0]
@@ -71,6 +73,7 @@ def edge_mapping_from_vertex_mapping(edge_index, src_rank_mappings, dst_rank_map
     src_data_mappings = src_rank_mappings[src_indices]
     dest_data_mappings = dst_rank_mappings[dest_indices]
     return (src_data_mappings, dest_data_mappings)
+
 
 def get_edge_mappings(src_indices, dst_indices, rank_mappings):
     edge_mappings = torch.zeros_like(src_indices)
@@ -169,36 +172,42 @@ class DGraph_MAG240M:
             self.institution_rank_mappings,
         )
 
-        self.train_mask = self.dataset.get_idx_split('train')
-        self.val_mask = self.dataset.get_idx_split('valid')
-        self.test_mask = self.dataset.get_idx_split('test-dev')
+        self.train_mask = self.dataset.get_idx_split("train")
+        self.val_mask = self.dataset.get_idx_split("valid")
+        self.test_mask = self.dataset.get_idx_split("test-dev")
 
         local_papers_mask = self.paper_rank_mappings == self.rank
         local_authors_mask = self.author_rank_mappings == self.rank
         local_institutions_mask = self.institution_rank_mappings == self.rank
-        self.num_local_papers  = int(
-            local_papers_mask.sum()
-        )
+        self.num_local_papers = int(local_papers_mask.sum())
 
         self.generate_feature_data()
 
-        self.paper_features = torch.from_numpy(self.dataset.paper_feat[local_papers_mask])
+        self.paper_features = torch.from_numpy(
+            self.dataset.paper_feat[local_papers_mask]
+        )
         path = self.dataset.dir
-        self.author_features = torch.from_numpy(np.memmap(
-                    filename=path + "/author_feat.npy",
-                    mode="r",
-                    dtype=np.float16,
-                    shape=(self.num_authors, self.num_features),
-                )[local_authors_mask])
-        self.institution_features = torch.from_numpy(np.memmap(
-                    filename=path + "/institution_feat.npy",
-                    mode="r",
-                    dtype=np.float16,
-                    shape=(self.num_institutions, self.num_features),
-                )[local_institutions_mask])
+        self.author_features = torch.from_numpy(
+            np.memmap(
+                filename=path + "/author_feat.npy",
+                mode="r",
+                dtype=np.float16,
+                shape=(self.num_authors, self.num_features),
+            )[local_authors_mask]
+        )
+        self.institution_features = torch.from_numpy(
+            np.memmap(
+                filename=path + "/institution_feat.npy",
+                mode="r",
+                dtype=np.float16,
+                shape=(self.num_institutions, self.num_features),
+            )[local_institutions_mask]
+        )
         self.y = torch.from_numpy(self.dataset.paper_label)
 
-        self.paper_2_paper_edges = torch.from_numpy(self.dataset.edge_index('paper', 'cites', 'paper'))
+        self.paper_2_paper_edges = torch.from_numpy(
+            self.dataset.edge_index("paper", "cites", "paper")
+        )
         (
             paper_2_paper_src_data_mappings,
             paper_2_paper_dest_data_mappings,
@@ -210,7 +219,9 @@ class DGraph_MAG240M:
         self.paper_src_data_mappings = paper_2_paper_src_data_mappings
         self.paper_dest_data_mappings = paper_2_paper_dest_data_mappings
 
-        self.author_2_paper_edges = torch.from_numpy(self.dataset.edge_index('author', 'writes', 'paper'))
+        self.author_2_paper_edges = torch.from_numpy(
+            self.dataset.edge_index("author", "writes", "paper")
+        )
         (
             author_2_paper_src_data_mappings,
             author_2_paper_dest_data_mappings,
@@ -222,7 +233,9 @@ class DGraph_MAG240M:
         self.author_2_paper_src_data_mappings = author_2_paper_src_data_mappings
         self.author_2_paper_dest_data_mappings = author_2_paper_dest_data_mappings
 
-        self.author_2_institution_edges = torch.from_numpy(self.dataset.edge_index('author', 'institution'))
+        self.author_2_institution_edges = torch.from_numpy(
+            self.dataset.edge_index("author", "institution")
+        )
         (
             author_2_institution_src_data_mappings,
             author_2_institution_dest_data_mappings,
@@ -332,9 +345,7 @@ class DGraph_MAG240M:
         # Get the ranks of the vertices
         # paper_vertex_rank_mapping -> vector of size num_papers,
         # where each entry is the location / rank of the vertex
-        paper_rank_mappings = self.paper_rank_mappings.to(
-            global_int_mask.device
-        )
+        paper_rank_mappings = self.paper_rank_mappings.to(global_int_mask.device)
         vertex_ranks = paper_rank_mappings[global_int_mask]
         # vertex_ranks is location of the vertices in the global_int_mask
         vertex_ranks_mask = vertex_ranks == self.rank
@@ -389,7 +400,9 @@ class DGraph_MAG240M:
         """
         self.paper_features = self.paper_features.to(device, dtype=torch.float32)
         self.author_features = self.author_features.to(device, dtype=torch.float32)
-        self.institution_features = self.institution_features.to(device, dtype=torch.float32)
+        self.institution_features = self.institution_features.to(
+            device, dtype=torch.float32
+        )
         self.y = self.y.to(device)
         self.train_mask = self.train_mask.to(device)
         self.val_mask = self.val_mask.to(device)
