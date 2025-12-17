@@ -132,7 +132,7 @@ torch::Tensor local_masked_scatter_gather(torch::Tensor input,
 
   const float *input_ptr = input.data_ptr<float>();
   const long *indices_ptr = indices.data_ptr<long>();
-  const float *mask_ptr = mask.data_ptr<float>();
+  const long *mask_ptr = mask.data_ptr<long>();
   float *output_ptr = output.data_ptr<float>();
 
   dim3 block_dims, grid_dims;
@@ -150,7 +150,7 @@ torch::Tensor local_masked_scatter_gather(torch::Tensor input,
 
   if (num_cols % 4 != 0)
   {
-    Local::Masked_Scatter_Gather_Kernel<Local::set_float><<<grid_dims, block_dims>>>(input_ptr,
+    Local::Masked_Scatter_Gather_Kernel<Local::FloatSetOp<float>><<<grid_dims, block_dims>>>(input_ptr,
                                                                                      indices_ptr,
                                                                                      mask_ptr,
                                                                                      output_ptr,
@@ -161,7 +161,7 @@ torch::Tensor local_masked_scatter_gather(torch::Tensor input,
   }
   else
   {
-    Local::Optimized_Masked_Scatter_Gather_Kernel<Local::set_float4><<<grid_dims, block_dims>>>(input_ptr,
+    Local::Optimized_Masked_Scatter_Gather_Kernel<Local::FloatSetOp<float4>><<<grid_dims, block_dims>>>(input_ptr,
                                                                                                 indices_ptr,
                                                                                                 mask_ptr,
                                                                                                 output_ptr,
@@ -190,7 +190,7 @@ torch::Tensor local_masked_scatter_add_gather(torch::Tensor input,
 
   const float *input_ptr = input.data_ptr<float>();
   const long *indices_ptr = indices.data_ptr<long>();
-  const float *mask_ptr = mask.data_ptr<float>();
+  const long *mask_ptr = mask.data_ptr<long>();
   float *output_ptr = output.data_ptr<float>();
 
   dim3 block_dims, grid_dims;
@@ -208,7 +208,7 @@ torch::Tensor local_masked_scatter_add_gather(torch::Tensor input,
 
   if (num_cols % 4 != 0)
   {
-    Local::Masked_Scatter_Gather_Kernel<Local::atomicAdd_float><<<grid_dims, block_dims>>>(input_ptr,
+    Local::Masked_Scatter_Gather_Kernel<Local::FloatAtomicAddOp<float>><<<grid_dims, block_dims>>>(input_ptr,
                                                                                            indices_ptr,
                                                                                            mask_ptr,
                                                                                            output_ptr,
@@ -219,7 +219,7 @@ torch::Tensor local_masked_scatter_add_gather(torch::Tensor input,
   }
   else
   {
-    Local::Optimized_Masked_Scatter_Gather_KernelM<Local::atomicAdd_float4><<<grid_dims, block_dims>>>(input_ptr,
+    Local::Optimized_Masked_Scatter_Gather_Kernel<Local::FloatAtomicAddOp<float4>><<<grid_dims, block_dims>>>(input_ptr,
                                                                                                        indices_ptr,
                                                                                                        mask_ptr,
                                                                                                        output_ptr,

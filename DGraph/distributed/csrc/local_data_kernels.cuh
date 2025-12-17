@@ -252,42 +252,36 @@ namespace Local
     }
   }
 
-  __device__ __forceinline__ float4 atomicAdd_float4(float4& cur_val, const float4 new_val)
-  {
-    atomicAdd(&(cur_val.x), new_val.x);
-    atomicAdd(&(cur_val.y), new_val.y);
-    atomicAdd(&(cur_val.z), new_val.z);
-    atomicAdd(&(cur_val.w), new_val.w);
-    return cur_val;
-  }
+  
 
-  __device__ __forceinline__ float4 set_float4(float& cur_val, const float new_val)
+  template <typename T>
+  struct FloatAtomicAddOp
   {
-    cur_val = new_val;
-    return reinterpret_cast<float4&>(cur_val);
-  }
+    __device__ __forceinline__ void operator()(T *cur_addr, const T new_val)
+    {
+      atomicAdd(cur_addr, new_val);
+    }
+  };
 
-  __device__ __forceinline__ float atomicAdd_float(float& cur_val, const float new_val)
+  template <typename T>
+  struct FloatSetOp
   {
-    atomicAdd(&cur_val, new_val);
-    return cur_val;
-  }
+    __device__ __forceinline__ void operator()(T *cur_addr, const T new_val)
+    {
+      *cur_addr = new_val;
+    }
+  };
 
-  __device__ __forceinline__ float set_float(float& cur_val, const float new_val)
-  {
-    cur_val = new_val;
-    return cur_val;
-  }
 
   /**
-   * 
+   *
    * Masked Gather Kernel operation that performs the operation:
     Y [mask[i]] = Op(Y [mask[i]], X [indices[i]])
-    
+
     where Y is the output matrix, X is the input matrix, indices is the index matrix, and mask is the mask matrix.
    */
 
-   template <auto op>
+  template <typename Op>
   __global__ void Masked_Scatter_Gather_Kernel(
       const float *__restrict__ values,
       const long *__restrict__ indices,
@@ -306,6 +300,8 @@ namespace Local
     const size_t nthreadsy = gridDim.y * blockDim.y;
     const size_t nthreadsz = gridDim.z * blockDim.z;
 
+    Op op;
+
     for (size_t mb_i = gidz; mb_i < mini_batch_size; mb_i += nthreadsz)
     {
       const auto values_offset = mb_i * num_cols * num_indices;
@@ -317,12 +313,12 @@ namespace Local
       {
         const auto output_row = mask[mask_offset + row];
         const auto input_row = indices[ind_offset + row];
-        
+
         for (size_t col = gidx; col < num_cols; col += nthreadsx)
         {
-          auto &output_val = output[output_offset + output_row * num_cols + col];
+          auto *output_addr = &output[output_offset + output_row * num_cols + col];
           const auto input_val = values[values_offset + input_row * num_cols + col];
-          output_val = op(output_val, input_val);
+          op(output_addr, input_val);
         }
       }
     }
@@ -334,20 +330,20 @@ namespace Local
     Y [mask[i]] = X [indices[i]]
 
     This kernel is optimized for the case where the num_cols is a multiple of 4.
-    
+
     where Y is the output matrix, X is the input matrix, indices is the index matrix, and mask is the mask matrix.
    */
-   template <auto op>
-   __global__ void Optimized_Masked_Scatter_Gather_Kernel(
-       const float *__restrict__ values,
-       const long *__restrict__ indices,
-       const long *__restrict__ mask,
-       float *__restrict__ output,
-       const int mini_batch_size,
-       const int num_indices,
-       const int num_cols,
-       const int num_output_rows)
-   {
+  template <typename Op>
+  __global__ void Optimized_Masked_Scatter_Gather_Kernel(
+      const float *__restrict__ values,
+      const long *__restrict__ indices,
+      const long *__restrict__ mask,
+      float *__restrict__ output,
+      const int mini_batch_size,
+      const int num_indices,
+      const int num_cols,
+      const int num_output_rows)
+  {
     const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
     const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
     const size_t gidz = threadIdx.z + blockIdx.z * blockDim.z;
@@ -357,6 +353,8 @@ namespace Local
     const size_t nthreadsz = gridDim.z * blockDim.z;
 
     // Grid-stride loop over mini-batches
+
+    Op binary_operator;
     for (size_t mb_i = gidz; mb_i < mini_batch_size; mb_i += nthreadsz)
     {
       const auto values_offset = mb_i * num_cols / 4 * num_indices;
@@ -368,28 +366,29 @@ namespace Local
       for (size_t row = gidy; row < num_indices; row += nthreadsy)
       {
         long output_row, input_row;
-        
-        if (threadIdx.x == 0) {
-            output_row = mask[mask_offset + row];
-            input_row = indices[ind_offset + row];
+
+        if (threadIdx.x == 0)
+        {
+          output_row = mask[mask_offset + row];
+          input_row = indices[ind_offset + row];
         }
 
         output_row = __shfl_sync(0xFFFFFFFF, output_row, 0);
         input_row = __shfl_sync(0xFFFFFFFF, input_row, 0);
-    
-        output_row = mask[mask_offset + row]; 
+
+        output_row = mask[mask_offset + row];
         input_row = indices[ind_offset + row];
 
         size_t col = gidx;
-        
+
         for (; col < num_cols / 4; col += nthreadsx)
         {
-          const float4 values_vec = reinterpret_cast<const float4*>(values)[values_offset + input_row * num_cols / 4 + col];
-          float4& output_vec = reinterpret_cast<float4*>(output)[output_offset + output_row * num_cols / 4  + col];
-          output_vec = op(output_vec, values_vec);
+          const float4 values_vec = reinterpret_cast<const float4 *>(values)[values_offset + input_row * num_cols / 4 + col];
+          float4* output_addr = &reinterpret_cast<float4 *>(output)[output_offset + output_row * num_cols / 4 + col];
+          binary_operator(output_addr, values_vec);
         }
       }
     }
-   }
-   
+  }
+
 } // namespace Local
