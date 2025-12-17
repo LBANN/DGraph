@@ -197,10 +197,50 @@ class CommPlan_ScatterFunction(Function):
             grad_output (torch.Tensor): Gradient of the output tensor
         """
         comm_plan = ctx.comm_plan
+        num_features = grad_output.shape[-1]
+        num_batches = grad_output.shape[0]
+        device = grad_output.device
+        num_output_rows = comm_plan.num_local_edges
 
-        grad_output = torch.zeros_like(grad_output)
+        grad_input = torch.zeros(
+            num_batches, num_output_rows, num_features, device=device
+        )
 
-        return grad_output, None
+        grad_input = OptimizedLocalScatterGather(
+            src=grad_output,
+            src_indices=comm_plan.local_vertex_idx,
+            dst_indices=comm_plan.local_edge_idx,
+            output=grad_input,
+        )
+
+        num_send_rows = sum(comm_plan.boundary_vertex_splits)
+        send_buf_locs = torch.arange(num_send_rows, device=device)
+        send_buf = torch.zeros(num_batches, num_send_rows, num_features, device=device)
+        send_buf = OptimizedLocalScatterGather(
+            src=grad_output,
+            src_indices=comm_plan.boundary_vertex_idx,
+            dst_indices=send_buf_locs,
+            output=send_buf,
+        )
+        total_recv_rows = sum(comm_plan.boundary_edge_splits)
+        recv_buffer = torch.empty(
+            num_batches, total_recv_rows, num_features, device=device
+        )
+        dist.all_to_all_single(
+            recv_buffer,
+            send_buf,
+            output_split_sizes=comm_plan.boundary_edge_splits,
+            input_split_sizes=comm_plan.boundary_vertex_splits,
+        )
+
+        grad_input = OptimizedLocalScatterGather(
+            src=recv_buffer,
+            src_indices=comm_plan.boundary_edge_idx,
+            dst_indices=comm_plan.boundary_edge_buffer_map,
+            output=grad_input,
+        )
+
+        return grad_input, None
 
 
 class GatherFunction(Function):
