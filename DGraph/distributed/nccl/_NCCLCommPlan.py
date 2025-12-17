@@ -70,9 +70,6 @@ def compute_edge_slices(dest_ranks, rank, my_dst_global, offset):
 
     boundary_edge_indices = torch.nonzero(remote_mask, as_tuple=True)[0]
 
-    print(f"rank {rank} has {torch.sum(is_internal).item()} internal edges")
-    print(f"rank {rank} has {torch.sum(remote_mask).item()} remote edges")
-
     b_dst_global = my_dst_global[remote_mask]
     b_dest_ranks = dest_ranks[remote_mask]
 
@@ -85,12 +82,20 @@ def compute_edge_slices(dest_ranks, rank, my_dst_global, offset):
     )
 
 
+def fast_2D_unique(indices_1, indices_2):
+    packed_keys = indices_1.to(torch.int64) << 32 | indices_2.to(torch.int64)
+    unique_packed, inverse_indices = torch.unique(
+        packed_keys, return_inverse=True, sorted=False
+    )
+    unique_1 = unique_packed >> 32
+    unique_2 = unique_packed & 0xFFFFFFFF
+    return unique_1, unique_2, inverse_indices
+
+
 def COO_to_NCCLCommPlan(
     rank: int,
     world_size: int,
-    global_edges_src: torch.Tensor,
     global_edges_dst: torch.Tensor,
-    vertex_rank_placement: torch.Tensor,
     local_edge_list: torch.Tensor,
     offset: torch.Tensor,
 ) -> NCCLGraphCommPlan:
@@ -111,14 +116,11 @@ def COO_to_NCCLCommPlan(
 
     """
     device = local_edge_list.device
-    my_src_global = global_edges_src[local_edge_list].to(device)
     my_dst_global = global_edges_dst[local_edge_list].to(device)
 
     my_start = offset[rank].item()
     my_end = offset[rank + 1].item()
-
-    nodes_per_rank = torch.bincount(vertex_rank_placement, minlength=world_size)
-    num_local_vertices = int(nodes_per_rank[rank].item())
+    num_local_vertices = int(my_end - my_start)
     num_local_edges = local_edge_list.size(0)
 
     dest_ranks = torch.bucketize(my_dst_global, offset, right=True) - 1
@@ -132,16 +134,9 @@ def COO_to_NCCLCommPlan(
         boundary_edge_indices,
     ) = compute_edge_slices(dest_ranks, rank, my_dst_global, offset)
 
-    sort_idx = torch.argsort(b_dest_ranks)
-    boundary_edge_indices = boundary_edge_indices[sort_idx]
-    b_dst_global = b_dst_global[sort_idx]
-    b_dest_ranks = b_dest_ranks[sort_idx]
-
-    unique_dests, inverse_indices = torch.unique(
-        torch.stack([b_dest_ranks, b_dst_global]), dim=1, return_inverse=True
+    unique_ranks, unique_global_ids, inverse_indices = fast_2D_unique(
+        b_dest_ranks, b_dst_global
     )
-    unique_ranks = unique_dests[0]
-    unique_global_ids = unique_dests[1]
 
     boundary_edge_buffer_map = inverse_indices
 
@@ -151,18 +146,18 @@ def COO_to_NCCLCommPlan(
     send_counts_tensor = torch.tensor(
         boundary_edge_splits, dtype=torch.long, device=device
     )
-    # dist.all_to_all_single(recv_counts_tensor, send_counts_tensor)
+    dist.all_to_all_single(recv_counts_tensor, send_counts_tensor)
     boundary_node_splits = recv_counts_tensor.tolist()
 
     total_recv_nodes = sum(boundary_node_splits)
     recv_global_ids = torch.empty(total_recv_nodes, dtype=torch.long, device=device)
 
-    # dist.all_to_all_single(
-    #     recv_global_ids,
-    #     unique_global_ids,
-    #     output_split_sizes=boundary_node_splits,
-    #     input_split_sizes=boundary_edge_splits,
-    # )
+    dist.all_to_all_single(
+        recv_global_ids,
+        unique_global_ids,
+        output_split_sizes=boundary_node_splits,
+        input_split_sizes=boundary_edge_splits,
+    )
 
     boundary_node_idx = recv_global_ids - my_start
 
