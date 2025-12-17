@@ -58,6 +58,33 @@ class NCCLGraphCommPlan:
         self.boundary_vertex_idx = self.boundary_vertex_idx.to(device)
 
 
+def compute_edge_slices(dest_ranks, rank, my_dst_global, offset):
+
+    is_internal = dest_ranks == rank
+    internal_dst_global = my_dst_global[is_internal]
+    internal_node_idx = internal_dst_global - offset[rank + 1]
+
+    internal_edge_indices = torch.nonzero(is_internal, as_tuple=True)[0]
+
+    remote_mask = ~is_internal
+
+    boundary_edge_indices = torch.nonzero(remote_mask, as_tuple=True)[0]
+
+    print(f"rank {rank} has {torch.sum(is_internal).item()} internal edges")
+    print(f"rank {rank} has {torch.sum(remote_mask).item()} remote edges")
+
+    b_dst_global = my_dst_global[remote_mask]
+    b_dest_ranks = dest_ranks[remote_mask]
+
+    return (
+        internal_node_idx,
+        internal_edge_indices,
+        b_dst_global,
+        b_dest_ranks,
+        boundary_edge_indices,
+    )
+
+
 def COO_to_NCCLCommPlan(
     rank: int,
     world_size: int,
@@ -67,6 +94,22 @@ def COO_to_NCCLCommPlan(
     local_edge_list: torch.Tensor,
     offset: torch.Tensor,
 ) -> NCCLGraphCommPlan:
+    """
+
+    Convert COO (Coordinate List) format graph to NCCLGraphCommPlan for distributed gather-scatter operations.
+
+    Args:
+        rank (int): Local rank
+        world_size (int): World size
+        global_edges_src (torch.Tensor): Global source indices of edges
+        global_edges_dst (torch.Tensor): Global destination indices of edges
+        vertex_rank_placement (torch.Tensor): Rank placement of vertices
+        local_edge_list (torch.Tensor): List of indices of local edges
+        offset (torch.Tensor): Offset for each rank.
+            The vertices are partitioned among ranks in a contiguous manner.
+            All vertices in the range [offset[rank], offset[rank + 1]) are assigned to the rank.
+
+    """
     device = local_edge_list.device
     my_src_global = global_edges_src[local_edge_list].to(device)
     my_dst_global = global_edges_dst[local_edge_list].to(device)
@@ -78,20 +121,16 @@ def COO_to_NCCLCommPlan(
     num_local_vertices = int(nodes_per_rank[rank].item())
     num_local_edges = local_edge_list.size(0)
 
-    dest_ranks = torch.bucketize(global_edges_dst, offset, right=True) - 1
+    dest_ranks = torch.bucketize(my_dst_global, offset, right=True) - 1
 
-    is_internal = dest_ranks == rank
-    internal_dst_global = my_dst_global[is_internal]
-    internal_node_idx = internal_dst_global - offset
-
-    internal_edge_indices = torch.nonzero(is_internal, as_tuple=True)[0]
-
-    remote_mask = ~is_internal
-
-    boundary_edge_indices = torch.nonzero(remote_mask, as_tuple=True)[0]
-
-    b_dst_global = my_dst_global[remote_mask]
-    b_dest_ranks = dest_ranks[remote_mask]
+    # Seperate this out to reduce memory usage
+    (
+        internal_node_idx,
+        internal_edge_indices,
+        b_dst_global,
+        b_dest_ranks,
+        boundary_edge_indices,
+    ) = compute_edge_slices(dest_ranks, rank, my_dst_global, offset)
 
     sort_idx = torch.argsort(b_dest_ranks)
     boundary_edge_indices = boundary_edge_indices[sort_idx]
@@ -108,22 +147,22 @@ def COO_to_NCCLCommPlan(
 
     boundary_edge_splits = torch.bincount(unique_ranks, minlength=world_size).tolist()
 
-    recv_counts_tensor = torch.empty(world_size, dtype=torch.long, device=device)
+    recv_counts_tensor = torch.zeros(world_size, dtype=torch.long, device=device)
     send_counts_tensor = torch.tensor(
         boundary_edge_splits, dtype=torch.long, device=device
     )
-    dist.all_to_all_single(recv_counts_tensor, send_counts_tensor)
+    # dist.all_to_all_single(recv_counts_tensor, send_counts_tensor)
     boundary_node_splits = recv_counts_tensor.tolist()
 
     total_recv_nodes = sum(boundary_node_splits)
     recv_global_ids = torch.empty(total_recv_nodes, dtype=torch.long, device=device)
 
-    dist.all_to_all_single(
-        recv_global_ids,
-        unique_global_ids,
-        output_split_sizes=boundary_node_splits,
-        input_split_sizes=boundary_edge_splits,
-    )
+    # dist.all_to_all_single(
+    #     recv_global_ids,
+    #     unique_global_ids,
+    #     output_split_sizes=boundary_node_splits,
+    #     input_split_sizes=boundary_edge_splits,
+    # )
 
     boundary_node_idx = recv_global_ids - my_start
 
