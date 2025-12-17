@@ -16,26 +16,12 @@ from typing import Optional
 import torch
 import torch.distributed as dist
 from DGraph.distributed.Engine import BackendEngine
-from DGraph.distributed.nccl._indices_utils import (
-    _generate_local_rank_mapping,
-    _get_local_unique_recv_placement,
-)
-from DGraph.distributed.nccl._nccl_cache import NCCLGatherCache, NCCLScatterCache
-from DGraph.distributed.nccl.alltoallv_impl import (
-    _nccl_alltoall_v,
-    _nccl_alltoallv_with_dict,
-)
-from DGraph.distributed.RankLocalOps import (
-    RankLocalMaskedGather,
-    RankLocalMaskedScatter,
-    RankLocalRenumberingWithMapping,
-    OptimizedRankLocalMaskedGather,
-)
+from DGraph.distributed.nccl._NCCLCommPlan import NCCLGraphCommPlan
 from DGraph.distributed.nccl._torch_func_impl import (
     GatherFunction,
     ScatterFunction,
-    Cached_Static_ScatterFunction,
-    Cached_Static_GatherFunction,
+    CommPlan_ScatterFunction,
+    CommPlan_GatherFunction,
 )
 
 from torch.autograd import Function
@@ -121,7 +107,7 @@ class NCCLBackendEngine(BackendEngine):
         self,
         local_send_tensor: torch.Tensor,
         *,
-        cache: NCCLScatterCache,
+        comm_plan: NCCLGraphCommPlan,
     ) -> torch.Tensor: ...
 
     def scatter(
@@ -130,12 +116,11 @@ class NCCLBackendEngine(BackendEngine):
         indices: Optional[torch.Tensor] = None,
         rank_mappings: Optional[torch.Tensor] = None,
         output_size: Optional[int] = None,
-        cache: Optional[NCCLScatterCache] = None,
+        comm_plan: Optional[NCCLGraphCommPlan] = None,
     ) -> torch.Tensor:
 
-        if cache is not None:
-            return Cached_Static_ScatterFunction.apply(local_send_tensor, cache)  # type: ignore
-
+        if comm_plan is not None:
+            return CommPlan_ScatterFunction.apply(local_send_tensor, comm_plan)  # type: ignore
         else:
             if indices is None or rank_mappings is None or output_size is None:
                 raise ValueError(
@@ -177,12 +162,30 @@ class NCCLBackendEngine(BackendEngine):
 
         return output_tensor  # type: ignore
 
+    @overload
     def gather(
         self,
         local_send_tensor: torch.Tensor,
         indices: torch.Tensor,
         rank_mappings: torch.Tensor,
-        cache: Optional[NCCLGatherCache] = None,
+        **kwargs,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def gather(
+        self,
+        local_send_tensor: torch.Tensor,
+        *,
+        comm_plan: NCCLGraphCommPlan,
+        **kwargs,
+    ) -> torch.Tensor: ...
+
+    def gather(
+        self,
+        local_send_tensor: torch.Tensor,
+        indices: torch.Tensor,
+        rank_mappings: torch.Tensor,
+        comm_plan: Optional[NCCLGraphCommPlan] = None,
         **kwargs,
     ) -> torch.Tensor:
         """Gather the distributed tensor across all ranks according to the indices
@@ -208,6 +211,9 @@ class NCCLBackendEngine(BackendEngine):
             rank_mappings (torch.Tensor): The rank mappings for the gather operation
         """
 
+        if comm_plan is not None:
+            return CommPlan_GatherFunction.apply(local_send_tensor, comm_plan)  # type: ignore
+
         send_tensor_shape = local_send_tensor.shape
         b_size = send_tensor_shape[0]
         world_size = self.get_world_size()
@@ -231,14 +237,6 @@ class NCCLBackendEngine(BackendEngine):
         send_rank = rank_mappings[0]
         recv_rank = rank_mappings[1]
 
-        use_cache = cache is not None
-
-        if use_cache:
-            assert type(cache) == NCCLGatherCache, f"Invalid cache type {type(cache)}"
-            gather_cache = cache
-        else:
-            gather_cache = None
-
         output_tensor = GatherFunction.apply(
             local_send_tensor,
             indices,
@@ -246,7 +244,6 @@ class NCCLBackendEngine(BackendEngine):
             recv_rank,
             rank,
             world_size,
-            gather_cache,
         )
 
         dist.barrier()
