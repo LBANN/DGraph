@@ -23,6 +23,7 @@ try:
         local_masked_gather,
         local_masked_scatter,
         local_masked_scatter_gather,
+        local_masked_scatter_add_gather,
     )
 
     _LOCAL_OPT_KERNELS_AVAILABLE = True
@@ -129,7 +130,7 @@ def OptimizedLocalScatterGather(
     return output
 
 
-def OptimizedRankLocalScatterSumGather(
+def OptimizedLocalScatterSumGather(
     src: torch.Tensor,
     src_indices: torch.Tensor,
     dst_indices: torch.Tensor,
@@ -160,7 +161,7 @@ def OptimizedRankLocalScatterSumGather(
         num_src_rows = src.shape[1]
         num_features = src.shape[-1]
         num_output_rows = output.shape[1]
-        local_masked_scatter_gather(
+        local_masked_scatter_add_gather(
             src,
             src_indices.cuda(),
             dst_indices.cuda(),

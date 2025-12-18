@@ -7,7 +7,7 @@ from DGraph.distributed.nccl._nccl_cache import NCCLGatherCache, NCCLScatterCach
 from DGraph.distributed.RankLocalOps import (
     OptimizedRankLocalMaskedGather,
     OptimizedLocalScatterGather,
-    OptimizedRankLocalScatterSumGather,
+    OptimizedLocalScatterSumGather,
 )
 from DGraph.distributed.nccl._NCCLCommPlan import NCCLGraphCommPlan
 
@@ -95,7 +95,7 @@ class CommPlan_GatherFunction(Function):
             num_batches, comm_plan.num_local_vertices, num_features, device=device
         )
 
-        grad_input = OptimizedRankLocalScatterSumGather(
+        grad_input = OptimizedLocalScatterSumGather(
             src=grad_output,
             output=grad_input,
             src_indices=comm_plan.local_edge_idx,
@@ -111,7 +111,7 @@ class CommPlan_GatherFunction(Function):
             output_split_sizes=comm_plan.boundary_vertex_splits,
             input_split_sizes=comm_plan.boundary_edge_splits,
         )
-        grad_input = OptimizedRankLocalScatterSumGather(
+        grad_input = OptimizedLocalScatterSumGather(
             src=recv_buffer,
             output=grad_input,
             src_indices=comm_plan.boundary_edge_buffer_map,
@@ -148,7 +148,7 @@ class CommPlan_ScatterFunction(Function):
             num_batches, comm_plan.num_local_vertices, num_features
         ).to(local_send_tensor.device)
 
-        output_tensor = OptimizedRankLocalScatterSumGather(
+        output_tensor = OptimizedLocalScatterSumGather(
             src=local_send_tensor,
             output=output_tensor,
             src_indices=comm_plan.local_edge_idx,
@@ -161,7 +161,7 @@ class CommPlan_ScatterFunction(Function):
             num_batches, total_send_rows, num_features, device=local_send_tensor.device
         )
 
-        send_buf = OptimizedRankLocalScatterSumGather(
+        send_buf = OptimizedLocalScatterSumGather(
             src=local_send_tensor,
             output=send_buf,
             src_indices=comm_plan.boundary_edge_idx,
@@ -178,7 +178,7 @@ class CommPlan_ScatterFunction(Function):
             output_split_sizes=comm_plan.boundary_vertex_splits,
             input_split_sizes=comm_plan.boundary_edge_splits,
         )
-        output_tensor = OptimizedRankLocalScatterSumGather(
+        output_tensor = OptimizedLocalScatterSumGather(
             src=recv_buffer,
             output=output_tensor,
             src_indices=comm_plan.boundary_edge_buffer_map,
