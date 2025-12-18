@@ -223,7 +223,8 @@ def COO_to_NCCLEdgeConditionedCommPlan(
     global_edges_src: torch.Tensor,
     global_edges_dst: torch.Tensor,
     local_edge_list: torch.Tensor,
-    offset: torch.Tensor,
+    src_offset: torch.Tensor,
+    dest_offset: Optional[torch.Tensor],
 ) -> NCCLEdgeConditionedGraphCommPlan:
     """
 
@@ -235,9 +236,12 @@ def COO_to_NCCLEdgeConditionedCommPlan(
         global_edges_src (torch.Tensor): Global source indices of edges
         global_edges_dst (torch.Tensor): Global destination indices of edges
         local_edge_list (torch.Tensor): List of indices of local edges
-        offset (torch.Tensor): Offset for each rank.
+        src_offset (torch.Tensor): Offset for each rank for source vertices.
             The vertices are partitioned among ranks in a contiguous manner.
-            All vertices in the range [offset[rank], offset[rank + 1]) are assigned to the rank.
+            All vertices in the range [src_offset[rank], src_offset[rank + 1]) are assigned to the rank.
+        dest_offset (Optional[torch.Tensor]): Offset for each rank for destination vertices.
+            The vertices are partitioned among ranks in a contiguous manner.
+            All vertices in the range [dest_offset[rank], dest_offset[rank + 1]) are assigned to the rank.
     """
     device = local_edge_list.device
 
@@ -246,15 +250,18 @@ def COO_to_NCCLEdgeConditionedCommPlan(
         world_size,
         global_edges_src,
         local_edge_list,
-        offset,
+        src_offset,
     )
+
+    if dest_offset is None:
+        dest_offset = src_offset
 
     dest_plan = COO_to_NCCLCommPlan(
         rank,
         world_size,
         global_edges_dst,
         local_edge_list,
-        offset,
+        dest_offset,
     )
 
     return NCCLEdgeConditionedGraphCommPlan(
