@@ -18,8 +18,9 @@ import torch.distributed as dist
 from distributed_layers import DistributedBatchNorm1D
 import os.path as osp
 from CacheGenerator import get_cache
-import sys
 import os
+from typing import Any, Optional, overload
+from DGraph.distributed.nccl import NCCLBackendEngine, NCCLGraphCommPlan
 
 
 class ConvLayer(nn.Module):
@@ -61,7 +62,83 @@ class CommAwareGAT(nn.Module):
         else:
             self.register_parameter("bias", None)
 
+    @overload
     def forward(
+        self,
+        x: torch.Tensor,
+        comm_plan: NCCLGraphCommPlan,
+        *,
+        x_j: Optional[torch.Tensor] = None,
+    ): ...
+
+    @overload
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        edge_index: Any,
+        rank_mapping: Any,
+        x_j: Optional[torch.Tensor] = None,
+        src_gather_cache: Optional[Any] = None,
+        dest_gather_cache: Optional[Any] = None,
+        dest_scatter_cache: Optional[Any] = None,
+    ): ...
+
+    def forward(
+        self,
+        x,
+        comm_plan=None,
+        *,
+        edge_index=None,
+        rank_mapping=None,
+        x_j=None,
+        src_gather_cache=None,
+        dest_gather_cache=None,
+        dest_scatter_cache=None,
+    ):
+        """Forward method that can use either a communication plan or COO format
+
+        Args:
+            x: Node features tensor
+            comm_plan: Communication plan object (if available)
+            edge_index: Edge index tensor in COO format
+            rank_mapping: Rank mapping tensors
+            x_j: Optional source node features tensor (for hetero graphs)
+            src_gather_cache: Optional cache for source gather communication
+            dest_gather_cache: Optional cache for destination gather communication
+            dest_scatter_cache: Optional cache for destination scatter communication
+
+        Returns:
+            out: Output node features tensor
+        """
+        if comm_plan is not None:
+            return self._forward_comm_plan(x, comm_plan, x_j=x_j)
+
+        return self._forward_coo(
+            x,
+            edge_index=edge_index,
+            rank_mapping=rank_mapping,
+            x_j=x_j,
+            src_gather_cache=src_gather_cache,
+            dest_gather_cache=dest_gather_cache,
+            dest_scatter_cache=dest_scatter_cache,
+        )
+
+    def _forward_comm_plan(self, x, comm_plan, x_j=None):
+        h = self.conv1(x)
+
+        if self.hetero:
+            assert x_j is not None
+            h_j = self.conv1(x_j)
+        else:
+            h_j = h
+
+        assert isinstance(self.comm.__backend_engine, NCCLBackendEngine)
+
+        h_i = self.comm.__backend_engine.gather(h, comm_plan=comm_plan)
+        h_j = self.comm.__backend_engine.gather(h_j, comm_plan=comm_plan)
+
+    def _forward_coo(
         self,
         x,
         edge_index,
@@ -328,7 +405,9 @@ class CommAwareRGAT(nn.Module):
             # Dummy operation to touch all outs to avoid DDP's 'unused parameters'
             dummy = torch.zeros(1, device=outs[0].device, dtype=outs[0].dtype)
             for t in outs:
-                dummy = dummy + (t[0].sum() * 0.0)  # zero-valued scalar that depends on t
+                dummy = dummy + (
+                    t[0].sum() * 0.0
+                )  # zero-valued scalar that depends on t
             outs[0][0] = outs[0][0] + dummy
 
         return self.mlp(outs[0])

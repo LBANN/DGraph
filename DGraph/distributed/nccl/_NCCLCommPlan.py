@@ -56,6 +56,28 @@ class NCCLGraphCommPlan:
         self.boundary_edge_idx = self.boundary_edge_idx.to(device)
         self.boundary_edge_buffer_map = self.boundary_edge_buffer_map.to(device)
         self.boundary_vertex_idx = self.boundary_vertex_idx.to(device)
+        return self
+
+
+@dataclass
+class NCCLEdgeConditionedGraphCommPlan:
+    """
+    Class to store communication plan for distributed gather-scatter for edge-conditioned
+    graphs where both source and destination vertices are needed.
+
+    Attributes:
+        rank (int): Local rank
+        world_size (int): World size
+
+        source_graph_plan (NCCLGraphCommPlan): Communication plan for source vertices
+        dest_graph_plan (NCCLGraphCommPlan): Communication plan for destination vertices
+    """
+
+    rank: int
+    world_size: int
+
+    source_graph_plan: NCCLGraphCommPlan
+    dest_graph_plan: NCCLGraphCommPlan
 
 
 def compute_edge_slices(dest_ranks, rank, my_dst_global, offset):
@@ -186,4 +208,52 @@ def COO_to_NCCLCommPlan(
         boundary_edge_splits=boundary_edge_splits,
         boundary_vertex_idx=boundary_node_idx,
         boundary_vertex_splits=boundary_node_splits,
+    )
+
+
+def COO_to_NCCLEdgeConditionedCommPlan(
+    rank: int,
+    world_size: int,
+    global_edges_src: torch.Tensor,
+    global_edges_dst: torch.Tensor,
+    local_edge_list: torch.Tensor,
+    offset: torch.Tensor,
+) -> NCCLEdgeConditionedGraphCommPlan:
+    """
+
+    Convert COO (Coordinate List) format graph to NCCLEdgeConditionedGraphCommPlan for distributed gather-scatter operations.
+
+    Args:
+        rank (int): Local rank
+        world_size (int): World size
+        global_edges_src (torch.Tensor): Global source indices of edges
+        global_edges_dst (torch.Tensor): Global destination indices of edges
+        local_edge_list (torch.Tensor): List of indices of local edges
+        offset (torch.Tensor): Offset for each rank.
+            The vertices are partitioned among ranks in a contiguous manner.
+            All vertices in the range [offset[rank], offset[rank + 1]) are assigned to the rank.
+    """
+    device = local_edge_list.device
+
+    source_plan = COO_to_NCCLCommPlan(
+        rank,
+        world_size,
+        global_edges_src,
+        local_edge_list,
+        offset,
+    )
+
+    dest_plan = COO_to_NCCLCommPlan(
+        rank,
+        world_size,
+        global_edges_dst,
+        local_edge_list,
+        offset,
+    )
+
+    return NCCLEdgeConditionedGraphCommPlan(
+        rank=rank,
+        world_size=world_size,
+        source_graph_plan=source_plan,
+        dest_graph_plan=dest_plan,
     )
