@@ -20,7 +20,11 @@ import os.path as osp
 from CacheGenerator import get_cache
 import os
 from typing import Any, Optional, overload
-from DGraph.distributed.nccl import NCCLBackendEngine, NCCLGraphCommPlan
+from DGraph.distributed.nccl import (
+    NCCLBackendEngine,
+    NCCLGraphCommPlan,
+    NCCLEdgeConditionedGraphCommPlan,
+)
 
 
 class ConvLayer(nn.Module):
@@ -66,7 +70,7 @@ class CommAwareGAT(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        comm_plan: NCCLGraphCommPlan,
+        comm_plan: NCCLEdgeConditionedGraphCommPlan,
         *,
         x_j: Optional[torch.Tensor] = None,
     ): ...
@@ -124,19 +128,72 @@ class CommAwareGAT(nn.Module):
             dest_scatter_cache=dest_scatter_cache,
         )
 
-    def _forward_comm_plan(self, x, comm_plan, x_j=None):
+    def _process_messages(
+        self,
+        h,
+        h_j,
+    ):
+        messages = torch.cat([h, h_j], dim=-1)
+        edge_scores = self.leaky_relu(self.project_message(messages))
+        numerator = torch.exp(edge_scores)
+        return numerator
+
+    def _calc_attention_messages(
+        self,
+        neighbor_features,
+        numerator,
+        denominator,
+    ):
+        alpha_ij = numerator / (denominator + 1e-16)
+        attention_messages = neighbor_features * alpha_ij
+        return attention_messages
+
+    def _apply_res_and_bias(self, out, x):
+        if self.residual:
+            out = out + self.res_net(x)
+        if self.bias is not None:
+            out = out + self.bias
+        return out
+
+    def _forward_comm_plan(
+        self, x, comm_plan: NCCLEdgeConditionedGraphCommPlan, x_j=None
+    ):
         h = self.conv1(x)
 
+        source_graph_plan = comm_plan.source_graph_plan
         if self.hetero:
             assert x_j is not None
             h_j = self.conv1(x_j)
+            assert comm_plan.dest_graph_plan is not None
+            dest_graph_plan = comm_plan.dest_graph_plan
         else:
             h_j = h
+            dest_graph_plan = source_graph_plan
 
         assert isinstance(self.comm.__backend_engine, NCCLBackendEngine)
 
-        h_i = self.comm.__backend_engine.gather(h, comm_plan=comm_plan)
-        h_j = self.comm.__backend_engine.gather(h_j, comm_plan=comm_plan)
+        h_i = self.comm.__backend_engine.gather(h, comm_plan=source_graph_plan)
+
+        h_j = self.comm.__backend_engine.gather(h_j, comm_plan=dest_graph_plan)
+
+        numerator = self._process_messages(h_i, h_j)
+
+        denominator = self.comm.__backend_engine.scatter(
+            numerator, comm_plan=source_graph_plan
+        )
+
+        denominator = self.comm.__backend_engine.gather(
+            denominator, comm_plan=dest_graph_plan
+        )
+
+        attention_messages = self._calc_attention_messages(h_j, numerator, denominator)
+
+        out = self.comm.__backend_engine.scatter(
+            attention_messages, comm_plan=source_graph_plan
+        )
+        out = self._apply_res_and_bias(out, x)
+
+        return out
 
     def _forward_coo(
         self,
@@ -172,9 +229,7 @@ class CommAwareGAT(nn.Module):
             h_j, _src_indices, _src_rank_mappings, cache=src_gather_cache
         )
 
-        messages = torch.cat([h_i, h_j], dim=-1)
-        edge_scores = self.leaky_relu(self.project_message(messages))
-        numerator = torch.exp(edge_scores)
+        numerator = self._process_messages(h_i, h_j)
 
         denominator = self.comm.scatter(
             numerator,
@@ -188,8 +243,8 @@ class CommAwareGAT(nn.Module):
             denominator, _src_indices, _src_rank_mappings, cache=dest_gather_cache
         )
 
-        alpha_ij = numerator / (denominator + 1e-16)
-        attention_messages = h_j * alpha_ij
+        attention_messages = self._calc_attention_messages(h_j, numerator, denominator)
+
         out = self.comm.scatter(
             attention_messages,
             _dst_indices,
@@ -197,10 +252,8 @@ class CommAwareGAT(nn.Module):
             h.size(1),
             cache=dest_scatter_cache,
         )
-        if self.residual:
-            out = out + self.res_net(x)
-        if self.bias is not None:
-            out = out + self.bias
+
+        out = self._apply_res_and_bias(out, x)
 
         return out
 

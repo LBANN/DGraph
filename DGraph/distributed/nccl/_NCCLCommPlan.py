@@ -1,6 +1,6 @@
 import torch
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 import torch.distributed as dist
 
 
@@ -77,7 +77,13 @@ class NCCLEdgeConditionedGraphCommPlan:
     world_size: int
 
     source_graph_plan: NCCLGraphCommPlan
-    dest_graph_plan: NCCLGraphCommPlan
+    dest_graph_plan: Optional[NCCLGraphCommPlan] = None
+
+    def to(self, device: torch.device):
+        self.source_graph_plan = self.source_graph_plan.to(device)
+        if self.dest_graph_plan is not None:
+            self.dest_graph_plan = self.dest_graph_plan.to(device)
+        return self
 
 
 def compute_edge_slices(dest_ranks, rank, my_dst_global, offset):
