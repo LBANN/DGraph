@@ -13,7 +13,7 @@
 # SPDX-License-Identifier: (Apache-2.0)
 from ogb.lsc import MAG240MDataset
 import torch
-from typing import Optional
+from typing import Optional, Tuple
 from torch_sparse import SparseTensor
 import numpy as np
 from tqdm import tqdm

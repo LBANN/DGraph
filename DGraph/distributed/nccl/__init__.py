@@ -16,4 +16,5 @@ from DGraph.distributed.nccl._NCCLCommPlan import (
     NCCLGraphCommPlan,
     NCCLEdgeConditionedGraphCommPlan,
     COO_to_NCCLCommPlan,
+    COO_to_NCCLEdgeConditionedCommPlan,
 )

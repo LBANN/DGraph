@@ -67,3 +67,84 @@ def test_optimized_local_gather():
     assert torch.allclose(
         out_tensor.cpu(), out_tensor_gt
     ), "Optimized local gather failed"
+
+
+def test_optimized_scatter_gaher():
+    try:
+        from torch_local import local_masked_scatter_gather
+    except ImportError as e:
+        pytest.fail(f"Failed to import local_masked_scatter_gather: {e}")
+
+    num_src_rows = 8
+    num_out_rows = 8
+    bs = 1
+    num_features = 4
+    src_tensor = torch.randn(bs, num_src_rows, num_features)
+    src_indices = torch.tensor([0, 3, 2, 1])
+    dst_indices = torch.tensor([1, 3, 5, 7])
+
+    out_tensor_gt = torch.zeros(bs, num_out_rows, num_features)
+
+    for i in range(bs):
+        for j in range(len(src_indices)):
+            out_tensor_gt[i, dst_indices[j]] = src_tensor[i, src_indices[j]]
+    out_tensor_gt = out_tensor_gt.view(bs, num_out_rows, num_features)
+    out_tensor = torch.zeros_like(out_tensor_gt)
+    out_tensor = out_tensor.cuda()
+    src_tensor = src_tensor.cuda()
+    src_indices = src_indices.cuda().long()
+    dst_indices = dst_indices.cuda().long()
+    local_masked_scatter_gather(
+        src_tensor,
+        src_indices,
+        dst_indices,
+        out_tensor,
+        bs,
+        num_src_rows,
+        num_features,
+        num_out_rows,
+    )
+    assert torch.allclose(
+        out_tensor.cpu(), out_tensor_gt
+    ), "Optimized local scatter-gather failed"
+
+
+def test_optimized_scatter_add_gather():
+    try:
+        from torch_local import local_masked_scatter_add_gather
+    except ImportError as e:
+        pytest.fail(f"Failed to import local_masked_scatter_add_gather: {e}")
+
+    num_src_rows = 8
+    num_out_rows = 8
+    bs = 1
+    num_features = 4
+    src_tensor = torch.randn(bs, num_src_rows, num_features)
+    src_indices = torch.tensor([0, 3, 2, 1, 3])
+    dst_indices = torch.tensor([1, 3, 5, 7, 3])
+
+    out_tensor_gt = torch.zeros(bs, num_out_rows, num_features)
+
+    for i in range(bs):
+        for j in range(len(src_indices)):
+            out_tensor_gt[i, dst_indices[j]] += src_tensor[i, src_indices[j]]
+
+    out_tensor_gt = out_tensor_gt.view(bs, num_out_rows, num_features)
+    out_tensor = torch.zeros_like(out_tensor_gt)
+    out_tensor = out_tensor.cuda()
+    src_tensor = src_tensor.cuda()
+    src_indices = src_indices.cuda().long()
+    dst_indices = dst_indices.cuda().long()
+    local_masked_scatter_add_gather(
+        src_tensor,
+        src_indices,
+        dst_indices,
+        out_tensor,
+        bs,
+        num_src_rows,
+        num_features,
+        num_out_rows,
+    )
+    assert torch.allclose(
+        out_tensor.cpu(), out_tensor_gt
+    ), "Optimized local scatter-add-gather failed"
