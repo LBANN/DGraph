@@ -115,3 +115,57 @@ torch::Tensor local_masked_scatter(torch::Tensor input,
   CUDACHECK(cudaGetLastError());
   return output;
 }
+
+torch::Tensor local_multi_output_scatter(torch::Tensor input,
+                                         torch::Tensor indices,
+                                         torch::Tensor rank_local_placement,
+                                         torch::Tensor output,
+                                         torch::Tensor workspace,
+                                         const int num_batches,
+                                         const int num_values_rows,
+                                         const int num_cols,
+                                         const int num_output_rows,
+                                         const int num_workspace_rows,
+                                         const long cur_rank_index_offset,
+                                         const int rank)
+{
+  CHECK_INPUT(input);
+  CHECK_INPUT(indices);
+  CHECK_INPUT(rank_local_placement);
+  CHECK_INPUT(output);
+  CHECK_INPUT(workspace);
+
+  const float *input_ptr = input.data_ptr<float>();
+  const long *indices_ptr = indices.data_ptr<long>();
+  const long *rank_local_placement_ptr = rank_local_placement.data_ptr<long>();
+  float *output_ptr = output.data_ptr<float>();
+  float *workspace_ptr = workspace.data_ptr<float>();
+
+  dim3 block_dims, grid_dims;
+  block_dims.x = 32;
+  block_dims.y = 32;
+  block_dims.z = 1;
+
+  const auto num_grids_needed = (num_output_rows + block_dims.y - 1) / block_dims.y;
+  const auto num_col_grids_needed = (num_cols + block_dims.x - 1) / block_dims.x;
+  grid_dims.x = num_col_grids_needed < 65535 ? num_col_grids_needed : 65535;
+  grid_dims.y = num_grids_needed < 65535 ? num_grids_needed : 65535;
+  grid_dims.z = 1;
+  // Get the default stream for the current device
+  at::cuda::CUDAStream defaultStream = at::cuda::getDefaultCUDAStream(input.device().index());
+  Local::Multi_Output_Scatter_Kernel<<<grid_dims, block_dims>>>(
+      input_ptr,
+      indices_ptr,
+      rank_local_placement_ptr,
+      output_ptr,
+      workspace_ptr,
+      num_batches,
+      num_values_rows,
+      num_cols,
+      num_output_rows,
+      num_workspace_rows,
+      cur_rank_index_offset,
+      rank);
+  CUDACHECK(cudaGetLastError());
+  return output;
+}

@@ -157,6 +157,58 @@ namespace Local
     }
   }
 
+  __global__ void Multi_Output_Scatter_Kernel(
+      const float *__restrict__ values,
+      const long *__restrict__ indices,
+      const long *__restrict__ rank_placement,
+      float *__restrict__ output,
+      float *__restrict__ workspace,
+      const int mini_batch_size,
+      const int num_values_rows,
+      const int num_cols,
+      const int num_output_rows,
+      const int num_workspace_rows,
+      const long cur_rank_index_offset,
+      const int current_rank)
+  {
+    const size_t gidx = threadIdx.x + blockIdx.x * blockDim.x;
+    const size_t gidy = threadIdx.y + blockIdx.y * blockDim.y;
+    const size_t gidz = threadIdx.z + blockIdx.z * blockDim.z;
+
+    const size_t nthreadsx = gridDim.x * blockDim.x;
+    const size_t nthreadsy = gridDim.y * blockDim.y;
+    const size_t nthreadsz = gridDim.z * blockDim.z;
+
+    for (size_t mb_i = gidz; mb_i < mini_batch_size; mb_i += nthreadsz)
+    {
+      const auto values_offset = mb_i * num_cols * num_values_rows;
+      const auto output_offset = mb_i * num_cols * num_output_rows;
+      const auto workspace_offset = mb_i * num_cols * num_workspace_rows;
+      const auto ind_offset = mb_i * num_values_rows;
+      const auto rank_placement_offset = mb_i * num_values_rows;
+
+      for (size_t row = gidy; row < num_values_rows; row += nthreadsy)
+      {
+        const int ind = indices[ind_offset + row];
+        const int row_rank = rank_placement[rank_placement_offset + row];
+
+        // Determine whether to use output or workspace
+        auto buffer_ptr = row_rank == current_rank ? output : workspace;
+        const auto buffer_offset = row_rank == current_rank ? output_offset : workspace_offset;
+        const auto adjusted_ind = row_rank == current_rank ? ind - cur_rank_index_offset : ind;
+        
+        for (size_t i = gidx; i < num_cols; i += nthreadsx)
+        {
+          if (adjusted_ind > -1 && adjusted_ind < (row_rank == current_rank ? num_output_rows : num_workspace_rows))
+          {
+            const auto val = values[values_offset + row * num_cols + i];
+            atomicAdd(&buffer_ptr[buffer_offset + adjusted_ind * num_cols + i], Max(val, 0.0));
+          }
+        }
+      }
+    }
+  }
+
   __global__ void Rank_Local_Gather_Kernel(
       const float *__restrict__ values,
       const long *__restrict__ indices,

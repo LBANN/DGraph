@@ -163,6 +163,7 @@ void NVSHMEMP2P::dist_put(torch::Tensor input,
   CUDACHECK(cudaStreamSynchronize(defaultStream));
 }
 
+
 void NVSHMEMP2P::dist_get(torch::Tensor input,
                           torch::Tensor output,
                           torch::Tensor indices,

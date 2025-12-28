@@ -18,7 +18,11 @@ This file contains the implementation of the RankLocalOps.
 import torch
 
 try:
-    from DGraph.torch_local import local_masked_gather, local_masked_scatter
+    from DGraph.torch_local import (
+        local_masked_gather,
+        local_masked_scatter,
+        local_multi_output_scatter,
+    )
 
     _LOCAL_OPT_KERNELS_AVAILABLE = True
 except ImportError:
@@ -140,7 +144,9 @@ def RankLocalRenumberingWithMapping(_indices, rank_mapping):
     unique_indices, inverse_indices = torch.unique(_indices, return_inverse=True)
     rank_mapping = rank_mapping.to(_indices.device)
     renumbered_indices = inverse_indices
-    unique_rank_mapping = torch.zeros_like(unique_indices, dtype=rank_mapping.dtype, device=rank_mapping.device)
+    unique_rank_mapping = torch.zeros_like(
+        unique_indices, dtype=rank_mapping.dtype, device=rank_mapping.device
+    )
     unique_rank_mapping.scatter_(0, inverse_indices, rank_mapping)
 
     return renumbered_indices, unique_indices, unique_rank_mapping
@@ -198,3 +204,85 @@ def LocalAggregateWithRemapping(
     local_aggregated_data.scatter_add_(1, renumbered_indices, global_data)
 
     return local_aggregated_data, new_mapping
+
+
+def _unoptimized_RankLocalMultiOutputScatter(
+    _src: torch.Tensor,
+    _output: torch.Tensor,
+    _workspace: torch.Tensor,
+    local_indices_slice: torch.Tensor,
+    rank_mapping: torch.Tensor,
+    cur_rank_offset: int,
+    rank: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    This function scatters the data from the source rank to the destination rank.
+    """
+    num_features = _src.shape[-1]
+    num_local_output_rows = _output.shape[1]
+
+    local_mask = rank_mapping == rank
+    comm_mask = ~local_mask
+    local_output_indices_slice = local_indices_slice[local_mask] - cur_rank_offset
+    local_workspace_indices_slice = local_indices_slice[comm_mask]
+
+    _output.scatter_add_(
+        1,
+        local_output_indices_slice.view(1, -1, 1).expand(1, -1, num_features),
+        _src[:, local_mask, :],
+    )
+
+    _workspace.scatter_add_(
+        1,
+        local_workspace_indices_slice.view(1, -1, 1).expand(1, -1, num_features),
+        _src[:, comm_mask, :],
+    )
+
+    return _output, _workspace
+
+
+def RankLocalMultiOutputScatter(
+    _src: torch.Tensor,
+    _output: torch.Tensor,
+    _workspace: torch.Tensor,
+    local_indices_slice: torch.Tensor,
+    rank_mapping: torch.Tensor,
+    cur_rank_offset: int,
+    rank: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    This function scatters the data from the source rank to the destination rank.
+    """
+    if not _LOCAL_OPT_KERNELS_AVAILABLE:
+        warnings.warn(
+            "Optimized local kernels are not available. Falling back to the default implementation."
+        )
+        return _unoptimized_RankLocalMultiOutputScatter(
+            _src,
+            _output,
+            _workspace,
+            local_indices_slice,
+            rank_mapping,
+            cur_rank_offset,
+            rank,
+        )
+    bs = _src.shape[0]
+    num_features = _src.shape[-1]
+    num_local_output_rows = _output.shape[1]
+    num_workspace_rows = _workspace.shape[1]
+    num_indices = local_indices_slice.shape[0]
+    local_multi_output_scatter(
+        _src,
+        _output,
+        _workspace,
+        local_indices_slice.cuda(),
+        rank_mapping.cuda(),
+        bs,
+        num_features,
+        num_local_output_rows,
+        num_workspace_rows,
+        num_indices,
+        cur_rank_offset,
+        rank,
+    )
+    return _output, _workspace
