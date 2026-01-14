@@ -15,7 +15,7 @@ import fire
 import torch
 from functools import partial
 import os.path as osp
-import DGraph.Communicator as Comm
+from DGraph import Communicator
 from Trainer import Trainer
 from config import SyntheticDatasetConfig
 import torch.distributed as dist
@@ -94,7 +94,7 @@ def main(
         raise ValueError(f"Invalid dataset: {dataset}")
 
     assert comm_type in ["nccl", "nvshmem"]
-    comm = Comm.Communicator.init_process_group(comm_type)
+    comm = Communicator.init_process_group(comm_type)
 
     comm.barrier()
     print(f"Running with {comm.get_world_size()} ranks. Rank: {comm.get_rank()}")

@@ -17,7 +17,7 @@ from config import ModelConfig, TrainingConfig
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from distributed_layers import GetGlobalVal
-from lsc_datasets import DistributedHeteroGraphDataset
+from lsc_datasets.distributed_graph_dataset import DistributedHeteroGraphDataset
 
 import os
 from typing import Union
@@ -65,7 +65,7 @@ class Trainer:
     def train(self):
         self.model.train()
 
-        xs, _, _, _ = self.dataset[0]
+        xs, _, edge_type, _ = self.dataset[0]
         comm_plans = self.dataset.get_NCCL_comm_plans()
 
         # Fetch once; masks/targets are static across epochs
@@ -76,7 +76,7 @@ class Trainer:
             # zero grads before forward to avoid dangling reduction state
             self.optimizer.zero_grad(set_to_none=True)
 
-            out = self.model(xs, comm_plans)
+            out = self.model(xs, edge_type, comm_plans)
             local_train_vertices = out[:, train_mask, :].squeeze(0)
 
             loss = torch.nn.functional.cross_entropy(
@@ -96,8 +96,9 @@ class Trainer:
     def evaluate(self):
         self.model.eval()
 
-        xs, edge_index, edge_type, rank_mapping = self.dataset[0]
-        out = self.model(xs, edge_index, edge_type, rank_mapping)
+        xs, _, edge_type, _ = self.dataset[0]
+        comm_plans = self.dataset.get_NCCL_comm_plans()
+        out = self.model(xs, edge_type, comm_plans)
 
         y_pred = out.argmax(dim=-1, keepdim=True).cpu().numpy()
         train_mask = self.dataset.get_mask("train").cpu().numpy()
