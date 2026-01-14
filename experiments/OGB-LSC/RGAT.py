@@ -331,6 +331,7 @@ class CommAwareRGAT(nn.Module):
             for j, (edge_type, comm_plan) in enumerate(zip(edge_types, comm_plans)):
 
                 src_edge_type, dst_edge_type = edge_type
+                print(src_edge_type, dst_edge_type)
 
                 temp_outs[dst_edge_type] += self.layers[i][j](  # type: ignore
                     outs[dst_edge_type], x_j=outs[src_edge_type], comm_plan=comm_plan
