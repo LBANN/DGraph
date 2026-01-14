@@ -153,6 +153,7 @@ def COO_to_NCCLCommPlan(
             All vertices in the range [offset[rank], offset[rank + 1]) are assigned to the rank.
 
     """
+
     device = local_edge_list.device
     my_dst_global = global_edges_dst[local_edge_list].to(device)
 

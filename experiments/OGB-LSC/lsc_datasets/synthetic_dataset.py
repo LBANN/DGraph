@@ -190,6 +190,7 @@ class SyntheticHeterogeneousDataset(DistributedHeteroGraphDataset):
             )
             f_name = f"synthetic_dataset_{dataset_hash}_rank_{self.rank}_of_{self.world_size}_comm_plans.pt"
             if osp.exists(f_name):
+                print(f"Loading comm plans from {f_name}")
                 self._load_comm_plans(f_name)
             else:
                 self._generate_comm_plans(f_name)
