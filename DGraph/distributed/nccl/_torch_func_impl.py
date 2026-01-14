@@ -53,13 +53,20 @@ class CommPlan_GatherFunction(Function):
         )
 
         # To do: Combine this with the local gather above to reduce kernel launches
-        send_buf = local_send_tensor[:, comm_plan.boundary_edge_idx, :]
+        if comm_plan.boundary_edge_idx.numel() > 0:
+            send_buf = local_send_tensor[:, comm_plan.boundary_edge_idx, :]
+        else:
+            send_buf = torch.empty(0, 0, num_features).to(local_send_tensor.device)
 
         total_recv = sum(comm_plan.boundary_edge_splits)
 
-        recv_buffer = torch.empty(num_batches, total_recv, num_features).to(
+        # If no messages, the size at dim 0 must be 0
+        _effective_batch_size = 1 if total_recv > 0 else 0
+
+        recv_buffer = torch.empty(_effective_batch_size, total_recv, num_features).to(
             local_send_tensor.device
         )
+
         dist.all_to_all_single(
             recv_buffer,
             send_buf,
@@ -67,12 +74,14 @@ class CommPlan_GatherFunction(Function):
             input_split_sizes=comm_plan.boundary_edge_splits,
         )
 
-        output_tensor = OptimizedLocalScatterGather(
-            src=recv_buffer,
-            src_indices=comm_plan.boundary_edge_buffer_map,
-            dst_indices=comm_plan.boundary_edge_idx,
-            output=output_tensor,
-        )
+        if total_recv > 0:
+
+            output_tensor = OptimizedLocalScatterGather(
+                src=recv_buffer,
+                src_indices=comm_plan.boundary_edge_buffer_map,
+                dst_indices=comm_plan.boundary_edge_idx,
+                output=output_tensor,
+            )
 
         return output_tensor
 
@@ -102,21 +111,29 @@ class CommPlan_GatherFunction(Function):
             dst_indices=comm_plan.local_vertex_idx,
         )
 
-        send_buf = grad_output[:, comm_plan.boundary_vertex_idx, :]
+        if len(comm_plan.boundary_vertex_idx) > 0:
+            send_buf = grad_output[:, comm_plan.boundary_vertex_idx, :]
+        else:
+            send_buf = torch.empty(0, 0, num_features).to(device)
         total_recv = sum(comm_plan.boundary_vertex_splits)
-        recv_buffer = torch.empty(num_batches, total_recv, num_features).to(device)
+
+        _effective_batch_size = 1 if total_recv > 0 else 0
+        recv_buffer = torch.empty(_effective_batch_size, total_recv, num_features).to(
+            device
+        )
         dist.all_to_all_single(
             recv_buffer,
             send_buf,
             output_split_sizes=comm_plan.boundary_vertex_splits,
             input_split_sizes=comm_plan.boundary_edge_splits,
         )
-        grad_input = OptimizedLocalScatterSumGather(
-            src=recv_buffer,
-            output=grad_input,
-            src_indices=comm_plan.boundary_edge_buffer_map,
-            dst_indices=comm_plan.boundary_vertex_idx,
-        )
+        if total_recv > 0:
+            grad_input = OptimizedLocalScatterSumGather(
+                src=recv_buffer,
+                output=grad_input,
+                src_indices=comm_plan.boundary_edge_buffer_map,
+                dst_indices=comm_plan.boundary_vertex_idx,
+            )
 
         return grad_input, None
 
@@ -157,20 +174,31 @@ class CommPlan_ScatterFunction(Function):
 
         total_send_rows = sum(comm_plan.boundary_edge_splits)
 
-        send_buf = torch.zeros(
-            num_batches, total_send_rows, num_features, device=local_send_tensor.device
-        )
+        if total_send_rows > 0:
+            send_buf = torch.zeros(
+                num_batches,
+                total_send_rows,
+                num_features,
+                device=local_send_tensor.device,
+            )
 
-        send_buf = OptimizedLocalScatterSumGather(
-            src=local_send_tensor,
-            output=send_buf,
-            src_indices=comm_plan.boundary_edge_idx,
-            dst_indices=comm_plan.boundary_edge_buffer_map,
-        )
+            send_buf = OptimizedLocalScatterSumGather(
+                src=local_send_tensor,
+                output=send_buf,
+                src_indices=comm_plan.boundary_edge_idx,
+                dst_indices=comm_plan.boundary_edge_buffer_map,
+            )
+        else:
+            send_buf = torch.empty(0, 0, num_features, device=local_send_tensor.device)
 
         total_recv_rows = sum(comm_plan.boundary_vertex_splits)
+
+        _effective_batch_size = 1 if total_recv_rows > 0 else 0
         recv_buffer = torch.empty(
-            num_batches, total_recv_rows, num_features, device=local_send_tensor.device
+            _effective_batch_size,
+            total_recv_rows,
+            num_features,
+            device=local_send_tensor.device,
         )
         dist.all_to_all_single(
             recv_buffer,
@@ -178,12 +206,13 @@ class CommPlan_ScatterFunction(Function):
             output_split_sizes=comm_plan.boundary_vertex_splits,
             input_split_sizes=comm_plan.boundary_edge_splits,
         )
-        output_tensor = OptimizedLocalScatterSumGather(
-            src=recv_buffer,
-            output=output_tensor,
-            src_indices=comm_plan.boundary_edge_buffer_map,
-            dst_indices=comm_plan.boundary_vertex_idx,
-        )
+        if total_recv_rows > 0:
+            output_tensor = OptimizedLocalScatterSumGather(
+                src=recv_buffer,
+                output=output_tensor,
+                src_indices=comm_plan.boundary_edge_buffer_map,
+                dst_indices=comm_plan.boundary_vertex_idx,
+            )
 
         return output_tensor
 
@@ -214,17 +243,25 @@ class CommPlan_ScatterFunction(Function):
         )
 
         num_send_rows = sum(comm_plan.boundary_vertex_splits)
-        send_buf_locs = torch.arange(num_send_rows, device=device)
-        send_buf = torch.zeros(num_batches, num_send_rows, num_features, device=device)
-        send_buf = OptimizedLocalScatterGather(
-            src=grad_output,
-            src_indices=comm_plan.boundary_vertex_idx,
-            dst_indices=send_buf_locs,
-            output=send_buf,
-        )
+        if num_send_rows > 0:
+            send_buf_locs = torch.arange(num_send_rows, device=device)
+            send_buf = torch.zeros(
+                num_batches, num_send_rows, num_features, device=device
+            )
+            send_buf = OptimizedLocalScatterGather(
+                src=grad_output,
+                src_indices=comm_plan.boundary_vertex_idx,
+                dst_indices=send_buf_locs,
+                output=send_buf,
+            )
+        else:
+            send_buf = torch.empty(0, 0, num_features, device=device)
+
         total_recv_rows = sum(comm_plan.boundary_edge_splits)
+
+        _effective_batch_size = 1 if total_recv_rows > 0 else 0
         recv_buffer = torch.empty(
-            num_batches, total_recv_rows, num_features, device=device
+            _effective_batch_size, total_recv_rows, num_features, device=device
         )
         dist.all_to_all_single(
             recv_buffer,
@@ -233,12 +270,13 @@ class CommPlan_ScatterFunction(Function):
             input_split_sizes=comm_plan.boundary_vertex_splits,
         )
 
-        grad_input = OptimizedLocalScatterGather(
-            src=recv_buffer,
-            src_indices=comm_plan.boundary_edge_idx,
-            dst_indices=comm_plan.boundary_edge_buffer_map,
-            output=grad_input,
-        )
+        if total_recv_rows > 0:
+            grad_input = OptimizedLocalScatterGather(
+                src=recv_buffer,
+                src_indices=comm_plan.boundary_edge_idx,
+                dst_indices=comm_plan.boundary_edge_buffer_map,
+                output=grad_input,
+            )
 
         return grad_input, None
 
