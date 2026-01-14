@@ -262,7 +262,6 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
         path = dataset.dir
         paper_feat = dataset.paper_feat
         rank = self.comm.get_rank()
-        breakpoint()
         # Only one rank must do this work
         if rank == 0:
             if not osp.exists(path + "/author_feat.npy"):

@@ -12,6 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import fire
+import torch
 import torch.distributed as dist
 from typing import Literal
 from DGraph import Communicator
@@ -29,6 +30,9 @@ def main(
 ):
     assert comm_type in ["nccl", "nvshmem"]
     comm = Communicator.init_process_group(comm_type)
+
+    device_id = comm.get_rank() % torch.cuda.device_count()
+    torch.cuda.set_device(device_id)
 
     def comm_print(*args, **kwargs):
         comm.barrier()
@@ -75,15 +79,16 @@ def main(
         raise ValueError(f"Invalid dataset: {dataset}")
 
     graph_dataset = graph_dataset(comm=comm)
-    comm_plans = graph_dataset.get_NCCL_comm_plans()
 
-    for i, comm_plan in enumerate(comm_plans):
-        comm_plan = comm_plan.source_graph_plan
-        comm_print(f"Comm Plan # {i}")
-        comm_print(f"Num Local Vertices: {comm_plan.num_local_vertices}")
-        comm_print(f"Num Boundary Vertices: {comm_plan.boundary_vertex_splits}")
-        comm_print(f"Num Local Edges: f{comm_plan.num_local_edges}")
-        comm_print(f"Num Boundary Edges: {comm_plan.boundary_edge_splits}")
+    # comm_plans = graph_dataset.get_NCCL_comm_plans()
+
+    # for i, comm_plan in enumerate(comm_plans):
+    #     comm_plan = comm_plan.source_graph_plan
+    #     comm_print(f"Comm Plan # {i}")
+    #     comm_print(f"Num Local Vertices: {comm_plan.num_local_vertices}")
+    #     comm_print(f"Num Boundary Vertices: {comm_plan.boundary_vertex_splits}")
+    #     comm_print(f"Num Local Edges: f{comm_plan.num_local_edges}")
+    #     comm_print(f"Num Boundary Edges: {comm_plan.boundary_edge_splits}")
 
 
 if __name__ == "__main__":

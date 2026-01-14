@@ -197,11 +197,31 @@ def COO_to_NCCLCommPlan(
     send_counts_tensor = torch.tensor(
         boundary_edge_splits, dtype=torch.long, device=device
     )
+    if recv_counts_tensor.device == torch.device("cpu"):
+        recv_counts_tensor = recv_counts_tensor.cuda()
+
+    if send_counts_tensor.device == torch.device("cpu"):
+        send_counts_tensor = send_counts_tensor.cuda()
+
     dist.all_to_all_single(recv_counts_tensor, send_counts_tensor)
+    print(f"rank: {rank} recv_counts_tensor: {recv_counts_tensor}")
+
     boundary_node_splits = recv_counts_tensor.tolist()
 
     total_recv_nodes = sum(boundary_node_splits)
-    recv_global_ids = torch.empty(total_recv_nodes, dtype=torch.long, device=device)
+    if total_recv_nodes > 0:
+        recv_global_ids = torch.empty(total_recv_nodes, dtype=torch.long, device=device)
+    else:
+        recv_global_ids = torch.empty(0, dtype=torch.long, device=device)
+
+    if sum(send_counts_tensor) == 0:
+        unique_global_ids = torch.empty(0, dtype=torch.long, device=device)
+
+    if recv_global_ids.device == torch.device("cpu"):
+        recv_global_ids = recv_global_ids.cuda()
+
+    if unique_global_ids.device == torch.device("cpu"):
+        unique_global_ids = unique_global_ids.cuda()
 
     dist.all_to_all_single(
         recv_global_ids,
