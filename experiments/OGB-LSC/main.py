@@ -78,7 +78,7 @@ def main(
         )
 
     elif dataset == "mag240m":
-        from lsc_datasets import DGraph_MAG240M_Dataset as Dataset
+        from lsc_datasets.MAG240M_dataset import DGraph_MAG240M_Dataset as Dataset
 
         graph_dataset = partial(
             Dataset,
