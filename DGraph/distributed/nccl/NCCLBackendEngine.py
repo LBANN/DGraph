@@ -183,8 +183,8 @@ class NCCLBackendEngine(BackendEngine):
     def gather(
         self,
         local_send_tensor: torch.Tensor,
-        indices: torch.Tensor,
-        rank_mappings: torch.Tensor,
+        indices: Optional[torch.Tensor] = None,
+        rank_mappings: Optional[torch.Tensor] = None,
         comm_plan: Optional[NCCLGraphCommPlan] = None,
         **kwargs,
     ) -> torch.Tensor:

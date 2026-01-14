@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from distributed_layers import DistributedBatchNorm1D
+from DGraph import Communicator
 import os.path as osp
 from CacheGenerator import get_cache
 import os
@@ -42,13 +43,13 @@ class ConvLayer(nn.Module):
 class CommAwareGAT(nn.Module):
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        comm,
-        heads=1,
-        bias=True,
-        residual=False,
-        hetero=False,
+        in_channels: int,
+        out_channels: int,
+        comm: Communicator,
+        heads: int = 1,
+        bias: bool = True,
+        residual: bool = False,
+        hetero: bool = False,
     ):
         super(CommAwareGAT, self).__init__()
         self.conv1 = nn.Linear(in_channels, out_channels, bias=False)
@@ -170,27 +171,21 @@ class CommAwareGAT(nn.Module):
             h_j = h
             dest_graph_plan = source_graph_plan
 
-        assert isinstance(self.comm.__backend_engine, NCCLBackendEngine)
+        assert isinstance(self.comm._Communicator__backend_engine, NCCLBackendEngine)
 
-        h_i = self.comm.__backend_engine.gather(h, comm_plan=source_graph_plan)
+        h_i = self.comm.gather(h, comm_plan=source_graph_plan)
 
-        h_j = self.comm.__backend_engine.gather(h_j, comm_plan=dest_graph_plan)
+        h_j = self.comm.gather(h_j, comm_plan=dest_graph_plan)
 
         numerator = self._process_messages(h_i, h_j)
 
-        denominator = self.comm.__backend_engine.scatter(
-            numerator, comm_plan=source_graph_plan
-        )
+        denominator = self.comm.scatter(numerator, comm_plan=source_graph_plan)
 
-        denominator = self.comm.__backend_engine.gather(
-            denominator, comm_plan=dest_graph_plan
-        )
+        denominator = self.comm.gather(denominator, comm_plan=dest_graph_plan)
 
         attention_messages = self._calc_attention_messages(h_j, numerator, denominator)
 
-        out = self.comm.__backend_engine.scatter(
-            attention_messages, comm_plan=source_graph_plan
-        )
+        out = self.comm.scatter(attention_messages, comm_plan=source_graph_plan)
         out = self._apply_res_and_bias(out, x)
 
         return out

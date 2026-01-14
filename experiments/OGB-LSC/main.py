@@ -96,6 +96,9 @@ def main(
     assert comm_type in ["nccl", "nvshmem"]
     comm = Communicator.init_process_group(comm_type)
 
+    device_id = comm.get_rank() % torch.cuda.device_count()
+    torch.cuda.set_device(device_id)
+
     comm.barrier()
     print(f"Running with {comm.get_world_size()} ranks. Rank: {comm.get_rank()}")
 

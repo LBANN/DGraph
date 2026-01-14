@@ -193,4 +193,5 @@ class SyntheticHeterogeneousDataset(DistributedHeteroGraphDataset):
                 print(f"Loading comm plans from {f_name}")
                 self._load_comm_plans(f_name)
             else:
+                print(f"Generating comm plans and saving to {f_name}")
                 self._generate_comm_plans(f_name)

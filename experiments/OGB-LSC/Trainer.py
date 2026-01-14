@@ -20,7 +20,6 @@ from distributed_layers import GetGlobalVal
 from lsc_datasets.distributed_graph_dataset import DistributedHeteroGraphDataset
 
 import os
-from typing import Union
 
 
 class Trainer:
