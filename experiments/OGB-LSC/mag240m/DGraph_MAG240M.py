@@ -123,7 +123,7 @@ def _generate_features_from_paper_features(
     out.flush()
 
 
-class DGraph_MAG240M:
+class DGraph_MAG240M_Dataset:
 
     # data_dir must be the location where all ranks can access
     def __init__(
@@ -457,6 +457,17 @@ class DGraph_MAG240M:
         ]
         return (features, edge_index, edge_type, rank_mappings)
 
+    def get_NCCL_comm_plans(self) -> NCCLGraphCommPlan:
+
+        comm_plan = NCCLGraphCommPlan(
+            self.rank,
+            self.world_size,
+            self.paper_2_paper_edges[0],
+            self.paper_src_data_mappings,
+            self.paper_dest_data_mappings,
+        )
+        return comm_plan
+
 
 if __name__ == "__main__":
     import fire
@@ -471,6 +482,6 @@ if __name__ == "__main__":
             {"get_rank": lambda self: rank, "get_world_size": lambda self: world_size},
         )
         comm = COMM()
-        dgraph = DGraph_MAG240M(comm, data_dir=data_dir)
+        dgraph = DGraph_MAG240M_Dataset(comm, data_dir=data_dir)
 
     fire.Fire(main)

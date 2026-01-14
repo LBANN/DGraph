@@ -13,7 +13,14 @@
 # SPDX-License-Identifier: (Apache-2.0)
 from DGraph.Communicator import Communicator
 import torch
-from typing import Tuple
+from typing import List, Optional, Tuple
+
+from DGraph.distributed.nccl import NCCLGraphCommPlan
+from distributed_graph_dataset import (
+    get_rank_mappings,
+    edge_mapping_from_vertex_mapping,
+    DistributedHeteroGraphDataset,
+)
 
 torch.random.manual_seed(0)
 
@@ -59,32 +66,7 @@ def _generate_author_2_institution_edges(num_authors, num_institutions):
     return coo_list
 
 
-def _get_rank_mappings(num_vertices, world_size, rank):
-    vertices_per_rank = num_vertices // world_size
-    rank_mappings = torch.zeros(num_vertices, dtype=torch.long)
-    vertices_cur_rank = 0
-    for r in range(world_size):
-        start = r * vertices_per_rank
-        end = (r + 1) * vertices_per_rank if r != world_size - 1 else num_vertices
-        rank_mappings[start:end] = r
-        if r == rank:
-            vertices_cur_rank = end - start
-    return rank_mappings, vertices_cur_rank
-
-
-def edge_mapping_from_vertex_mapping(edge_index, src_rank_mappings, dst_rank_mappings):
-    # directed edges, so edge_index[0] -> edge_index[1]
-    src_indices = edge_index[0]
-    dest_indices = edge_index[1]
-    # We put the edge on the rank where the destination vertex is located
-    # Since heterogeneous graphs have different rank mappings for different
-    # vertex types.
-    src_data_mappings = src_rank_mappings[src_indices]
-    dest_data_mappings = dst_rank_mappings[dest_indices]
-    return (src_data_mappings, dest_data_mappings)
-
-
-class HeterogeneousDataset:
+class HeterogeneousDataset(DistributedHeteroGraphDataset):
     def __init__(
         self,
         num_papers,
@@ -93,6 +75,7 @@ class HeterogeneousDataset:
         num_features,
         num_classes,
         comm: Communicator,
+        cached_comm_plans: Optional[str] = None,
     ):
         self.num_papers = num_papers
         self.num_authors = num_authors
@@ -104,14 +87,14 @@ class HeterogeneousDataset:
         self.rank = comm.get_rank()
         self.world_size = comm.get_world_size()
         self.rank = comm.get_rank()
-        self.paper_vertex_rank_mapping, self.num_paper_vertices = _get_rank_mappings(
+        self.paper_vertex_rank_mapping, self.num_paper_vertices = get_rank_mappings(
             num_vertices=num_papers, world_size=self.world_size, rank=self.rank
         )
-        self.author_vertex_rank_mapping, self.num_author_vertices = _get_rank_mappings(
+        self.author_vertex_rank_mapping, self.num_author_vertices = get_rank_mappings(
             num_vertices=num_authors, world_size=self.world_size, rank=self.rank
         )
         self.institution_vertex_rank_mapping, self.num_institution_vertices = (
-            _get_rank_mappings(
+            get_rank_mappings(
                 num_vertices=num_institutions,
                 world_size=self.world_size,
                 rank=self.rank,
@@ -195,59 +178,20 @@ class HeterogeneousDataset:
             (institution_vertices_cur_rank, num_features), dtype=torch.float32
         )
 
-    @property
-    def num_features(self) -> int:
-        return self._num_features
+        if cached_comm_plans is not None:
+            comm_plans = torch.load(cached_comm_plans)
+            self.paper_2_paper_comm_plan = comm_plans["paper_2_paper_comm_plan"]
+            self.paper_2_author_comm_plan = comm_plans["paper_2_author_comm_plan"]
+            self.author_2_institution_comm_plan = comm_plans[
+                "author_2_institution_comm_plan"
+            ]
+            self.institution_2_author_comm_plan = comm_plans[
+                "institution_2_author_comm_plan"
+            ]
+            self.author_2_paper_comm_plan = comm_plans["author_2_paper_comm_plan"]
 
-    @property
-    def num_classes(self) -> int:
-        return self._num_classes
-
-    @property
-    def num_relations(self) -> int:
-        return self._num_relations
-
-    # def get_validation_mask(self):
-    #     # Only papers are classified
-    #     validation_vertices_mappings = self.paper_vertex_rank_mapping[self.val_mask]
-    #     validation_vertices_mappings = validation_vertices_mappings.to(
-    #         self.val_mask.device
-    #     )
-    #     num_validation_vertices = (validation_vertices_mappings == self.rank).sum()
-    #     if num_validation_vertices > 0:
-    #         return (
-    #             self.val_mask[validation_vertices_mappings == self.rank]
-    #             % self.paper_vertices_cur_rank
-    #         )
-    #     else:
-    #         return torch.tensor([], dtype=torch.long)
-
-    # def get_test_mask(self):
-    #     # Only papers are classified
-
-    #     paper_vertices = self.paper_vertex_rank_mapping == self.rank
-    #     paper_vertices = paper_vertices.to(self.test_mask.device)
-    #     num_test_vertices = (paper_vertices[self.test_mask] == self.rank).sum()
-    #     if num_test_vertices > 0:
-    #         return (
-    #             self.test_mask[paper_vertices[self.test_mask] == self.rank]
-    #             % self.paper_vertices_cur_rank
-    #         )
-    #     else:
-    #         return torch.tensor([], dtype=torch.long)
-
-    # def get_train_mask(self):
-    #     # Only papers are classified
-    #     paper_vertices = self.paper_vertex_rank_mapping == self.rank
-    #     paper_vertices = paper_vertices.to(self.train_mask.device)
-    #     num_train_vertices = (paper_vertices[self.train_mask] == self.rank).sum()
-    #     if num_train_vertices > 0:
-    #         return (
-    #             self.train_mask[paper_vertices[self.train_mask] == self.rank]
-    #             % self.paper_vertices_cur_rank
-    #         )
-    #     else:
-    #         return torch.tensor([], dtype=torch.long)
+        else:
+            self._generate_comm_plans()
 
     def get_vertex_rank_mask(self, mask_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
         if mask_type == "train":
@@ -285,91 +229,21 @@ class HeterogeneousDataset:
 
         return local_training_targets
 
-    def __len__(self):
-        return 0
+    def _generate_comm_plans(self):
+        self.paper_2_paper_comm_plan = NCCLGraphCommPlan.generate_from_edge_index(
+            edge_index=self.paper_2_paper_edges,
+            src_rank_mapping=self.paper_vertex_rank_mapping,
+            dst_rank_mapping=self.paper_vertex_rank_mapping,
+            comm=self.comm,
+        )
 
-    def add_batch_dimension(self):
-        """Add a batch dimension to all tensors. This is particularly useful
-        because we only have one graph and DGraph is built to handle batches of graphs.
-        We want to do this here because this allows us to avoid copying the data
-        and requiring a data loader.
-        """
-        self.paper_features = self.paper_features.unsqueeze(0)
-        self.author_features = self.author_features.unsqueeze(0)
-        self.institution_features = self.institution_features.unsqueeze(0)
-        self.y = self.y.unsqueeze(0)
-        self.train_mask = self.train_mask.unsqueeze(0)
-        self.val_mask = self.val_mask.unsqueeze(0)
-        self.test_mask = self.test_mask.unsqueeze(0)
-        self.paper_2_paper_edges = self.paper_2_paper_edges.unsqueeze(0)
-        self.author_2_paper_edges = self.author_2_paper_edges.unsqueeze(0)
-        self.author_2_institution_edges = self.author_2_institution_edges.unsqueeze(0)
+    def get_NCCL_comm_plans(self) -> List[NCCLGraphCommPlan]:
 
-        return self
-
-    def to(self, device):
-        """Move the dataset tensors to the specified device.
-        We want to do this here because this allows us to avoid
-        copying the data when the different individual tensors are
-        accessed.
-        """
-        self.paper_features = self.paper_features.to(device)
-        self.author_features = self.author_features.to(device)
-        self.institution_features = self.institution_features.to(device)
-        self.y = self.y.to(device)
-        self.train_mask = self.train_mask.to(device)
-        self.val_mask = self.val_mask.to(device)
-        self.test_mask = self.test_mask.to(device)
-        self.paper_2_paper_edges = self.paper_2_paper_edges.to(device)
-        self.author_2_paper_edges = self.author_2_paper_edges.to(device)
-        self.author_2_institution_edges = self.author_2_institution_edges.to(device)
-
-        return self
-
-    def __getitem__(self, idx):
-        # There are 5 relations:
+        comm_plans = []
         # paper -> paper
-        # paper -> author
-        # author -> paper
-        # author -> institution
-        # institution -> author
+        comm_plans.append(self.paper_2_paper_comm_plan)
 
-        edge_index = [
-            self.paper_2_paper_edges,
-            self.author_2_paper_edges,
-            self.author_2_paper_edges.flip(self.author_2_paper_edges.dim() - 2),
-            self.author_2_institution_edges,
-            self.author_2_institution_edges.flip(
-                self.author_2_institution_edges.dim() - 2
-            ),
-        ]
-        # Locations of the edges
-        rank_mappings = [
-            [self.paper_src_data_mappings, self.paper_dest_data_mappings],
-            [
-                self.author_2_paper_src_data_mappings,
-                self.author_2_paper_dest_data_mappings,
-            ],
-            [
-                self.author_2_paper_dest_data_mappings,
-                self.author_2_paper_src_data_mappings,
-            ],
-            [
-                self.author_2_institution_src_data_mappings,
-                self.author_2_institution_dest_data_mappings,
-            ],
-            [
-                self.author_2_institution_dest_data_mappings,
-                self.author_2_institution_src_data_mappings,
-            ],
-        ]
-        edge_type = [(0, 0), (1, 0), (0, 1), (1, 2), (2, 1)]
-        features = [
-            self.paper_features,
-            self.author_features,
-            self.institution_features,
-        ]
-        return (features, edge_index, edge_type, rank_mappings)
+        return comm_plans
 
 
 if __name__ == "__main__":

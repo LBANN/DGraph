@@ -85,12 +85,22 @@ class NCCLEdgeConditionedGraphCommPlan:
             self.dest_graph_plan = self.dest_graph_plan.to(device)
         return self
 
+    def reverse(self):
+        if self.dest_graph_plan is None:
+            raise ValueError("Destination graph plan is None, cannot reverse.")
+        return NCCLEdgeConditionedGraphCommPlan(
+            rank=self.rank,
+            world_size=self.world_size,
+            source_graph_plan=self.dest_graph_plan,
+            dest_graph_plan=self.source_graph_plan,
+        )
+
 
 def compute_edge_slices(dest_ranks, rank, my_dst_global, offset):
 
     is_internal = dest_ranks == rank
     internal_dst_global = my_dst_global[is_internal]
-    internal_node_idx = internal_dst_global - offset[rank + 1]
+    internal_node_idx = internal_dst_global - offset[rank]
 
     internal_edge_indices = torch.nonzero(is_internal, as_tuple=True)[0]
 

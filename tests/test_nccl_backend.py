@@ -232,6 +232,59 @@ def setup_unbalanced_scatter_data(init_nccl_backend):
     )
 
 
+@pytest.fixture(scope="module")
+def setup_comm_plan(init_nccl_backend):
+    comm = init_nccl_backend
+    torch.manual_seed(0)
+    torch.cuda.set_device(comm.get_rank())
+    rank = comm.get_rank()
+    world_size = comm.get_world_size()
+
+    num_nodes = 32 * world_size
+    num_features = 64
+
+    # generate num_nodes x num_nodes adjacency matrix
+    adj_matrix = torch.rand(num_nodes, num_nodes)
+    adj_matrix = (adj_matrix + adj_matrix.t()) / 2
+    adj_matrix[adj_matrix < 0.8] = 0.0  # sparsify
+    adj_matrix[adj_matrix >= 0.8] = 1.0
+    adj_matrix.fill_diagonal_(0)
+    coo_matrix = adj_matrix.nonzero(as_tuple=False).t().contiguous()
+    from DGraph.distributed.nccl import (
+        COO_to_NCCLCommPlan,
+    )
+
+    nodes_per_rank = num_nodes // world_size
+    offset = torch.arange(world_size + 1) * nodes_per_rank
+
+    my_start = offset[rank]
+    my_end = offset[rank + 1]
+
+    src = coo_matrix[0]
+    dst = coo_matrix[1]
+
+    num_edges = src.shape[0]
+
+    is_local_edge = (src >= my_start) & (src < my_end)
+    local_edge_indices = torch.nonzero(is_local_edge, as_tuple=True)[0]
+
+    plan = COO_to_NCCLCommPlan(
+        rank=rank,
+        world_size=world_size,
+        global_edges_dst=dst,
+        local_edge_list=local_edge_indices,
+        offset=offset,
+    )
+
+    global_input = torch.randn(1, num_nodes, num_features)
+    global_output = torch.zeros(1, num_edges, num_features)
+
+    for i in range(num_edges):
+        global_output[:, i] = global_input[:, dst[i]]
+
+    return plan
+
+
 def test_nccl_backend_init(init_nccl_backend):
     comm = init_nccl_backend
     rank = comm.get_rank()
@@ -350,3 +403,10 @@ def test_nccl_backend_scatter(init_nccl_backend, setup_scatter_data):
         assert local_output_gt.shape == (1, 2, 4)
         assert dgraph_output_tensor.shape == (1, 2, 4)
         assert torch.allclose(dgraph_output_tensor.cpu(), local_output_gt)
+
+
+def test_nccl_backend_gather_comm_plan(init_nccl_backend, setup_comm_plan):
+    comm: Comm.Communicator = init_nccl_backend
+    plan = setup_comm_plan
+    rank = comm.get_rank()
+    world_size = comm.get_world_size()

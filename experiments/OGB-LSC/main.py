@@ -17,8 +17,14 @@ from functools import partial
 import os.path as osp
 import DGraph.Communicator as Comm
 from Trainer import Trainer
-from config import ModelConfig
+from config import SyntheticDatasetConfig
 import torch.distributed as dist
+
+
+def _load_optional_file(file_path: str):
+    if osp.exists(file_path):
+        return torch.load(file_path, weights_only=False)
+    return None
 
 
 def main(
@@ -27,10 +33,11 @@ def main(
     num_papers: int = 2048,
     num_authors: int = 512,
     num_institutions: int = 16,
+    optimized_graph_structure: bool = True,
     paper_rank_mapping_file: str = "",
     author_rank_mapping_file: str = "",
     institution_rank_mapping_file: str = "",
-    data_dir: str = "mag240m/data/MAG240M",
+    data_dir: str = "datasets/data/MAG240M",
 ):
     """Main function to run DGraph experiments on OGB-LSC datasets.
 
@@ -56,43 +63,32 @@ def main(
     """
     assert dataset in ["synthetic", "mag240m"]
     if dataset == "synthetic":
-        from synthetic.synthetic_dataset import HeterogeneousDataset as Dataset
+        from lsc_datasets.synthetic_dataset import (
+            SyntheticHeterogeneousDataset as Dataset,
+        )
 
-        graph_dataset = partial(
-            Dataset,
+        synthetic_config = SyntheticDatasetConfig(
             num_papers=num_papers,
             num_authors=num_authors,
             num_institutions=num_institutions,
-            num_features=ModelConfig().num_features,
-            num_classes=ModelConfig().num_classes,
+        )
+        graph_dataset = partial(
+            Dataset,
+            synthetic_config=synthetic_config,
         )
 
     elif dataset == "mag240m":
-        from mag240m.DGraph_MAG240M import DGraph_MAG240M as Dataset
-
-        paper_rank_mapping = None
-        if len(paper_rank_mapping_file) > 0:
-            assert osp.exists(paper_rank_mapping_file)
-            paper_rank_mapping = torch.load(paper_rank_mapping_file, weights_only=False)
-
-        author_rank_mapping = None
-        if len(author_rank_mapping_file) > 0:
-            assert osp.exists(author_rank_mapping_file)
-            author_rank_mapping = torch.load(author_rank_mapping_file, weights_only=False)
-
-        institution_rank_mapping = None
-        if len(institution_rank_mapping_file) > 0:
-            assert osp.exists(institution_rank_mapping_file)
-            institution_rank_mapping = torch.load(
-                institution_rank_mapping_file, weights_only=False
-            )
+        from lsc_datasets import DGraph_MAG240M_Dataset as Dataset
 
         graph_dataset = partial(
             Dataset,
-            paper_rank_mappings=paper_rank_mapping,
-            author_rank_mappings=author_rank_mapping,
-            institution_rank_mappings=institution_rank_mapping,
+            paper_rank_mappings=_load_optional_file(paper_rank_mapping_file),
+            author_rank_mappings=_load_optional_file(author_rank_mapping_file),
+            institution_rank_mappings=_load_optional_file(
+                institution_rank_mapping_file
+            ),
             data_dir=data_dir,
+            comm_plan_only=optimized_graph_structure,
         )
     else:
         raise ValueError(f"Invalid dataset: {dataset}")
