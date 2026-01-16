@@ -53,10 +53,9 @@ class CommPlan_GatherFunction(Function):
         )
 
         # To do: Combine this with the local gather above to reduce kernel launches
-        total_send = comm_plan.boundary_edge_idx.numel()
+        total_send = sum(comm_plan.boundary_vertex_splits)
         if total_send > 0:
-
-            send_buf = local_send_tensor[:, comm_plan.boundary_edge_idx, :]
+            send_buf = local_send_tensor[:, comm_plan.boundary_vertex_idx, :]
         else:
             send_buf = torch.empty(0, 0, num_features).to(local_send_tensor.device)
 
@@ -74,12 +73,18 @@ class CommPlan_GatherFunction(Function):
         recv_buffer = (
             recv_buffer.contiguous().squeeze() if total_recv > 0 else recv_buffer
         )
+        for i in range(comm_plan.world_size):
+            if i == comm_plan.rank:
+                print(
+                    f"Rank {comm_plan.rank} {send_buf.shape}, {recv_buffer.shape}, {comm_plan.boundary_edge_splits}, {comm_plan.boundary_vertex_splits}"
+                )
+            dist.barrier()
 
         dist.all_to_all_single(
             recv_buffer,
             send_buf,
             output_split_sizes=comm_plan.boundary_edge_splits,
-            input_split_sizes=comm_plan.boundary_edge_splits,
+            input_split_sizes=comm_plan.boundary_vertex_splits,
         )
 
         if total_recv > 0:
