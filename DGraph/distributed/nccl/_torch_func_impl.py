@@ -53,8 +53,6 @@ class CommPlan_GatherFunction(Function):
             output=output_tensor,
         )
 
-        torch.cuda.synchronize()
-
         # To do: Combine this with the local gather above to reduce kernel launches
         total_send = sum(comm_plan.boundary_vertex_splits)
         if total_send > 0:
@@ -83,10 +81,6 @@ class CommPlan_GatherFunction(Function):
             output_split_sizes=comm_plan.boundary_edge_splits,
             input_split_sizes=comm_plan.boundary_vertex_splits,
         )
-        torch.cuda.synchronize()
-
-        dist.barrier()
-        print("All to all complete")
 
         if total_recv > 0:
             recv_buffer = recv_buffer.unsqueeze(0)
