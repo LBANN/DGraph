@@ -116,6 +116,16 @@ torch::Tensor local_masked_scatter(torch::Tensor input,
   return output;
 }
 
+/*
+  Masked Scatter Gather function. Performs the operation:
+
+    for b in range(num_batches):
+      for i in range(num_indices):
+        output[b, mask[i]] = input[b, indices[i]]
+
+
+*/
+
 torch::Tensor local_masked_scatter_gather(torch::Tensor input,
                                           torch::Tensor indices,
                                           torch::Tensor mask,
@@ -173,6 +183,17 @@ torch::Tensor local_masked_scatter_gather(torch::Tensor input,
   CUDACHECK(cudaGetLastError());
   return output;
 }
+
+
+/*
+  Masked Scatter-Sum Gather Function. Performs the operation:
+
+    for b in range(num_batches):
+      for i in range(num_indices):
+        output[b, mask[i]] += input[b, indices[i]]
+
+
+*/
 
 torch::Tensor local_masked_scatter_add_gather(torch::Tensor input,
                                               torch::Tensor indices,
