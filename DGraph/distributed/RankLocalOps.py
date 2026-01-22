@@ -114,7 +114,7 @@ def OptimizedLocalScatterGather(
         output[dst_indices] = src[src_indices]
     else:
         bs = src.shape[0]
-        num_src_rows = src.shape[1]
+        num_src_indices = src_indices.shape[-1]
         num_features = src.shape[-1]
         num_output_rows = output.shape[1]
         local_masked_scatter_gather(
@@ -123,10 +123,11 @@ def OptimizedLocalScatterGather(
             dst_indices.cuda(),
             output,
             bs,
-            num_src_rows,
+            num_src_indices,
             num_features,
             num_output_rows,
         )
+
     return output
 
 
@@ -158,9 +159,12 @@ def OptimizedLocalScatterSumGather(
             output[:, dst_indices[i], :] += src[:, src_indices[i], :]
     else:
         bs = src.shape[0]
-        num_src_indices = src_indices.shape[1]
+        num_src_indices = src_indices.shape[-1]
         num_features = src.shape[-1]
         num_output_rows = output.shape[1]
+
+        assert src_indices.max().item() < src.shape[1]
+        assert dst_indices.max().item() < output.shape[1]
 
         local_masked_scatter_add_gather(
             src,

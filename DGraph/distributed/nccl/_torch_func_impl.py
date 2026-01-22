@@ -32,9 +32,10 @@ class CommPlan_GatherFunction(Function):
             local_send_tensor (torch.Tensor): Local send tensor
             comm_plan (GatherCommPlan): Communication plan
         """
-        assert (
-            len(local_send_tensor.shape) == 3
-        ), "Local send tensor must be of shape (batch_size, num_rows, num_features)"
+        assert len(local_send_tensor.shape) == 3, (
+            "Local send tensor must be of shape (batch_size, num_rows, num_features)"
+            + f"but received {local_send_tensor.shape}"
+        )
         ctx.comm_plan = comm_plan
 
         num_features = local_send_tensor.shape[-1]
@@ -43,27 +44,21 @@ class CommPlan_GatherFunction(Function):
         output_tensor = torch.zeros(
             num_batches, comm_plan.num_local_edges, num_features
         ).to(local_send_tensor.device)
-        torch.cuda.synchronize()
-        dist.barrier()
 
         # Local vertex to edge gather
         output_tensor = OptimizedLocalScatterGather(
             src=local_send_tensor,
-            src_indices=comm_plan.local_edge_idx,
-            dst_indices=comm_plan.local_vertex_idx,
+            src_indices=comm_plan.local_vertex_idx,
+            dst_indices=comm_plan.local_edge_idx,
             output=output_tensor,
         )
 
         torch.cuda.synchronize()
-        dist.barrier()
 
         # To do: Combine this with the local gather above to reduce kernel launches
         total_send = sum(comm_plan.boundary_vertex_splits)
         if total_send > 0:
-            dist.barrier()
-            if comm_plan.rank == 0:
-                breakpoint()
-            dist.barrier()
+
             send_buf = local_send_tensor[:, comm_plan.boundary_vertex_idx, :]
         else:
             send_buf = torch.empty(0, 0, num_features).to(local_send_tensor.device)
@@ -82,28 +77,19 @@ class CommPlan_GatherFunction(Function):
         recv_buffer = (
             recv_buffer.contiguous().squeeze() if total_recv > 0 else recv_buffer
         )
-
-        for i in range(comm_plan.world_size):
-            if i == comm_plan.rank:
-                print(
-                    f"Rank {comm_plan.rank} {send_buf.shape}, {recv_buffer.shape}, {comm_plan.boundary_edge_splits}, {comm_plan.boundary_vertex_splits}"
-                )
-            dist.barrier()
-
         dist.all_to_all_single(
             recv_buffer,
             send_buf,
             output_split_sizes=comm_plan.boundary_edge_splits,
             input_split_sizes=comm_plan.boundary_vertex_splits,
         )
+        torch.cuda.synchronize()
+
+        dist.barrier()
+        print("All to all complete")
 
         if total_recv > 0:
             recv_buffer = recv_buffer.unsqueeze(0)
-
-            dist.barrier()
-            if comm_plan.rank == 0:
-                breakpoint()
-            dist.barrier
 
             output_tensor = OptimizedLocalScatterGather(
                 src=recv_buffer,
