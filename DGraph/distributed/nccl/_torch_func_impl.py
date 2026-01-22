@@ -43,6 +43,8 @@ class CommPlan_GatherFunction(Function):
         output_tensor = torch.zeros(
             num_batches, comm_plan.num_local_edges, num_features
         ).to(local_send_tensor.device)
+        torch.cuda.synchronize()
+        dist.barrier()
 
         # Local vertex to edge gather
         output_tensor = OptimizedLocalScatterGather(
@@ -52,9 +54,16 @@ class CommPlan_GatherFunction(Function):
             output=output_tensor,
         )
 
+        torch.cuda.synchronize()
+        dist.barrier()
+
         # To do: Combine this with the local gather above to reduce kernel launches
         total_send = sum(comm_plan.boundary_vertex_splits)
         if total_send > 0:
+            dist.barrier()
+            if comm_plan.rank == 0:
+                breakpoint()
+            dist.barrier()
             send_buf = local_send_tensor[:, comm_plan.boundary_vertex_idx, :]
         else:
             send_buf = torch.empty(0, 0, num_features).to(local_send_tensor.device)
@@ -73,6 +82,7 @@ class CommPlan_GatherFunction(Function):
         recv_buffer = (
             recv_buffer.contiguous().squeeze() if total_recv > 0 else recv_buffer
         )
+
         for i in range(comm_plan.world_size):
             if i == comm_plan.rank:
                 print(
@@ -89,6 +99,11 @@ class CommPlan_GatherFunction(Function):
 
         if total_recv > 0:
             recv_buffer = recv_buffer.unsqueeze(0)
+
+            dist.barrier()
+            if comm_plan.rank == 0:
+                breakpoint()
+            dist.barrier
 
             output_tensor = OptimizedLocalScatterGather(
                 src=recv_buffer,

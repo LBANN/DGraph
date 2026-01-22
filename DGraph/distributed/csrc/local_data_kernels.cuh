@@ -376,9 +376,6 @@ namespace Local
         output_row = __shfl_sync(0xFFFFFFFF, output_row, 0);
         input_row = __shfl_sync(0xFFFFFFFF, input_row, 0);
 
-        output_row = mask[mask_offset + row];
-        input_row = indices[ind_offset + row];
-
         size_t col = gidx;
 
         for (; col < num_cols / 4; col += nthreadsx)

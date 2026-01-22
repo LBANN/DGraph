@@ -158,16 +158,17 @@ def OptimizedLocalScatterSumGather(
             output[:, dst_indices[i], :] += src[:, src_indices[i], :]
     else:
         bs = src.shape[0]
-        num_src_rows = src.shape[1]
+        num_src_indices = src_indices.shape[1]
         num_features = src.shape[-1]
         num_output_rows = output.shape[1]
+
         local_masked_scatter_add_gather(
             src,
             src_indices.cuda(),
             dst_indices.cuda(),
             output,
             bs,
-            num_src_rows,
+            num_src_indices,
             num_features,
             num_output_rows,
         )

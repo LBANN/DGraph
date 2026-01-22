@@ -18,14 +18,14 @@ import torch
 
 def test_local_kernel_submodule_import():
     try:
-        import torch_local
+        import DGraph.torch_local
     except ImportError as e:
         pytest.fail(f"Failed to import torch_local: {e}")
 
 
 def test_optimized_local_gather():
     try:
-        from torch_local import local_masked_gather
+        from DGraph.torch_local import local_masked_gather
     except ImportError as e:
         pytest.fail(f"Failed to import local_masked_gather: {e}")
 
@@ -69,9 +69,9 @@ def test_optimized_local_gather():
     ), "Optimized local gather failed"
 
 
-def test_optimized_scatter_gaher():
+def test_optimized_scatter_gather():
     try:
-        from torch_local import local_masked_scatter_gather
+        from DGraph.torch_local import local_masked_scatter_gather
     except ImportError as e:
         pytest.fail(f"Failed to import local_masked_scatter_gather: {e}")
 
@@ -84,6 +84,7 @@ def test_optimized_scatter_gaher():
     dst_indices = torch.tensor([1, 3, 5, 7])
 
     out_tensor_gt = torch.zeros(bs, num_out_rows, num_features)
+    num_src_indices = src_indices.shape[-1]
 
     for i in range(bs):
         for j in range(len(src_indices)):
@@ -100,7 +101,7 @@ def test_optimized_scatter_gaher():
         dst_indices,
         out_tensor,
         bs,
-        num_src_rows,
+        num_src_indices,
         num_features,
         num_out_rows,
     )
@@ -111,7 +112,7 @@ def test_optimized_scatter_gaher():
 
 def test_optimized_scatter_add_gather():
     try:
-        from torch_local import local_masked_scatter_add_gather
+        from DGraph.torch_local import local_masked_scatter_add_gather
     except ImportError as e:
         pytest.fail(f"Failed to import local_masked_scatter_add_gather: {e}")
 
@@ -135,13 +136,16 @@ def test_optimized_scatter_add_gather():
     src_tensor = src_tensor.cuda()
     src_indices = src_indices.cuda().long()
     dst_indices = dst_indices.cuda().long()
+
+    num_src_indices = src_indices.shape[-1]
+
     local_masked_scatter_add_gather(
         src_tensor,
         src_indices,
         dst_indices,
         out_tensor,
         bs,
-        num_src_rows,
+        num_src_indices,
         num_features,
         num_out_rows,
     )
