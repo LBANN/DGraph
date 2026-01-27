@@ -122,6 +122,8 @@ class CommPlan_GatherFunction(Function):
 
         total_send = len(comm_plan.boundary_vertex_idx)
         if total_send > 0:
+            send_buf = torch.zeros(num_batches, total_send, num_features, device=device)
+
             send_buf = grad_output[:, comm_plan.boundary_vertex_idx, :]
         else:
             send_buf = torch.empty(0, 0, num_features).to(device)

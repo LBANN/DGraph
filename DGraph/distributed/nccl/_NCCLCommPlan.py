@@ -182,13 +182,13 @@ def COO_to_NCCLCommPlan(
         b_dest_ranks, b_dst_global
     )
 
-    print(f"Rank {rank} has {len(boundary_edge_indices)} edges to send ")
-    print(f"Rank {rank} has {len(unique_ranks)} unique messages to send ")
+    # print(f"Rank {rank} has {len(boundary_edge_indices)} edges to send ")
+    # print(f"Rank {rank} has {len(unique_ranks)} unique messages to send ")
 
-    if len(unique_ranks) > 0:
-        print(
-            f"Rank {rank} message reduction ratio: {len(boundary_edge_indices)/len(unique_ranks)}"
-        )
+    # if len(unique_ranks) > 0:
+    #     print(
+    #         f"Rank {rank} message reduction ratio: {len(boundary_edge_indices)/len(unique_ranks)}"
+    #     )
 
     boundary_edge_buffer_map = inverse_indices
 
@@ -205,7 +205,7 @@ def COO_to_NCCLCommPlan(
         send_counts_tensor = send_counts_tensor.cuda()
 
     dist.all_to_all_single(recv_counts_tensor, send_counts_tensor)
-    print(f"rank: {rank} recv_counts_tensor: {recv_counts_tensor}")
+    # print(f"rank: {rank} recv_counts_tensor: {recv_counts_tensor}")
 
     boundary_node_splits = recv_counts_tensor.tolist()
 
