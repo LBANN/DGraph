@@ -12,14 +12,18 @@ class NCCLGraphCommPlan:
     Attributes:
         rank (int): Local rank
         world_size (int): World size
-        local_num_vertices (int): Number of local vertices
-        local_src_idx (torch.Tensor): Local source indices for scatter-sum
-        local_dst_idx (torch.Tensor): Local destination indices for scatter-sum
-        send_src_idx (torch.Tensor): Source indices to send to other ranks
-        send_buffer_idx (torch.Tensor): Buffer indices to store data to send to other ranks
-        send_comm_vector (torch.Tensor): Communication vector of shape [world_size] of messages to send to each rank
-        recv_dst_idx (torch.Tensor): Destination indices to receive from other ranks
-        recv_comm_vector (torch.Tensor): Communication vector of shape [world_size] of messages to
+        local_edge_idx (torch.Tensor): IDs of edges that are local to the rank
+        loca_vertex_idx (torch.Tensor): IDs of vertices that are local to the rank
+        boundary_edge_idx (torch.Tensor): IDs of edges that are boundary edges (edges that have have vertices on other ranks)
+                                        Information must be reecived from other ranks for these edges. Values are 0 to num_local_edges.
+        boundary_edge_buffer_map (torch.Tensor): Buffer map to store boundary edge data to send to other ranks
+                                                 Values are 0 to sum(boundary_edge_splits).
+        boundary_edge_splits (List[int]): World_size element list. Number of boundary edges to send to each rank.
+                                          Boundary_edge_splits[r] corresponds to the number of unique vertices in
+                                          this rank that have neighbors on rank r.
+        boundary_vertex_idx (torch.Tensor): IDs of boundary vertices (vertices that have edges on other ranks).
+                                            Information must be sent to other ranks for these vertices.
+        boundary_vertex_splits (List[int]): World_size element list. Number of
     """
 
     rank: int
@@ -136,6 +140,7 @@ def COO_to_NCCLCommPlan(
     global_edges_dst: torch.Tensor,
     local_edge_list: torch.Tensor,
     offset: torch.Tensor,
+    dst_offset: Optional[torch.Tensor] = None,
 ) -> NCCLGraphCommPlan:
     """
 
@@ -144,13 +149,13 @@ def COO_to_NCCLCommPlan(
     Args:
         rank (int): Local rank
         world_size (int): World size
-        global_edges_src (torch.Tensor): Global source indices of edges
         global_edges_dst (torch.Tensor): Global destination indices of edges
-        vertex_rank_placement (torch.Tensor): Rank placement of vertices
         local_edge_list (torch.Tensor): List of indices of local edges
         offset (torch.Tensor): Offset for each rank.
             The vertices are partitioned among ranks in a contiguous manner.
             All vertices in the range [offset[rank], offset[rank + 1]) are assigned to the rank.
+        dst_offset (Optional[torch.Tensor]): Offset for each rank for destination vertices, for heterogeneous graphs where
+            source and destination vertices are different. The vertices are partitioned among ranks in a contiguous manner.
 
     """
 
@@ -167,7 +172,9 @@ def COO_to_NCCLCommPlan(
     num_local_vertices = int(my_end - my_start)
     num_local_edges = local_edge_list.size(0)
 
-    dest_ranks = torch.bucketize(my_dst_global, offset, right=True) - 1
+    dst_offset = offset if dst_offset is None else dst_offset
+
+    dest_ranks = torch.bucketize(my_dst_global, dst_offset[1:], right=False)
 
     # Seperate this out to reduce memory usage
     (
@@ -176,7 +183,7 @@ def COO_to_NCCLCommPlan(
         b_dst_global,
         b_dest_ranks,
         boundary_edge_indices,
-    ) = compute_edge_slices(dest_ranks, rank, my_dst_global, offset)
+    ) = compute_edge_slices(dest_ranks, rank, my_dst_global, dst_offset)
 
     unique_ranks, unique_global_ids, inverse_indices = fast_2D_unique(
         b_dest_ranks, b_dst_global
@@ -204,8 +211,12 @@ def COO_to_NCCLCommPlan(
     if send_counts_tensor.device == torch.device("cpu"):
         send_counts_tensor = send_counts_tensor.cuda()
 
+    print(f"rank: {rank} send_counts_tensor: {send_counts_tensor}")
+
+    # if rank == 0:
+    #     breakpoint()
     dist.all_to_all_single(recv_counts_tensor, send_counts_tensor)
-    # print(f"rank: {rank} recv_counts_tensor: {recv_counts_tensor}")
+    print(f"rank: {rank} recv_counts_tensor: {recv_counts_tensor}")
 
     boundary_node_splits = recv_counts_tensor.tolist()
 
@@ -224,6 +235,7 @@ def COO_to_NCCLCommPlan(
     if unique_global_ids.device == torch.device("cpu"):
         unique_global_ids = unique_global_ids.cuda()
 
+    dist.barrier()
     dist.all_to_all_single(
         recv_global_ids,
         unique_global_ids,
@@ -282,6 +294,7 @@ def COO_to_NCCLEdgeConditionedCommPlan(
         global_edges_src,
         local_edge_list,
         src_offset,
+        dst_offset=dest_offset,
     )
 
     if dest_offset is None:
@@ -293,6 +306,7 @@ def COO_to_NCCLEdgeConditionedCommPlan(
         global_edges_dst,
         local_edge_list,
         dest_offset,
+        dst_offset=src_offset,
     )
 
     return NCCLEdgeConditionedGraphCommPlan(

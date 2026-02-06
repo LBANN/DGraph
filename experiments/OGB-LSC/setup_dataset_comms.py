@@ -18,6 +18,8 @@ from typing import Literal
 from DGraph import Communicator
 from config import SyntheticDatasetConfig
 from functools import partial
+import os
+import os.path as osp
 
 
 def main(
@@ -68,6 +70,9 @@ def main(
         from lsc_datasets.MAG240M_dataset import DGraph_MAG240M_Dataset as Dataset
 
         comm_print(f"Setting up MAG240M dataset")
+        cur_dir = osp.dirname(os.path.abspath(__file__))
+        data_dir = osp.join(cur_dir, data_dir)
+        # print(f"Data directory: {data_dir}")
         graph_dataset = partial(
             Dataset,
             data_dir=data_dir,

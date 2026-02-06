@@ -83,7 +83,8 @@ class CommPlan_GatherFunction(Function):
         )
 
         if total_recv > 0:
-            recv_buffer = recv_buffer.unsqueeze(0)
+            # recv_buffer = recv_buffer.unsqueeze(0)
+            recv_buffer = recv_buffer.reshape(_effective_batch_size, -1, num_features)
 
             output_tensor = OptimizedLocalScatterGather(
                 src=recv_buffer,
@@ -146,7 +147,8 @@ class CommPlan_GatherFunction(Function):
             input_split_sizes=comm_plan.boundary_edge_splits,
         )
         if total_recv > 0:
-            recv_buffer = recv_buffer.unsqueeze(0)
+            # recv_buffer = recv_buffer.unsqueeze(0)
+            recv_buffer = recv_buffer.reshape(_effective_batch_size, -1, num_features)
 
             grad_input = OptimizedLocalScatterSumGather(
                 src=recv_buffer,
@@ -233,7 +235,8 @@ class CommPlan_ScatterFunction(Function):
             input_split_sizes=comm_plan.boundary_edge_splits,
         )
         if total_recv > 0:
-            recv_buffer = recv_buffer.unsqueeze(0)
+            # recv_buffer = recv_buffer.unsqueeze(0)
+            recv_buffer = recv_buffer.reshape(_effective_batch_size, -1, num_features)
 
             output_tensor = OptimizedLocalScatterSumGather(
                 src=recv_buffer,
@@ -302,7 +305,8 @@ class CommPlan_ScatterFunction(Function):
         )
 
         if total_recv > 0:
-            recv_buffer = recv_buffer.unsqueeze(0)
+            # recv_buffer = recv_buffer.unsqueeze(0)
+            recv_buffer = recv_buffer.reshape(_effective_batch_size, -1, num_features)
 
             grad_input = OptimizedLocalScatterGather(
                 src=recv_buffer,

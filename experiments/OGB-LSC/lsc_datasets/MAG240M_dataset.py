@@ -14,7 +14,8 @@
 from ogb.lsc import MAG240MDataset
 import torch
 from typing import Optional, Tuple
-from torch_sparse import SparseTensor
+
+# from torch_sparse import SparseTensor
 import numpy as np
 from tqdm import tqdm
 import os.path as osp
@@ -160,29 +161,36 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
 
         self.generate_feature_data()
 
-        paper_features = torch.from_numpy(
-            self.dataset.paper_feat[local_papers_mask]
-        ).half()
+        # paper_features = torch.from_numpy(
+        #     self.dataset.paper_feat[local_papers_mask]
+        # ).half()
+
+        paper_features = torch.zeros(10, 10)
 
         path = self.dataset.dir
 
-        author_features = torch.from_numpy(
-            np.memmap(
-                filename=path + "/author_feat.npy",
-                mode="r",
-                dtype=np.float16,
-                shape=(num_authors, num_features),
-            )[local_authors_mask]
-        )
-        institution_features = torch.from_numpy(
-            np.memmap(
-                filename=path + "/institution_feat.npy",
-                mode="r",
-                dtype=np.float16,
-                shape=(num_institutions, num_features),
-            )[local_institutions_mask]
-        )
-        labels = torch.from_numpy(self.dataset.paper_label)
+        # author_features = torch.from_numpy(
+        #     np.memmap(
+        #         filename=path + "/author_feat.npy",
+        #         mode="r",
+        #         dtype=np.float16,
+        #         shape=(num_authors, num_features),
+        #     )[local_authors_mask]
+        # )
+        # institution_features = torch.from_numpy(
+        #     np.memmap(
+        #         filename=path + "/institution_feat.npy",
+        #         mode="r",
+        #         dtype=np.float16,
+        #         shape=(num_institutions, num_features),
+        #     )[local_institutions_mask]
+        # )
+
+        author_features = torch.zeros(10, 10)
+        institution_features = torch.zeros(10, 10)
+
+        # labels = torch.from_numpy(self.dataset.paper_label)
+        labels = torch.zeros(10, dtype=torch.long)
 
         paper_2_paper_edges = torch.from_numpy(
             self.dataset.edge_index("paper", "cites", "paper")
@@ -200,6 +208,7 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
         author_vertex_offsets = get_vertex_offsets(
             num_vertices=num_authors, world_size=world_size
         )
+
         institution_vertex_offsets = get_vertex_offsets(
             num_vertices=num_institutions, world_size=world_size
         )
@@ -244,6 +253,9 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
             )
             f_name = osp.join(data_dir, f_name)
             if osp.exists(f_name):
+                print(
+                    f"Rank {rank} loading cached comm plans from {f_name}", flush=True
+                )
                 self._load_comm_plans(f_name)
             else:
                 self._generate_comm_plans(f_name)
