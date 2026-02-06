@@ -419,34 +419,34 @@ class DistributedHeteroGraphDataset:
 
     def _generate_comm_plans(self, fname: str):
 
-        # self.paper_2_paper_comm_plan = COO_to_NCCLEdgeConditionedCommPlan(
-        #     rank=self.rank,
-        #     world_size=self.world_size,
-        #     global_edges_src=self.paper_2_paper_edges[0],
-        #     global_edges_dst=self.paper_2_paper_edges[1],
-        #     local_edge_list=self.local_paper_edges,
-        #     src_offset=self.paper_vertex_offset,
-        #     dest_offset=self.paper_vertex_offset,
-        # )
+        self.paper_2_paper_comm_plan = COO_to_NCCLEdgeConditionedCommPlan(
+            rank=self.rank,
+            world_size=self.world_size,
+            global_edges_src=self.paper_2_paper_edges[0],
+            global_edges_dst=self.paper_2_paper_edges[1],
+            local_edge_list=self.local_paper_edges,
+            src_offset=self.paper_vertex_offset,
+            dest_offset=self.paper_vertex_offset,
+        )
 
-        # self.paper_2_author_comm_plan = COO_to_NCCLEdgeConditionedCommPlan(
-        #     rank=self.rank,
-        #     world_size=self.world_size,
-        #     global_edges_src=self.author_2_paper_edges[0],
-        #     global_edges_dst=self.author_2_paper_edges[1],
-        #     local_edge_list=self.local_paper_2_author_edges,
-        #     src_offset=self.paper_vertex_offset,
-        #     dest_offset=self.author_vertex_offset,
-        # )
-        # self.author_2_paper_comm_plan = COO_to_NCCLEdgeConditionedCommPlan(
-        #     rank=self.rank,
-        #     world_size=self.world_size,
-        #     global_edges_src=self.author_2_paper_edges[1],
-        #     global_edges_dst=self.author_2_paper_edges[0],
-        #     local_edge_list=self.local_author_2_paper_edges,
-        #     src_offset=self.author_vertex_offset,
-        #     dest_offset=self.paper_vertex_offset,
-        # )
+        self.paper_2_author_comm_plan = COO_to_NCCLEdgeConditionedCommPlan(
+            rank=self.rank,
+            world_size=self.world_size,
+            global_edges_src=self.author_2_paper_edges[0],
+            global_edges_dst=self.author_2_paper_edges[1],
+            local_edge_list=self.local_paper_2_author_edges,
+            src_offset=self.paper_vertex_offset,
+            dest_offset=self.author_vertex_offset,
+        )
+        self.author_2_paper_comm_plan = COO_to_NCCLEdgeConditionedCommPlan(
+            rank=self.rank,
+            world_size=self.world_size,
+            global_edges_src=self.author_2_paper_edges[1],
+            global_edges_dst=self.author_2_paper_edges[0],
+            local_edge_list=self.local_author_2_paper_edges,
+            src_offset=self.author_vertex_offset,
+            dest_offset=self.paper_vertex_offset,
+        )
         self.author_2_institution_comm_plan = COO_to_NCCLEdgeConditionedCommPlan(
             rank=self.rank,
             world_size=self.world_size,
