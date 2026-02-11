@@ -38,8 +38,8 @@ class TrainingConfig:
 
 @dataclass
 class SyntheticDatasetConfig:
-    num_papers: int = 2048
-    num_authors: int = 512
-    num_institutions: int = 16
+    num_papers: int = 2048 * 16
+    num_authors: int = 1024 * 16
+    num_institutions: int = 16 * 16
     num_features: int = 16
     num_classes: int = 153
