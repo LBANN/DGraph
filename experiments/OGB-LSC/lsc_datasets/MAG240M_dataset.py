@@ -184,11 +184,7 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
             )[local_institutions_mask]
         )
 
-        author_features = torch.zeros(10, 10)
-        institution_features = torch.zeros(10, 10)
-
-        # labels = torch.from_numpy(self.dataset.paper_label)
-        labels = torch.zeros(10, dtype=torch.long)
+        labels = torch.from_numpy(self.dataset.paper_label)
 
         paper_2_paper_edges = torch.from_numpy(
             self.dataset.edge_index("paper", "cites", "paper")
