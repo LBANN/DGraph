@@ -118,17 +118,16 @@ def OptimizedLocalScatterGather(
         num_features = src.shape[-1]
         num_output_rows = output.shape[1]
 
-        print(f"Shapes {bs, num_src_indices, num_features, num_output_rows}")
-        # local_masked_scatter_gather(
-        #     src,
-        #     src_indices.cuda(),
-        #     dst_indices.cuda(),
-        #     output,
-        #     bs,
-        #     num_src_indices,
-        #     num_features,
-        #     num_output_rows,
-        # )
+        local_masked_scatter_gather(
+            src,
+            src_indices.cuda(),
+            dst_indices.cuda(),
+            output,
+            bs,
+            num_src_indices,
+            num_features,
+            num_output_rows,
+        )
 
     return output
 

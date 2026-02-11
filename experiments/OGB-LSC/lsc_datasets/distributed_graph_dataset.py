@@ -273,7 +273,7 @@ class DistributedHeteroGraphDataset:
             ]
         else:
             rank_mappings = None
-        edge_type = [(0, 0), (1, 0), (0, 1), (1, 2), (2, 1)]
+        edge_type = [(0, 0), (0, 1), (1, 0), (1, 2), (2, 1)]
         features = [
             self.paper_features,
             self.author_features,

@@ -173,19 +173,18 @@ class CommAwareGAT(nn.Module):
 
         assert isinstance(self.comm._Communicator__backend_engine, NCCLBackendEngine)
 
-        h_i = self.comm.gather(h, comm_plan=source_graph_plan)
-
-        h_j = self.comm.gather(h_j, comm_plan=dest_graph_plan)
+        h_i = self.comm.gather(h, comm_plan=dest_graph_plan)
+        h_j = self.comm.gather(h_j, comm_plan=source_graph_plan)
 
         numerator = self._process_messages(h_i, h_j)
 
-        denominator = self.comm.scatter(numerator, comm_plan=source_graph_plan)
+        denominator = self.comm.scatter(numerator, comm_plan=dest_graph_plan)
 
         denominator = self.comm.gather(denominator, comm_plan=dest_graph_plan)
-
         attention_messages = self._calc_attention_messages(h_j, numerator, denominator)
 
-        out = self.comm.scatter(attention_messages, comm_plan=source_graph_plan)
+        out = self.comm.scatter(attention_messages, comm_plan=dest_graph_plan)
+
         out = self._apply_res_and_bias(out, x)
 
         return out
@@ -329,8 +328,6 @@ class CommAwareRGAT(nn.Module):
             temp_outs = [self.skip_layers[i](outs[feat]) for feat in range(len(outs))]
 
             for j, (edge_type, comm_plan) in enumerate(zip(edge_types, comm_plans)):
-                if j == 0:
-                    continue
 
                 src_edge_type, dst_edge_type = edge_type
 

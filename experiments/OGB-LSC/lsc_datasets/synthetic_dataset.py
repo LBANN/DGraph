@@ -188,10 +188,12 @@ class SyntheticHeterogeneousDataset(DistributedHeteroGraphDataset):
             dataset_hash = generate_config_hash(
                 [num_papers, num_authors, num_institutions, num_features, num_classes]
             )
+            cur_dir = osp.dirname(osp.abspath(__file__))
             f_name = f"synthetic_dataset_{dataset_hash}_rank_{self.rank}_of_{self.world_size}_comm_plans.pt"
-            if osp.exists(f_name):
-                print(f"Loading comm plans from {f_name}")
-                self._load_comm_plans(f_name)
+            f_path = osp.join(cur_dir, f_name)
+            if osp.exists(f_path):
+                print(f"Loading comm plans from {f_path}")
+                self._load_comm_plans(f_path)
             else:
-                print(f"Generating comm plans and saving to {f_name}")
-                self._generate_comm_plans(f_name)
+                print(f"Generating comm plans and saving to {f_path}")
+                self._generate_comm_plans(f_path)

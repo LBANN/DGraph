@@ -22,6 +22,13 @@ from lsc_datasets.distributed_graph_dataset import DistributedHeteroGraphDataset
 import os
 
 
+def stop():
+    import sys
+
+    dist.destroy_process_group()
+    sys.exit(0)
+
+
 class Trainer:
     def __init__(self, dataset, comm):
         self.dataset: DistributedHeteroGraphDataset = dataset
@@ -51,7 +58,7 @@ class Trainer:
         self.model = DDP(
             self.model,
             device_ids=[rank % num_gpus],
-            find_unused_parameters=ddp_find_unused,
+            find_unused_parameters=True,
         )
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.training_config.lr, weight_decay=5e-4
@@ -69,13 +76,19 @@ class Trainer:
 
         # Fetch once; masks/targets are static across epochs
         train_mask = self.dataset.get_mask("train")
-        target = self.dataset.get_target("train")
+        target = self.dataset.get_target("train").flatten()
+
+        print(f"Rank {self.comm.get_rank()} starting training...")
 
         for epoch in range(1, self.training_config.epochs + 1):
             # zero grads before forward to avoid dangling reduction state
             self.optimizer.zero_grad(set_to_none=True)
 
             out = self.model(xs, edge_type, comm_plans)
+            # print(
+            #     f"Rank {self.comm.get_rank()} completed forward pass for epoch {epoch}"
+            # )
+
             local_train_vertices = out[:, train_mask, :].squeeze(0)
 
             loss = torch.nn.functional.cross_entropy(
@@ -87,6 +100,11 @@ class Trainer:
 
             loss.backward()
             self.optimizer.step()
+            # dist.barrier()
+            # print(
+            #     f"Rank {self.comm.get_rank()} completed backward pass for epoch {epoch}"
+            # )
+
             if self.comm.get_rank() == 0:
                 print(f"Epoch {epoch:03d} | loss {loss.item():.4f}")
         return loss.item()
