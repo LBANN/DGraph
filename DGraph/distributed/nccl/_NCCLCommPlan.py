@@ -184,15 +184,6 @@ def COO_to_NCCLCommPlan(
     unique_ranks, unique_global_ids, inverse_indices = fast_2D_unique(
         b_dest_ranks, b_dst_global
     )
-
-    # print(f"Rank {rank} has {len(boundary_edge_indices)} edges to send ")
-    # print(f"Rank {rank} has {len(unique_ranks)} unique messages to send ")
-
-    # if len(unique_ranks) > 0:
-    #     print(
-    #         f"Rank {rank} message reduction ratio: {len(boundary_edge_indices)/len(unique_ranks)}"
-    #     )
-
     boundary_edge_buffer_map = inverse_indices
 
     boundary_edge_splits = torch.bincount(unique_ranks, minlength=world_size).tolist()

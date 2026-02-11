@@ -83,7 +83,9 @@ def get_local_indices(rank, offset, src):
 
 
 @pytest.fixture(scope="module")
-def setup_gather_ground_truth(init_nccl_backend_communicator, setup_graph_data):
+def setup_gather_backward_ground_truth(
+    init_nccl_backend_communicator, setup_graph_data
+):
     comm = init_nccl_backend_communicator
     rank = comm.get_rank()
     world_size = comm.get_world_size()
@@ -94,19 +96,32 @@ def setup_gather_ground_truth(init_nccl_backend_communicator, setup_graph_data):
 
     dst = global_coo_matrix[1]
     src = global_coo_matrix[0]
+
+    # Forward: gather from vertices to edges
     for i in range(num_edges):
         global_E[i, :] = global_X[dst[i], :]
 
+    # Create a gradient for E (using ones for simplicity)
+    grad_global_E = torch.ones_like(global_E)
+
+    # Backward: gradient of gather is scatter-sum
+    # grad_X[dst[i]] += grad_E[i]
+    grad_global_X = torch.zeros_like(global_X)
+    for i in range(num_edges):
+        grad_global_X[dst[i], :] += grad_global_E[i, :]
+
+    # Get local portions
     my_start = offset[rank]
     my_end = offset[rank + 1]
 
     local_edge_indices = get_local_indices(rank, offset, src)
 
     local_E = global_E[local_edge_indices, :]
-
     local_X = global_X[my_start:my_end, :]
+    local_grad_E = grad_global_E[local_edge_indices, :]
+    local_grad_X = grad_global_X[my_start:my_end, :]
 
-    return local_E, local_X, dst, offset, local_edge_indices
+    return local_E, local_X, local_grad_E, local_grad_X, dst, offset, local_edge_indices
 
 
 def test_coo_to_nccl_comm_plan(init_nccl_backend_communicator, setup_graph_data):
@@ -224,13 +239,19 @@ def test_edge_conditioned_comm_plan(init_nccl_backend_communicator):
     assert ec_plan.dest_graph_plan.num_local_edges == local_edge_indices.numel()
 
 
-def test_comm_plan_gather(init_nccl_backend_communicator, setup_gather_ground_truth):
+def test_comm_plan_gather_backward(
+    init_nccl_backend_communicator, setup_gather_backward_ground_truth
+):
     comm = init_nccl_backend_communicator
-
     rank = comm.get_rank()
     world_size = comm.get_world_size()
 
-    local_E, local_X, dst, offset, local_edge_indices = setup_gather_ground_truth
+    local_E, local_X, local_grad_E, expected_grad_X, dst, offset, local_edge_indices = (
+        setup_gather_backward_ground_truth
+    )
+
+    # Clone and require grad
+    local_X_input = local_X.clone().requires_grad_(True)
 
     plan = COO_to_NCCLCommPlan(
         rank=rank,
@@ -239,9 +260,23 @@ def test_comm_plan_gather(init_nccl_backend_communicator, setup_gather_ground_tr
         local_edge_list=local_edge_indices,
         offset=offset,
     )
-    comm_local_E = comm.gather(local_X.unsqueeze_(0), comm_plan=plan)
-    comm_local_E.squeeze_(0)
-    torch.allclose(local_E, comm_local_E)
+
+    # Forward pass
+    comm_local_E = comm.gather(local_X_input.unsqueeze(0), comm_plan=plan)
+    comm_local_E = comm_local_E.squeeze(0)
+
+    # Verify forward is correct
+    assert torch.allclose(local_E, comm_local_E), "Forward pass mismatch"
+
+    # Backward pass with the known gradient
+    comm_local_E.backward(local_grad_E)
+
+    # Check the gradient
+    assert local_X_input.grad is not None, "Gradient was not computed"
+    assert torch.allclose(local_X_input.grad, expected_grad_X), (
+        f"Backward pass mismatch on rank {rank}: "
+        f"max diff = {(local_X_input.grad - expected_grad_X).abs().max().item()}"
+    )
 
 
 @pytest.fixture(scope="module")
