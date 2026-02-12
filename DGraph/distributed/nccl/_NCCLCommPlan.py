@@ -2,6 +2,9 @@ import torch
 from dataclasses import dataclass
 from typing import List, Optional
 import torch.distributed as dist
+from typing import Dict, Union
+from dataclasses import fields
+import sys
 
 
 @dataclass
@@ -61,6 +64,40 @@ class NCCLGraphCommPlan:
         self.boundary_edge_buffer_map = self.boundary_edge_buffer_map.to(device)
         self.boundary_vertex_idx = self.boundary_vertex_idx.to(device)
         return self
+
+    def memory_usage(self, unit: str = "MB") -> Dict[str, Union[float, str]]:
+        """
+        Calculates memory consumption of the plan, separating CPU and GPU usage.
+        """
+        cpu_bytes = 0
+        gpu_bytes = 0
+
+        units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+        divisor = units.get(unit.upper(), 1024**2)
+
+        for field in fields(self):
+            attr = getattr(self, field.name)
+
+            if isinstance(attr, torch.Tensor):
+                nbytes = attr.element_size() * attr.nelement()
+                if attr.is_cuda:
+                    gpu_bytes += nbytes
+                else:
+                    cpu_bytes += nbytes
+
+            elif isinstance(attr, list):
+                cpu_bytes += sys.getsizeof(attr)
+                cpu_bytes += sum(sys.getsizeof(i) for i in attr)
+
+            else:
+                cpu_bytes += sys.getsizeof(attr)
+
+        return {
+            "cpu": cpu_bytes / divisor,
+            "gpu": gpu_bytes / divisor,
+            "total": (cpu_bytes + gpu_bytes) / divisor,
+            "unit": unit.upper(),
+        }
 
 
 @dataclass

@@ -10,6 +10,18 @@ from DGraph.distributed.RankLocalOps import (
     OptimizedLocalScatterSumGather,
 )
 from DGraph.distributed.nccl._NCCLCommPlan import NCCLGraphCommPlan
+import os
+
+
+def clear_cached_memory():
+    """
+    Clear cached memory if the environment variable DGRAPH_CLEAR_BUFFER_CACHE is set to "1".
+    May add a bit more latency but can help reduce OOM errors in some cases by ensuring that
+    we are not holding onto stale buffers in the cache that are no longer needed.
+    """
+    if os.environ.get("DGRAPH_CLEAR_BUFFER_CACHE", "0") == "1":
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 class CommPlan_GatherFunction(Function):
@@ -93,6 +105,7 @@ class CommPlan_GatherFunction(Function):
                 dst_indices=comm_plan.boundary_edge_idx,
                 output=output_tensor,
             )
+        clear_cached_memory()
 
         return output_tensor
 
@@ -172,6 +185,8 @@ class CommPlan_GatherFunction(Function):
                 src_indices=torch.arange(total_recv, device=device),
                 dst_indices=comm_plan.boundary_vertex_idx,
             )
+
+        clear_cached_memory()
 
         return grad_input, None
 
@@ -261,6 +276,7 @@ class CommPlan_ScatterFunction(Function):
                 dst_indices=comm_plan.boundary_vertex_idx,
             )
 
+        clear_cached_memory()
         return output_tensor
 
     @staticmethod
@@ -332,6 +348,7 @@ class CommPlan_ScatterFunction(Function):
                 output=grad_input,
             )
 
+        clear_cached_memory()
         return grad_input, None
 
 

@@ -29,6 +29,21 @@ def stop():
     sys.exit(0)
 
 
+def print_on_rank_zero(*args, **kwargs):
+    dist.barrier()
+    if dist.get_rank() == 0:
+        print(*args, **kwargs)
+    dist.barrier()
+
+
+def print_on_all_ranks(*args, **kwargs):
+    dist.barrier()
+    for rank in range(dist.get_world_size()):
+        if dist.get_rank() == rank:
+            print(*args, **kwargs)
+        dist.barrier()
+
+
 class Trainer:
     def __init__(self, dataset, comm):
         self.dataset: DistributedHeteroGraphDataset = dataset
@@ -66,7 +81,7 @@ class Trainer:
 
     def prepare_data(self):
         self.dataset = self.dataset.add_batch_dimension()
-        self.dataset = self.dataset.to(self.device)
+        # self.dataset = self.dataset.to(self.device)
 
     def train(self):
         self.model.train()
@@ -78,16 +93,45 @@ class Trainer:
         train_mask = self.dataset.get_mask("train")
         target = self.dataset.get_target("train").flatten()
 
-        print(f"Rank {self.comm.get_rank()} starting training...")
+        xs = [x.to(self.device) for x in xs]
+        target = target.to(self.device)
+        train_mask = train_mask.to(self.device)
+
+        print_on_all_ranks(f"Rank {self.comm.get_rank()} starting training...")
+
+        print_on_rank_zero("*" * 20 + " Starting Training " + "*" * 20)
+
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+        dist.barrier()
+
+        print_on_rank_zero(
+            f"Current memory usage before training: {torch.cuda.memory_allocated() / 1e9:.2f} GB"
+        )
+
+        for plan in comm_plans:
+            source_plan = plan.source_graph_plan
+            dest_plan = plan.dest_graph_plan
+            assert (
+                dest_plan is not None
+            ), "Destination plan should not be None for NCCL communication"
+            source_memory = source_plan.memory_usage(unit="GB")["gpu"]
+            dest_memory = dest_plan.memory_usage(unit="GB")["gpu"]
+            print_on_rank_zero(
+                f"Comm Plan - Source Memory: {source_memory:.2f} GB, Destination Memory: {dest_memory:.2f} GB"
+            )
+
+        loss = torch.tensor([0.0]).to(self.device)
 
         for epoch in range(1, self.training_config.epochs + 1):
             # zero grads before forward to avoid dangling reduction state
             self.optimizer.zero_grad(set_to_none=True)
 
             out = self.model(xs, edge_type, comm_plans)
-            # print(
-            #     f"Rank {self.comm.get_rank()} completed forward pass for epoch {epoch}"
-            # )
+            #     # print(
+            #     #     f"Rank {self.comm.get_rank()} completed forward pass for epoch {epoch}"
+            #     # )
 
             local_train_vertices = out[:, train_mask, :].squeeze(0)
 
@@ -100,13 +144,11 @@ class Trainer:
 
             loss.backward()
             self.optimizer.step()
-            # dist.barrier()
-            # print(
-            #     f"Rank {self.comm.get_rank()} completed backward pass for epoch {epoch}"
-            # )
 
-            if self.comm.get_rank() == 0:
-                print(f"Epoch {epoch:03d} | loss {loss.item():.4f}")
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+            print_on_rank_zero(f"Epoch {epoch:03d} | loss {loss.item():.4f}")
         return loss.item()
 
     @torch.no_grad()

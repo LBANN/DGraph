@@ -121,10 +121,20 @@ def OptimizedLocalScatterGather(
         if dst_indices.numel() == 0 or src_indices.numel() == 0:
             return output
 
+        if src_indices.device != src.device:
+            device_src_indices = src_indices.to(src.device)
+        else:
+            device_src_indices = src_indices
+
+        if dst_indices.device != output.device:
+            device_dst_indices = dst_indices.to(output.device)
+        else:
+            device_dst_indices = dst_indices
+
         local_masked_scatter_gather(
             src,
-            src_indices.cuda(),
-            dst_indices.cuda(),
+            device_src_indices,
+            device_dst_indices,
             output,
             bs,
             num_src_indices,
@@ -173,10 +183,20 @@ def OptimizedLocalScatterSumGather(
         assert src_indices.max().item() < src.shape[1]
         assert dst_indices.max().item() < output.shape[1]
 
+        if src_indices.device != src.device:
+            device_src_indices = src_indices.to(src.device)
+        else:
+            device_src_indices = src_indices
+
+        if dst_indices.device != output.device:
+            device_dst_indices = dst_indices.to(output.device)
+        else:
+            device_dst_indices = dst_indices
+
         local_masked_scatter_add_gather(
             src,
-            src_indices.cuda(),
-            dst_indices.cuda(),
+            device_src_indices,
+            device_dst_indices,
             output,
             bs,
             num_src_indices,

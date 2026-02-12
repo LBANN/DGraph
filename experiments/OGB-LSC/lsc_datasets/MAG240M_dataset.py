@@ -134,12 +134,13 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
         num_papers = self.dataset.num_papers
         num_authors = self.dataset.num_authors
         num_institutions = self.dataset.num_institutions
-        num_features = self.dataset.num_paper_features
+        # num_features = self.dataset.num_paper_features
+        num_features = 1
         num_classes = self.dataset.num_classes
 
-        self.train_mask = self.dataset.get_idx_split("train")
-        self.val_mask = self.dataset.get_idx_split("valid")
-        self.test_mask = self.dataset.get_idx_split("test-dev")
+        self.train_mask = torch.from_numpy(self.dataset.get_idx_split("train")).long()
+        self.val_mask = torch.from_numpy(self.dataset.get_idx_split("valid")).long()
+        self.test_mask = torch.from_numpy(self.dataset.get_idx_split("test-dev")).long()
 
         local_papers_mask, num_local_papers = load_or_generate_vertex_rank_mask(
             paper_rank_mappings, num_papers, world_size, rank
@@ -161,30 +162,34 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
 
         self.generate_feature_data()
 
-        paper_features = torch.from_numpy(
-            self.dataset.paper_feat[local_papers_mask]
-        ).half()
+        # paper_features = torch.from_numpy(self.dataset.paper_feat[local_papers_mask])
+        paper_features = torch.randn((num_local_papers, 1), dtype=torch.float32)
 
         path = self.dataset.dir
 
-        author_features = torch.from_numpy(
-            np.memmap(
-                filename=path + "/author_feat.npy",
-                mode="r",
-                dtype=np.float16,
-                shape=(num_authors, num_features),
-            )[local_authors_mask]
-        )
-        institution_features = torch.from_numpy(
-            np.memmap(
-                filename=path + "/institution_feat.npy",
-                mode="r",
-                dtype=np.float16,
-                shape=(num_institutions, num_features),
-            )[local_institutions_mask]
+        # author_features = torch.from_numpy(
+        #     np.memmap(
+        #         filename=path + "/author_feat.npy",
+        #         mode="r",
+        #         dtype=np.float16,
+        #         shape=(num_authors, num_features),
+        #     )[local_authors_mask]
+        # )
+        # institution_features = torch.from_numpy(
+        #     np.memmap(
+        #         filename=path + "/institution_feat.npy",
+        #         mode="r",
+        #         dtype=np.float16,
+        #         shape=(num_institutions, num_features),
+        #     )[local_institutions_mask]
+        # )
+
+        author_features = torch.randn((num_local_authors, 1), dtype=torch.float32)
+        institution_features = torch.randn(
+            (num_local_institutions, 1), dtype=torch.float32
         )
 
-        labels = torch.from_numpy(self.dataset.paper_label)
+        labels = torch.from_numpy(self.dataset.paper_label).long()
 
         paper_2_paper_edges = torch.from_numpy(
             self.dataset.edge_index("paper", "cites", "paper")

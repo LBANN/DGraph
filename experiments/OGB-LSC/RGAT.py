@@ -28,6 +28,21 @@ from DGraph.distributed.nccl import (
 )
 
 
+def print_on_rank_zero(*args, **kwargs):
+    dist.barrier()
+    if dist.get_rank() == 0:
+        print(*args, **kwargs)
+    dist.barrier()
+
+
+def print_on_all_ranks(*args, **kwargs):
+    dist.barrier()
+    for rank in range(dist.get_world_size()):
+        if dist.get_rank() == rank:
+            print(*args, **kwargs)
+        dist.barrier()
+
+
 class ConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(ConvLayer, self).__init__()
@@ -55,7 +70,7 @@ class CommAwareGAT(nn.Module):
         self.conv1 = nn.Linear(in_channels, out_channels, bias=False)
         self.comm = comm
         self.project_message = nn.Linear(2 * out_channels, 1)
-        self.leaky_relu = nn.LeakyReLU(0.2)
+        self.leaky_relu = nn.LeakyReLU(0.2, inplace=True)
         self.residual = residual
         self.heads = heads
         self.hetero = hetero
@@ -174,6 +189,7 @@ class CommAwareGAT(nn.Module):
         assert isinstance(self.comm._Communicator__backend_engine, NCCLBackendEngine)
 
         h_i = self.comm.gather(h, comm_plan=dest_graph_plan)
+
         h_j = self.comm.gather(h_j, comm_plan=source_graph_plan)
 
         numerator = self._process_messages(h_i, h_j)
@@ -304,17 +320,27 @@ class CommAwareRGAT(nn.Module):
             self.layers.append(nn.ModuleList(relation_specific_convs))
 
         for _ in range(num_layers):
-            self.bn_layers.append(DistributedBatchNorm1D(hidden_channels))
+            self.bn_layers.append(
+                DistributedBatchNorm1D(hidden_channels, recompute=True)
+            )
 
         self.skip_layers.append(nn.Linear(in_channels, hidden_channels))
         for _ in range(num_layers - 1):
             self.skip_layers.append(nn.Linear(hidden_channels, hidden_channels))
 
+        self.in_place_relus = nn.ModuleList()
+        for _ in range(num_layers * 3):
+            self.in_place_relus.append(nn.ReLU(inplace=True))
+
+        self.in_place_dropouts = nn.ModuleList()
+        for _ in range(num_layers * 3):
+            self.in_place_dropouts.append(nn.Dropout(dropout))
+
         self.mlp = nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels),
-            DistributedBatchNorm1D(hidden_channels),
+            DistributedBatchNorm1D(hidden_channels, recompute=True),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
+            nn.Dropout(dropout, inplace=False),
             nn.Linear(hidden_channels, out_channels),
         )
         self.num_relations = num_relations
@@ -328,6 +354,8 @@ class CommAwareRGAT(nn.Module):
             temp_outs = [self.skip_layers[i](outs[feat]) for feat in range(len(outs))]
 
             for j, (edge_type, comm_plan) in enumerate(zip(edge_types, comm_plans)):
+                if j > 0:
+                    break
 
                 src_edge_type, dst_edge_type = edge_type
 
@@ -337,11 +365,9 @@ class CommAwareRGAT(nn.Module):
             outs = [
                 self.bn_layers[i](temp_outs[feat]) for feat in range(len(temp_outs))
             ]
-            outs = [torch.relu(outs[feat]) for feat in range(len(outs))]
-            outs = [
-                torch.dropout(outs[feat], p=self.dropout, train=self.training)
-                for feat in range(len(outs))
-            ]
+            for feat in range(len(outs)):
+                outs[feat] = self.in_place_relus[i * 3 + feat](outs[feat])
+                outs[feat] = self.in_place_dropouts[i * 3 + feat](outs[feat])
 
         dummy_prameters_use = bool(int(os.getenv("RGAT_DUMMY_ALL_PARAMS_USE", "0")))
         if dummy_prameters_use:

@@ -37,7 +37,7 @@ def main(
     paper_rank_mapping_file: str = "",
     author_rank_mapping_file: str = "",
     institution_rank_mapping_file: str = "",
-    data_dir: str = "datasets/data/MAG240M",
+    data_dir: str = f"{osp.dirname(osp.abspath(__file__))}/lsc_datasets/data/MAG240M",
 ):
     """Main function to run DGraph experiments on OGB-LSC datasets.
 

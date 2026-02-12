@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 @dataclass
 class ModelConfig:
-    hidden_channels: int = 1024
+    hidden_channels: int = 2
     dropout: float = 0.5
     num_layers: int = 2
     heads: int = 4
