@@ -11,21 +11,40 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
-class CommunicatorBase:
-    _is_initialized = False
+from abc import ABC, abstractmethod
+
+
+class CommunicatorBase(ABC):
+    _is_initialized: bool = False
 
     def __init__(self):
         self.backend = ""
         pass
 
+    @abstractmethod
     def init_process_group(self, backend: str, **kwargs):
         raise NotImplementedError
 
+    @abstractmethod
     def get_rank(self) -> int:
         raise NotImplementedError
 
+    @abstractmethod
     def get_world_size(self) -> int:
         raise NotImplementedError
 
-    def barrier(self):
+    @abstractmethod
+    def barrier(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def scatter(self, *args, **kwargs):
+        raise NotImplementedError
+
+    @abstractmethod
+    def gather(self, *args, **kwargs):
+        raise NotImplementedError
+
+    @abstractmethod
+    def destroy(self) -> None:
         raise NotImplementedError

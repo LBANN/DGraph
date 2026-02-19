@@ -11,6 +11,8 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
+from DGraph.Communicator import Communicator
+from DGraph.CommunicatorBase import CommunicatorBase
 
 """DGraph.
 

@@ -21,4 +21,6 @@ PYBIND11_MODULE(torch_local, m)
 {
   m.def("local_masked_gather", &local_masked_gather, "Masked Gather");
   m.def("local_masked_scatter", &local_masked_scatter, "Masked Scatter");
+  m.def("local_masked_scatter_gather", &local_masked_scatter_gather, "Masked Scatter Gather");
+  m.def("local_masked_scatter_add_gather", &local_masked_scatter_add_gather, "Masked Scatter Add Gather");
 }

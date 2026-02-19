@@ -16,9 +16,15 @@ This file contains the implementation of the RankLocalOps.
 """
 
 import torch
+import torch.distributed as dist
 
 try:
-    from DGraph.torch_local import local_masked_gather, local_masked_scatter
+    from DGraph.torch_local import (
+        local_masked_gather,
+        local_masked_scatter,
+        local_masked_scatter_gather,
+        local_masked_scatter_add_gather,
+    )
 
     _LOCAL_OPT_KERNELS_AVAILABLE = True
 except ImportError:
@@ -81,6 +87,125 @@ def OptimizedRankLocalMaskedGather(
     return output
 
 
+def OptimizedLocalScatterGather(
+    src: torch.Tensor,
+    src_indices: torch.Tensor,
+    dst_indices: torch.Tensor,
+    output: torch.Tensor,
+):
+    """
+    Performs the operation
+
+    for i in range(len(src_indices)):
+        output[dst_indices[i]] = src[src_indices[i]]
+    Args:
+        src (torch.Tensor): Source tensor
+        src_indices (torch.Tensor): Source indices
+        dst_indices (torch.Tensor): Destination indices
+        output (torch.Tensor): Output tensor
+    Returns:
+        torch.Tensor: Output tensor after scatter-gather
+    """
+
+    if not _LOCAL_OPT_KERNELS_AVAILABLE:
+        warnings.warn(
+            "Optimized local kernels are not available. Falling back to the default implementation."
+        )
+        output[dst_indices] = src[src_indices]
+    else:
+        bs = src.shape[0]
+        num_src_indices = src_indices.shape[-1]
+        num_features = src.shape[-1]
+        num_output_rows = output.shape[1]
+
+        if dst_indices.numel() == 0 or src_indices.numel() == 0:
+            return output
+
+        if src_indices.device != src.device:
+            device_src_indices = src_indices.to(src.device)
+        else:
+            device_src_indices = src_indices
+
+        if dst_indices.device != output.device:
+            device_dst_indices = dst_indices.to(output.device)
+        else:
+            device_dst_indices = dst_indices
+
+        local_masked_scatter_gather(
+            src,
+            device_src_indices,
+            device_dst_indices,
+            output,
+            bs,
+            num_src_indices,
+            num_features,
+            num_output_rows,
+        )
+
+    return output
+
+
+def OptimizedLocalScatterSumGather(
+    src: torch.Tensor,
+    src_indices: torch.Tensor,
+    dst_indices: torch.Tensor,
+    output: torch.Tensor,
+):
+    """
+    Performs the operation
+
+    for i in range(len(src_indices)):
+        output[dst_indices[i]] += src[src_indices[i]]
+    Args:
+        src (torch.Tensor): Source tensor
+        src_indices (torch.Tensor): Source indices
+        dst_indices (torch.Tensor): Destination indices
+        output (torch.Tensor): Output tensor
+    Returns:
+        torch.Tensor: Output tensor after scatter-gather
+    """
+
+    if not _LOCAL_OPT_KERNELS_AVAILABLE:
+        warnings.warn(
+            "Optimized local kernels are not available. Falling back to the default implementation."
+        )
+        for i in range(src_indices.shape[0]):
+            output[:, dst_indices[i], :] += src[:, src_indices[i], :]
+    else:
+        bs = src.shape[0]
+        num_src_indices = src_indices.shape[-1]
+        num_features = src.shape[-1]
+        num_output_rows = output.shape[1]
+
+        if dst_indices.numel() == 0 or src_indices.numel() == 0:
+            return output
+
+        assert src_indices.max().item() < src.shape[1]
+        assert dst_indices.max().item() < output.shape[1]
+
+        if src_indices.device != src.device:
+            device_src_indices = src_indices.to(src.device)
+        else:
+            device_src_indices = src_indices
+
+        if dst_indices.device != output.device:
+            device_dst_indices = dst_indices.to(output.device)
+        else:
+            device_dst_indices = dst_indices
+
+        local_masked_scatter_add_gather(
+            src,
+            device_src_indices,
+            device_dst_indices,
+            output,
+            bs,
+            num_src_indices,
+            num_features,
+            num_output_rows,
+        )
+    return output
+
+
 def OutOfPlaceRankLocalMaskedGather(
     _src: torch.Tensor, indices: torch.Tensor, rank_mapping: torch.Tensor, rank: int
 ) -> torch.Tensor:
@@ -140,7 +265,9 @@ def RankLocalRenumberingWithMapping(_indices, rank_mapping):
     unique_indices, inverse_indices = torch.unique(_indices, return_inverse=True)
     rank_mapping = rank_mapping.to(_indices.device)
     renumbered_indices = inverse_indices
-    unique_rank_mapping = torch.zeros_like(unique_indices, dtype=rank_mapping.dtype, device=rank_mapping.device)
+    unique_rank_mapping = torch.zeros_like(
+        unique_indices, dtype=rank_mapping.dtype, device=rank_mapping.device
+    )
     unique_rank_mapping.scatter_(0, inverse_indices, rank_mapping)
 
     return renumbered_indices, unique_indices, unique_rank_mapping

@@ -64,6 +64,9 @@ class NCCLScatterCache:
     world_size: int
 
 
+# @dataclass 
+# class 
+
 def all_to_all_cache_helper(
     indices, edge_placement, edge_vertex_ranks, num_rows, rank, world_size
 ):
@@ -200,7 +203,6 @@ def NCCLScatterCacheGenerator(
     recv_placement = _get_local_unique_recv_placement(
         indices, edge_placement, remote_recv_mask, num_output_rows, rank, world_size
     )
-
     # Information for the backward pass
     # It's a gather operation so quite a bit simpler
 
@@ -253,7 +255,6 @@ def NCCLGatherCacheGenerator(
             indices, edge_placement, edge_dest_ranks, num_input_rows, rank, world_size
         )
     )
-
     local_slice_mask = edge_placement == rank
 
     local_mask = edge_placement[local_slice_mask]

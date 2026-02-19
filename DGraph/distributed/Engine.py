@@ -50,7 +50,7 @@ class BackendEngine(object):
         output_size: int,
         rank_mappings: Optional[torch.Tensor] = None,
         *args,
-        **kwargs
+        **kwargs,
     ) -> torch.Tensor:
         raise NotImplementedError
 
@@ -60,7 +60,7 @@ class BackendEngine(object):
         indices: Union[torch.Tensor, torch.LongTensor],
         rank_mappings: Optional[torch.Tensor] = None,
         *args,
-        **kwargs
+        **kwargs,
     ) -> torch.Tensor:
         raise NotImplementedError
 

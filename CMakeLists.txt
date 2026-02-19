@@ -94,7 +94,6 @@ python_add_library(torch_local
 
 target_link_libraries(torch_local
   PUBLIC
-  MPI::MPI_CXX
   torch
   ${TORCH_PYTHON_LIBRARY}
   PRIVATE

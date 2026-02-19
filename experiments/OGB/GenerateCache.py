@@ -21,6 +21,9 @@ from DGraph.distributed.nccl._nccl_cache import (
     NCCLGatherCacheGenerator,
     NCCLScatterCacheGenerator,
 )
+
+from DGraph.distributed.nccl import COO_to_NCCLEdgeConditionedCommPlan
+
 from time import perf_counter
 from tqdm import tqdm
 from multiprocessing import get_context
@@ -33,67 +36,37 @@ cache_prefix = {
 }
 
 
-def generate_cache_file(
-    dist_graph,
-    src_indices,
-    dst_indices,
-    edge_placement,
-    edge_src_placement,
-    edge_dest_placement,
-    cache_prefix_str: str,
-    rank: int,
-    world_size: int,
+def generate_comm_plan(
+    coo_list,
+    offsets,
+    rank,
+    world_size,
+    dest_offsets=None,
 ):
-    print(f"Generating cache for rank {rank}...")
-    local_node_features = dist_graph.get_local_node_features(rank).unsqueeze(0)
-    num_input_rows = local_node_features.size(1)
+    # Source edges belonging to this rank should be where the source
+    # vertex falls within the rank's offset range.
+    src_start = offsets[rank].item()
+    src_end = offsets[rank + 1].item()
+    local_edges = torch.nonzero(
+        (coo_list[0] >= src_start) & (coo_list[0] < src_end), as_tuple=True
+    )[0]
 
-    print(
-        f"Rank {rank} has {num_input_rows} input rows with shape {local_node_features.shape}"
-    )
-    gather_cache = NCCLGatherCacheGenerator(
-        dst_indices,
-        edge_placement,
-        edge_dest_placement,
-        num_input_rows,
+    comm_plan = COO_to_NCCLEdgeConditionedCommPlan(
         rank,
         world_size,
+        coo_list[0],
+        coo_list[1],
+        local_edges,
+        offsets,
+        dest_offset=dest_offsets,
     )
-
-    nodes_per_rank = dist_graph.get_nodes_per_rank()
-    nodes_per_rank = int(nodes_per_rank[rank].item())
-
-    scatter_cache = NCCLScatterCacheGenerator(
-        src_indices,
-        edge_placement,
-        edge_src_placement,
-        nodes_per_rank,
-        rank,
-        world_size,
-    )
-    print(f"Rank {rank}  completed cache generation")
-    with open(
-        f"{cache_prefix_str}_gather_cache_rank_{world_size}_{rank}.pt", "wb"
-    ) as f:
-        torch.save(gather_cache, f)
-
-    with open(
-        f"{cache_prefix_str}_scatter_cache_rank_{world_size}_{rank}.pt", "wb"
-    ) as f:
-        torch.save(scatter_cache, f)
-    return 0
+    return comm_plan
 
 
 def main(dset: str, world_size: int, node_rank_placement_file: str):
     assert dset in ["ogbn-arxiv", "ogbn-products", "ogbn-papers100M"]
 
     assert world_size > 0
-    assert os.path.exists(
-        node_rank_placement_file
-    ), "Node rank placement file does not exist."
-
-    node_rank_placement = torch.load(node_rank_placement_file)
-
     dataset = NodePropPredDataset(
         dset,
     )
@@ -102,62 +75,9 @@ def main(dset: str, world_size: int, node_rank_placement_file: str):
     assert split_index is not None, "Split index is None."
 
     graph, labels = dataset[0]
-
     num_edges = graph["edge_index"].shape
     print(num_edges)
-
-    dist_graph = process_homogenous_data(
-        graph_data=graph,
-        labels=labels,
-        world_Size=world_size,
-        split_idx=split_index,
-        node_rank_placement=node_rank_placement,
-        rank=0,
-    )
-
-    edge_indices = dist_graph.get_global_edge_indices()
-    rank_mappings = dist_graph.get_global_rank_mappings()
-
-    print("Edge indices shape:", edge_indices.shape)
-    print("Rank mappings shape:", rank_mappings.shape)
-
-    edge_indices = edge_indices.unsqueeze(0)
-    src_indices = edge_indices[:, 0, :]
-    dst_indices = edge_indices[:, 1, :]
-
-    edge_placement = rank_mappings[0]
-    edge_src_placement = rank_mappings[0]
-    edge_dest_placement = rank_mappings[1]
-
-    start_time = perf_counter()
-    cache_prefix_str = f"cache/{cache_prefix[dset]}"
-    with get_context("spawn").Pool(min(world_size, 8)) as pool:
-        args = [
-            (
-                dist_graph,
-                src_indices,
-                dst_indices,
-                edge_placement,
-                edge_src_placement,
-                edge_dest_placement,
-                cache_prefix_str,
-                rank,
-                world_size,
-            )
-            for rank in range(world_size)
-        ]
-
-        out = pool.starmap(generate_cache_file, args)
-
-    end_time = perf_counter()
-    print(f"Cache generation time: {end_time - start_time:.4f} seconds")
-    print("Cache files generated successfully.")
-    print(
-        f"Gather cache file: {cache_prefix_str}_gather_cache_rank_{world_size}_<rank>.pt"
-    )
-    print(
-        f"Scatter cache file: {cache_prefix_str}_scatter_cache_rank_{world_size}_<rank>.pt"
-    )
+    num_nodes = graph["num_nodes"]
 
 
 if __name__ == "__main__":

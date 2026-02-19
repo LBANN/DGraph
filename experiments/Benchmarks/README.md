@@ -34,7 +34,8 @@ class ScatterGraphData:
     data_rank_mapping: torch.Tensor     # Where each data is located
     edge_rank_placement: torch.Tensor   # Where each edge is located
     edge_dst_rank: torch.Tensor         # Rank of the destination vertex of each edge
-    edge_indices: torch.Tensor          # Vertex index of the destination vertex of each num_local_vertices: int             # Number of vertices on each rank   
+    edge_indices: torch.Tensor          # Vertex index of the destination vertex of each edge
+    num_local_vertices: int             # Number of vertices on each rank
 ```
 
 *** New communication patterns can be added to the benchmarking code by creating new instances of these dataclasses. ***
