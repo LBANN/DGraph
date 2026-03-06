@@ -13,7 +13,7 @@
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
 import torch.nn as nn
-import torch.distributed as dist
+from DGraph.distributed.nccl._NCCLCommPlan import NCCLGraphCommPlan
 from DGraph.utils.TimingReport import TimingReport
 
 
@@ -31,8 +31,7 @@ class ConvLayer(nn.Module):
 
 class CommAwareGCN(nn.Module):
     """
-    Least interesting GNN model to test distributed training
-    but good enough for the purpose of testing.
+    GNN model that uses NCCLGraphCommPlan for distributed gather-scatter.
     """
 
     def __init__(self, in_channels, hidden_dims, num_classes, comm):
@@ -41,55 +40,44 @@ class CommAwareGCN(nn.Module):
         self.conv1 = ConvLayer(in_channels, hidden_dims)
         self.conv2 = ConvLayer(hidden_dims, hidden_dims)
         self.fc = nn.Linear(hidden_dims, num_classes)
-        self.softmax = nn.Softmax(dim=1)
         self.comm = comm
 
     def forward(
         self,
-        node_features,
-        edge_index,
-        rank_mapping,
-        gather_cache=None,
-        scatter_cache=None,
+        node_features: torch.Tensor,
+        comm_plan: NCCLGraphCommPlan,
     ):
-        num_local_nodes = node_features.size(1)
-        _src_indices = edge_index[:, 0, :]
-        _dst_indices = edge_index[:, 1, :]
-
-        TimingReport.start("pre-processing")
-        _src_rank_mappings = torch.cat(
-            [rank_mapping[0].unsqueeze(0), rank_mapping[0].unsqueeze(0)], dim=0
-        )
-        _dst_rank_mappings = torch.cat(
-            [rank_mapping[0].unsqueeze(0), rank_mapping[1].unsqueeze(0)], dim=0
-        )
-        TimingReport.stop("pre-processing")
+        """
+        Args:
+            node_features: Local node features (batch, num_local_nodes, features)
+            comm_plan: Pre-computed NCCLGraphCommPlan for gather-scatter
+        """
         TimingReport.start("Gather_1")
-        x = self.comm.gather(
-            node_features, _dst_indices, _dst_rank_mappings, cache=gather_cache
-        )
+        x = self.comm.gather(node_features, comm_plan=comm_plan)
         TimingReport.stop("Gather_1")
+
         TimingReport.start("Conv_1")
         x = self.conv1(x)
         TimingReport.stop("Conv_1")
+
         TimingReport.start("Scatter_1")
-        x = self.comm.scatter(
-            x, _src_indices, _src_rank_mappings, num_local_nodes, cache=scatter_cache
-        )
+        x = self.comm.scatter(x, comm_plan=comm_plan)
         TimingReport.stop("Scatter_1")
+
         TimingReport.start("Gather_2")
-        x = self.comm.gather(x, _dst_indices, _dst_rank_mappings, cache=gather_cache)
+        x = self.comm.gather(x, comm_plan=comm_plan)
         TimingReport.stop("Gather_2")
+
         TimingReport.start("Conv_2")
         x = self.conv2(x)
         TimingReport.stop("Conv_2")
+
         TimingReport.start("Scatter_2")
-        x = self.comm.scatter(
-            x, _src_indices, _src_rank_mappings, num_local_nodes, cache=scatter_cache
-        )
+        x = self.comm.scatter(x, comm_plan=comm_plan)
         TimingReport.stop("Scatter_2")
+
         TimingReport.start("Final_FC")
         x = self.fc(x)
         TimingReport.stop("Final_FC")
-        # x = self.softmax(x)
+
         return x
