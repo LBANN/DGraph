@@ -26,7 +26,7 @@ from DGraph.distributed.nccl._torch_func_impl import (
 
 from torch.autograd import Function
 from DGraph.utils import largest_split
-from typing import overload
+from typing import overload, List
 
 
 TIMINGS = {"Gather_Index_Forward": [], "Gather_Forward_Local": []}
@@ -253,6 +253,57 @@ class NCCLBackendEngine(BackendEngine):
         if NCCLBackendEngine._is_initialized:
             # dist.destroy_process_group()
             NCCLBackendEngine._is_initialized = False
+
+    def _get_splits(self, send_offset, recv_offset) -> tuple[List[int], List[int]]:
+        """
+        Return (send_splits, recv_splits) as plain Python lists of ints.
+
+        send_splits[i] = number of *vertices* this rank sends to rank i.
+        recv_splits[i] = number of *vertices* this rank receives from rank i.
+
+        These are in vertex units; the caller must multiply by feature_dim
+        before passing to all_to_all_single.
+        """
+
+        send_off = send_offset
+        recv_off = recv_offset
+
+        send_splits = (send_off[1:] - send_off[:-1]).tolist()
+        recv_splits = (recv_off[1:] - recv_off[:-1]).tolist()
+
+        return (send_splits, recv_splits)
+
+    @staticmethod
+    def _scale_splits(splits: List[int], factor: int) -> List[int]:
+        """Multiply each split count by a scalar (feature dimension)."""
+        return [s * factor for s in splits]
+
+    def put(
+        self,
+        send_buffer: torch.Tensor,
+        recv_buffer: torch.Tensor,
+        send_offsets: torch.Tensor,
+        recv_offsets: torch.Tensor,
+        remote_offsets: torch.Tensor | None = None,
+    ) -> None:
+        _ = remote_offsets  #  remote_offsets not needed in 2-sided semantices
+
+        send_splits, recv_splits = self._get_splits(
+            send_offset=send_offsets, recv_offset=recv_offsets
+        )
+        feature_dim = send_buffer.shape[1] if send_buffer.ndim == 2 else 1
+
+        # all_to_all_single operates on flat views; split sizes are in
+        # element counts, so scale vertex counts by feature_dim.
+        send_flat = send_buffer.contiguous().view(-1)
+        recv_flat = recv_buffer.contiguous().view(-1)
+
+        dist.all_to_all_single(
+            output=recv_flat,
+            input=send_flat,
+            output_split_sizes=self._scale_splits(recv_splits, feature_dim),
+            input_split_sizes=self._scale_splits(send_splits, feature_dim),
+        )
 
     def finalize(self) -> None:
         if NCCLBackendEngine._is_initialized:

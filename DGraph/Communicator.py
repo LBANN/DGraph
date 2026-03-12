@@ -16,6 +16,7 @@ import torch
 from DGraph.distributed.nccl import NCCLBackendEngine
 
 from DGraph.CommunicatorBase import CommunicatorBase
+from typing import Tuple, Optional
 
 SUPPORTED_BACKENDS = ["nccl", "mpi", "nvshmem"]
 
@@ -95,6 +96,13 @@ class Communicator(CommunicatorBase):
 
         return masked_tensor
 
+    def alloc_buffer(
+        self, size: Tuple[int, ...], dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
+        """Allocate a buffer suitable for this backend's communication model.
+        Default: torch.empty. NVSHMEM overrides with symmetric allocation."""
+        return self.__backend_engine.allocate_buffer(size, dtype, device)
+
     def scatter(self, *args, **kwargs) -> torch.Tensor:
         self.__check_init()
         return self.__backend_engine.scatter(*args, **kwargs)
@@ -102,6 +110,22 @@ class Communicator(CommunicatorBase):
     def gather(self, *args, **kwargs) -> torch.Tensor:
         self.__check_init()
         return self.__backend_engine.gather(*args, **kwargs)
+
+    def put(
+        self,
+        send_buffer: torch.Tensor,
+        recv_buffer: torch.Tensor,
+        send_offsets: torch.Tensor,
+        recv_offsets: torch.Tensor,
+        remote_offsets: Optional[torch.Tensor] = None,
+    ) -> None:
+        return self.__backend_engine.put(
+            send_buffer,
+            recv_buffer,
+            send_offsets,
+            recv_offsets,
+            remote_offsets=remote_offsets,
+        )
 
     def barrier(self) -> None:
         self.__check_init()
