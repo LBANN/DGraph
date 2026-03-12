@@ -17,4 +17,17 @@
 Modules exported by this package:
 - `Engine`: The DGraph communication engine used by the Communicator.
 - `BackendEngine`: The abstract DGraph communication engine used by the Communicator.
+- `HaloExchange`: Halo exchange class for communicating remote vertices
+- `CommunicationPattern`: Dataclass for holding communication pattern information
 """
+from DGraph.distributed.haloExchange import HaloExchange
+from DGraph.distributed.commInfo import (
+    CommunicationPattern,
+    build_communication_pattern,
+)
+
+__all__ = [
+    "HaloExchange",
+    "CommunicationPattern",
+    "build_communication_pattern",
+]
