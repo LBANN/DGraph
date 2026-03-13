@@ -49,13 +49,15 @@ from utils import (
 
 def _run_experiment(
     dataset: DGraphOGBDataset,
-    node_rank_placement: torch.Tensor,
     comm: Communicator,
     lr: float,
     epochs: int,
     log_prefix: str,
     hidden_dims: int = 256,
     num_classes: int = 40,
+    device: str | torch.device = "cuda",
+    rank: int = 0,
+    local_rank: int = 0,
 ):
     """Run one full training + validation + test experiment.
 
@@ -73,10 +75,6 @@ def _run_experiment(
         Tuple of (training_loss, validation_loss, validation_accuracy) numpy arrays,
         each of length ``epochs``.
     """
-    rank = comm.get_rank()
-    local_rank = rank % torch.cuda.device_count()
-    torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}")
 
     # ---- Extract local data from the dataset --------------------------------
     comm_pattern = dataset.comm_pattern
@@ -144,7 +142,7 @@ def _run_experiment(
 
         train_output = output[train_mask]
         train_labels = local_labels[train_mask]
-        loss = criterion(train_output, train_labels)
+        loss = criterion(train_output, train_labels.reshape(-1))
 
         with TimingReport("backward"):
             loss.backward()
@@ -170,7 +168,7 @@ def _run_experiment(
         with torch.no_grad():
             val_output = output[val_mask]
             val_labels = local_labels[val_mask]
-            val_loss = criterion(val_output, val_labels)
+            val_loss = criterion(val_output, val_labels.reshape(-1))
             val_preds = torch.log_softmax(val_output, dim=1)
             val_accuracy = calculate_accuracy(val_preds, val_labels)
 
@@ -193,7 +191,7 @@ def _run_experiment(
         test_output = model(local_node_features, comm_pattern)
         test_preds = test_output[test_mask]
         test_labels = local_labels[test_mask]
-        test_loss = criterion(test_preds, test_labels)
+        test_loss = criterion(test_preds, test_labels.reshape(-1))
         test_preds_log = torch.log_softmax(test_preds, dim=1)
         test_accuracy = calculate_accuracy(test_preds_log, test_labels)
 
@@ -243,6 +241,7 @@ def main(
     hidden_dims: int = 256,
     log_dir: str = "logs",
     node_rank_placement_file: Optional[str] = None,
+    root_dir: Optional[str] = None,
 ):
     """Distributed GCN benchmark on OGB node-property-prediction datasets.
 
@@ -277,6 +276,11 @@ def main(
     rank = comm.get_rank()
     world_size = comm.get_world_size()
 
+    rank = comm.get_rank()
+    local_rank = rank % torch.cuda.device_count()
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}")
+
     TimingReport.init(comm)
     safe_create_dir(log_dir, rank)
 
@@ -295,6 +299,7 @@ def main(
         dname=f"ogbn-{dataset}",
         comm=comm,
         node_rank_placement=node_rank_placement,
+        root_dir=root_dir,
     )
 
     # ---- Runs ---------------------------------------------------------------
@@ -311,13 +316,15 @@ def main(
         log_prefix = f"{log_dir}/{dataset}_world{world_size}_run{run}"
         train_loss, val_loss, val_acc = _run_experiment(
             dataset=training_dataset,
-            node_rank_placement=node_rank_placement,
             comm=comm,
             lr=lr,
             epochs=epochs,
             log_prefix=log_prefix,
             hidden_dims=hidden_dims,
             num_classes=num_classes,
+            device=device,
+            rank=rank,
+            local_rank=local_rank,
         )
         training_trajectories[run] = train_loss
         validation_trajectories[run] = val_loss

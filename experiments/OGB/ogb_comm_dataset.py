@@ -57,6 +57,7 @@ class DGraphOGBDataset(Dataset):
         dname: str,
         comm: CommunicatorBase,
         node_rank_placement: torch.Tensor,
+        root_dir: Optional[str] = None,
         *args,
         **kwargs,
     ) -> None:
@@ -78,13 +79,17 @@ class DGraphOGBDataset(Dataset):
 
         if self.rank == 0:
             # Load dataset on rank 0 first
-            self.dataset = NodePropPredDataset(name=dname)
+            self.dataset = NodePropPredDataset(
+                name=dname, root=root_dir if root_dir else "dataset"
+            )
 
         comm.barrier()
 
         # Load dataset on all other ranks
         if self.rank != 0:
-            self.dataset = NodePropPredDataset(name=dname)
+            self.dataset = NodePropPredDataset(
+                name=dname, root=root_dir if root_dir else "dataset"
+            )
 
         comm.barrier()
 
@@ -93,7 +98,7 @@ class DGraphOGBDataset(Dataset):
 
         num_nodes = graph_data["num_nodes"]
         node_features = torch.from_numpy(graph_data["node_feat"]).float()
-        edge_index = torch.from_numpy(graph_data["edge_index"]).long()
+        edge_index = torch.from_numpy(graph_data["edge_index"]).long().T
         labels = torch.from_numpy(labels).long()
 
         self.comm_pattern = generate_communication_pattern(
@@ -133,3 +138,24 @@ class DGraphOGBDataset(Dataset):
             self.local_labels,
             self.comm_pattern,
         )
+
+
+if __name__ == "__main__":
+    from DGraph.Communicator import Communicator
+
+    comm = Communicator.init_process_group("nccl")
+
+    rank = comm.get_rank()
+    local_rank = rank % torch.cuda.device_count()
+    world_size = comm.get_world_size()
+    torch.cuda.set_device(local_rank)
+
+    node_rank_placement = torch.load(
+        f"/p/vast1/zaman2/matrix/DGraph/experiments/OGB/ogbn-arxiv-mappings/ogbn-arxiv_vertex_rank_mapping_{world_size}.pt"
+    )
+    dataset = DGraphOGBDataset(
+        dname="ogbn-arxiv", comm=comm, node_rank_placement=node_rank_placement
+    )
+
+    data, labels, comm_pattern = dataset[0]
+    print(comm_pattern.comm_map)

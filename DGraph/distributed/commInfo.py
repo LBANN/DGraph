@@ -148,8 +148,8 @@ def compute_boundary_vertices(
 def compute_comm_map(send_offset, world_size) -> torch.Tensor:
     """All-gathers send counts to build comm_map: [world_size, world_size]"""
     send_counts = send_offset[1:] - send_offset[:-1]
-    comm_map_list = [torch.zeros(world_size).cuda() for _ in range(world_size)]
-    dist.all_gather(comm_map_list, send_counts)
+    comm_map_list = [torch.zeros(world_size).long().cuda() for _ in range(world_size)]
+    dist.all_gather(comm_map_list, send_counts.cuda())
     comm_map = torch.stack(comm_map_list)
     return comm_map
 

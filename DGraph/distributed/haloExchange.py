@@ -44,7 +44,7 @@ class HaloExchangeImpl(Function):
         ctx.comm_pattern = comm_pattern
         ctx.feature_dim = feature_dim
         ctx.comm = comm
-        recv_buffer = comm.allocate_buffer(
+        recv_buffer = comm.alloc_buffer(
             (total_recv, feature_dim) if send_buffer.ndim == 2 else (total_recv,),
             dtype=send_buffer.dtype,
             device=send_buffer.device,
@@ -69,7 +69,7 @@ class HaloExchangeImpl(Function):
         feature_dim = ctx.feature_dim
         comm = ctx.comm
 
-        grad_input_tensor = comm.allocate_buffer(
+        grad_input_tensor = comm.alloc_buffer(
             (total_sent, feature_dim) if grad_recv_buffer.ndim == 2 else (total_sent,),
             dtype=grad_recv_buffer.dtype,
             device=grad_recv_buffer.device,
