@@ -252,14 +252,29 @@ namespace Local
     }
   }
 
-  
-
   template <typename T>
   struct FloatAtomicAddOp
   {
     __device__ __forceinline__ void operator()(T *cur_addr, const T new_val)
     {
       atomicAdd(cur_addr, new_val);
+    }
+  };
+
+  // Add specialization
+  template <>
+  struct FloatAtomicAddOp<float4>
+  {
+    __device__ __forceinline__ void operator()(float4 *cur_addr, const float4 new_val)
+    {
+      // Cast the float4 pointer to a standard float pointer
+      float *addr_as_float = reinterpret_cast<float *>(cur_addr);
+
+      // Atomically add each component individually
+      atomicAdd(&addr_as_float[0], new_val.x);
+      atomicAdd(&addr_as_float[1], new_val.y);
+      atomicAdd(&addr_as_float[2], new_val.z);
+      atomicAdd(&addr_as_float[3], new_val.w);
     }
   };
 
@@ -271,7 +286,6 @@ namespace Local
       *cur_addr = new_val;
     }
   };
-
 
   /**
    *
@@ -381,7 +395,7 @@ namespace Local
         for (; col < num_cols / 4; col += nthreadsx)
         {
           const float4 values_vec = reinterpret_cast<const float4 *>(values)[values_offset + input_row * num_cols / 4 + col];
-          float4* output_addr = &reinterpret_cast<float4 *>(output)[output_offset + output_row * num_cols / 4 + col];
+          float4 *output_addr = &reinterpret_cast<float4 *>(output)[output_offset + output_row * num_cols / 4 + col];
           binary_operator(output_addr, values_vec);
         }
       }
