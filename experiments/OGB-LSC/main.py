@@ -107,8 +107,14 @@ def main(
     trainer = Trainer(graph_dataset, comm)
     trainer.prepare_data()
     trainer.train()
-    comm.destroy()
+    print("Training completed!!")
 
+    print("Evaluating the model...")
+    train_acc, val_acc, test_acc = trainer.evaluate()
+    if comm.get_rank() == 0:
+        print(f"Acc: train={train_acc:.4f} val={val_acc:.4f} test={test_acc:.4f}")
+
+    comm.destroy()
     if dist.is_initialized():
         dist.destroy_process_group()
 
