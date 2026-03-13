@@ -13,18 +13,6 @@
 # SPDX-License-Identifier: (Apache-2.0)
 """
 Distributed GCN benchmark on OGB node-property-prediction datasets.
-
-Run with torchrun (NCCL backend):
-    torchrun --nnodes 1 --nproc-per-node <N> main.py \\
-        --backend nccl \\
-        --dataset arxiv \\
-        --node_rank_placement_file <path/to/placement.pt>
-
-Run with srun (MPI backend):
-    srun -n <N> python main.py \\
-        --backend mpi \\
-        --dataset arxiv \\
-        --node_rank_placement_file <path/to/placement.pt>
 """
 import os
 import json
@@ -52,39 +40,6 @@ from utils import (
     visualize_trajectories,
     write_experiment_log,
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _build_local_split_masks(
-    node_rank_placement: torch.Tensor,
-    split_idx: dict,
-    rank: int,
-) -> dict[str, torch.Tensor]:
-    """Convert global OGB split indices into boolean masks over *local* nodes.
-
-    Args:
-        node_rank_placement: [V] tensor mapping each global vertex to its rank.
-        split_idx: dict with keys 'train', 'valid', 'test', each a 1-D tensor
-            of global node indices (as returned by ogb's ``get_idx_split``).
-        rank: this process's rank.
-
-    Returns:
-        Dict with keys 'train', 'valid', 'test', each a boolean tensor of
-        shape [num_local] that is True for local nodes belonging to that split.
-    """
-    V = node_rank_placement.shape[0]
-    local_node_global_ids = torch.where(node_rank_placement == rank)[0]
-
-    masks = {}
-    for split_name, global_ids in split_idx.items():
-        global_mask = torch.zeros(V, dtype=torch.bool)
-        global_mask[global_ids] = True
-        masks[split_name] = global_mask[local_node_global_ids]
-    return masks
 
 
 # ---------------------------------------------------------------------------
@@ -126,21 +81,16 @@ def _run_experiment(
     # ---- Extract local data from the dataset --------------------------------
     comm_pattern = dataset.comm_pattern
 
-    graph_data, labels = dataset.dataset[0]
-    node_features = torch.from_numpy(graph_data["node_feat"]).float()
-    labels = torch.from_numpy(labels).long().squeeze(1)
-
-    local_node_mask = node_rank_placement == rank
-    local_node_features = node_features[local_node_mask].to(device)
-    local_labels = labels[local_node_mask].to(device)
+    local_node_features, local_labels, comm_pattern = dataset[0]
+    local_node_features = local_node_features.to(device)
+    local_labels = local_labels.to(device)
 
     in_dim = local_node_features.shape[1]
 
-    split_idx = dataset.dataset.get_idx_split()
-    local_masks = _build_local_split_masks(node_rank_placement, split_idx, rank)
-    train_mask = local_masks["train"].to(device)
-    val_mask = local_masks["valid"].to(device)
-    test_mask = local_masks["test"].to(device)
+    local_masks = dataset.get_masks()
+    train_mask = local_masks["train_mask"].to(device)
+    val_mask = local_masks["val_mask"].to(device)
+    test_mask = local_masks["test_mask"].to(device)
 
     if rank == 0:
         print(
@@ -213,9 +163,7 @@ def _run_experiment(
             f"Epoch {epoch:4d} | loss: {loss.item():.4f} | {elapsed_ms:.1f} ms",
             rank,
         )
-        write_experiment_log(
-            str(loss.item()), f"{log_prefix}_training_loss.log", rank
-        )
+        write_experiment_log(str(loss.item()), f"{log_prefix}_training_loss.log", rank)
 
         # ---- Validation -----------------------------------------------------
         model.eval()
@@ -264,7 +212,9 @@ def _run_experiment(
     for t in training_times:
         write_experiment_log(str(t), f"{log_prefix}_training_times.log", rank)
 
-    average_time = np.mean(training_times[1:]) if len(training_times) > 1 else training_times[0]
+    average_time = (
+        np.mean(training_times[1:]) if len(training_times) > 1 else training_times[0]
+    )
     make_experiment_log(f"{log_prefix}_runtime_experiment.log", rank)
     write_experiment_log(
         f"Average time per epoch (excl. first): {average_time:.4f} ms",
@@ -308,12 +258,15 @@ def main(
             int64 tensor mapping each global vertex to its assigned rank.
             Required for all distributed backends.
     """
-    assert backend.lower() in ("nccl", "mpi", "nvshmem"), (
-        f"Unsupported backend '{backend}'. Choose from: nccl, mpi, nvshmem."
-    )
-    assert dataset in ("arxiv", "products"), (
-        f"Unsupported dataset '{dataset}'. Choose from: arxiv, products."
-    )
+    assert backend.lower() in (
+        "nccl",
+        "mpi",
+        "nvshmem",
+    ), f"Unsupported backend '{backend}'. Choose from: nccl, mpi, nvshmem."
+    assert dataset in (
+        "arxiv",
+        "products",
+    ), f"Unsupported dataset '{dataset}'. Choose from: arxiv, products."
 
     num_classes = {"arxiv": 40, "products": 47}[dataset]
 
@@ -332,9 +285,9 @@ def main(
         "--node_rank_placement_file is required. "
         "Generate one with preprocess.py before running this script."
     )
-    assert os.path.exists(node_rank_placement_file), (
-        f"Node rank placement file not found: {node_rank_placement_file}"
-    )
+    assert os.path.exists(
+        node_rank_placement_file
+    ), f"Node rank placement file not found: {node_rank_placement_file}"
     node_rank_placement = torch.load(node_rank_placement_file, weights_only=False)
 
     # ---- Dataset ------------------------------------------------------------
