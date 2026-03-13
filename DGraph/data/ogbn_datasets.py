@@ -18,10 +18,8 @@ from DGraph.Communicator import CommunicatorBase
 from ogb.nodeproppred import NodePropPredDataset
 from DGraph.data.graph import DistributedGraph
 from DGraph.data.graph import get_round_robin_node_rank_map
-from DGraph.data.preprocess import node_renumbering, edge_renumbering
-import numpy as np
+from DGraph.data.preprocess import process_homogenous_data
 import os
-import torch.distributed as dist
 
 
 SUPPORTED_DATASETS = [

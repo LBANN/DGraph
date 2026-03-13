@@ -1,6 +1,5 @@
 import torch
-import torch.distributed as dist
-from DGraph.Communicator import Communicator
+from typing import Optional
 
 
 class TimingReport:
@@ -10,13 +9,30 @@ class TimingReport:
     _communicator = None
     _is_initialized = False
 
-    def __init__(
-        self,
-    ):
-        pass
+    def __init__(self, name: Optional[str] = None):
+        """
+        Initialize the instance, optionally with a name for use as a context manager.
+        """
+        self.name = name
+
+    def __enter__(self):
+        """Start the timer when entering the 'with' block."""
+        if self.name is None:
+            raise ValueError(
+                "A name must be provided to use TimingReport as a context manager."
+            )
+        self.start(self.name)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Stop the timer when exiting the 'with' block."""
+        if self.name is not None:
+            self.stop(self.name)
+        # Returning False ensures any exceptions raised inside the 'with' block are not suppressed.
+        return False
 
     @staticmethod
-    def init(communicator: Communicator):
+    def init(communicator):
         """Initialize the TimingReport with a communicator."""
         if TimingReport._is_initialized:
             raise RuntimeError("TimingReport is already initialized.")

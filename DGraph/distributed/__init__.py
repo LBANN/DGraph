@@ -20,7 +20,7 @@ Modules exported by this package:
 - `HaloExchange`: Halo exchange class for communicating remote vertices
 - `CommunicationPattern`: Dataclass for holding communication pattern information
 """
-from DGraph.distributed.haloExchange import HaloExchange
+from DGraph.distributed.haloExchange import HaloExchange, DGraphMessagePassing
 from DGraph.distributed.commInfo import (
     CommunicationPattern,
     build_communication_pattern,
@@ -28,6 +28,7 @@ from DGraph.distributed.commInfo import (
 
 __all__ = [
     "HaloExchange",
+    "DGraphMessagePassing",
     "CommunicationPattern",
     "build_communication_pattern",
 ]

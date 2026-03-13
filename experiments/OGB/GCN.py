@@ -13,19 +13,32 @@
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
 import torch.nn as nn
-import torch.distributed as dist
+
+from DGraph.distributed import DGraphMessagePassing, HaloExchange, CommunicationPattern
 from DGraph.utils.TimingReport import TimingReport
+from DGraph import Communicator
 
 
-class ConvLayer(nn.Module):
+class GraphConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels):
-        super(ConvLayer, self).__init__()
+        super(GraphConvLayer, self).__init__()
         self.conv = nn.Linear(in_channels, out_channels)
         self.act = nn.ReLU(inplace=True)
 
-    def forward(self, x):
-        x = self.conv(x)
+    def forward(self, x, edge_index, edge_features=None):
+        x_i = x[edge_index[0], :]
+        x_j = x[edge_index[1], :]
+
+        if edge_features is not None:
+            x_ij = torch.cat([x_i, x_j, edge_features], dim=1)
+        else:
+            x_ij = torch.cat([x_i, x_j], dim=1)
+
+        x = self.conv(x_ij)
         x = self.act(x)
+
+        x = torch.scatter_add(x, 0, edge_index[0].unsqueeze(1), x)
+
         return x
 
 
@@ -35,61 +48,42 @@ class CommAwareGCN(nn.Module):
     but good enough for the purpose of testing.
     """
 
-    def __init__(self, in_channels, hidden_dims, num_classes, comm):
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_dims: int,
+        num_classes: int,
+        halo_exchanger: HaloExchange,
+        comm: Communicator,
+    ):
         super(CommAwareGCN, self).__init__()
+        self.halo_exchanger = halo_exchanger
 
-        self.conv1 = ConvLayer(in_channels, hidden_dims)
-        self.conv2 = ConvLayer(hidden_dims, hidden_dims)
+        self.conv1 = GraphConvLayer(in_channels, hidden_dims)
+
+        self.conv2 = GraphConvLayer(hidden_dims, hidden_dims)
+
         self.fc = nn.Linear(hidden_dims, num_classes)
         self.softmax = nn.Softmax(dim=1)
         self.comm = comm
 
-    def forward(
-        self,
-        node_features,
-        edge_index,
-        rank_mapping,
-        gather_cache=None,
-        scatter_cache=None,
-    ):
-        num_local_nodes = node_features.size(1)
-        _src_indices = edge_index[:, 0, :]
-        _dst_indices = edge_index[:, 1, :]
+    def forward(self, node_features: torch.Tensor, comm_pattern: CommunicationPattern):
 
-        TimingReport.start("pre-processing")
-        _src_rank_mappings = torch.cat(
-            [rank_mapping[0].unsqueeze(0), rank_mapping[0].unsqueeze(0)], dim=0
-        )
-        _dst_rank_mappings = torch.cat(
-            [rank_mapping[0].unsqueeze(0), rank_mapping[1].unsqueeze(0)], dim=0
-        )
-        TimingReport.stop("pre-processing")
-        TimingReport.start("Gather_1")
-        x = self.comm.gather(
-            node_features, _dst_indices, _dst_rank_mappings, cache=gather_cache
-        )
-        TimingReport.stop("Gather_1")
-        TimingReport.start("Conv_1")
-        x = self.conv1(x)
-        TimingReport.stop("Conv_1")
-        TimingReport.start("Scatter_1")
-        x = self.comm.scatter(
-            x, _src_indices, _src_rank_mappings, num_local_nodes, cache=scatter_cache
-        )
-        TimingReport.stop("Scatter_1")
-        TimingReport.start("Gather_2")
-        x = self.comm.gather(x, _dst_indices, _dst_rank_mappings, cache=gather_cache)
-        TimingReport.stop("Gather_2")
-        TimingReport.start("Conv_2")
-        x = self.conv2(x)
-        TimingReport.stop("Conv_2")
-        TimingReport.start("Scatter_2")
-        x = self.comm.scatter(
-            x, _src_indices, _src_rank_mappings, num_local_nodes, cache=scatter_cache
-        )
-        TimingReport.stop("Scatter_2")
-        TimingReport.start("Final_FC")
-        x = self.fc(x)
-        TimingReport.stop("Final_FC")
+        with TimingReport("feature-exchange-1"):
+            boundary_features = self.halo_exchanger(node_features, comm_pattern)
+
+        with TimingReport("process-1"):
+            x = torch.cat([node_features, boundary_features], dim=0)
+            x = self.conv1(x, comm_pattern.local_edge_list)
+
+        with TimingReport("feature-exchange-2"):
+            boundary_features = self.halo_exchanger(x, comm_pattern)
+
+        with TimingReport("process-2"):
+            x = torch.cat([x, boundary_features], dim=0)
+            x = self.conv2(x, comm_pattern.local_edge_list)
+
+        with TimingReport("final-fc"):
+            x = self.fc(x)
         # x = self.softmax(x)
         return x
