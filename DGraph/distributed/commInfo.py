@@ -1,6 +1,6 @@
 import torch
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional
 import torch.distributed as dist
 
 
@@ -38,13 +38,27 @@ def compute_local_vertices(partitioning: torch.Tensor, rank: int) -> torch.Tenso
     return torch.where(partitioning == rank)[0]
 
 
-def compute_halo_vertices(global_edge_list, partitioning, rank) -> torch.Tensor:
-    """Returns halo_vertices_global: [num_halo] global IDs of remote vertices
-    that share an edge with a local vertex"""
-    src_rank = partitioning[global_edge_list[:, 0]]
-    dst_rank = partitioning[global_edge_list[:, 1]]
+def compute_halo_vertices(
+    edge_list: torch.Tensor,
+    src_partitioning: torch.Tensor,
+    rank: int,
+    dst_partitioning: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Computes halo vertices. Supports both homogeneous and bipartite/heterogeneous relations.
+    """
+    # Fallback for homogeneous graphs
+    if dst_partitioning is None:
+        dst_partitioning = src_partitioning
+
+    src_rank = src_partitioning[edge_list[:, 0]]
+    dst_rank = dst_partitioning[edge_list[:, 1]]
+
+    # Cross-rank mask: source is local, destination is remote
     cross_mask = (src_rank == rank) & (dst_rank != rank)
-    return torch.unique(global_edge_list[cross_mask, 1])
+
+    # Return unique destination vertex IDs from those edges
+    return torch.unique(edge_list[cross_mask, 1])
 
 
 def compute_local_edge_list(
@@ -78,59 +92,54 @@ def compute_local_edge_list(
 
 
 def compute_boundary_vertices(
-    global_edge_list: torch.Tensor,  # [E, 2]
-    partitioning: torch.Tensor,  # [V]
-    local_vertices_global: torch.Tensor,  # [num_local]
+    edge_list: torch.Tensor,
+    src_partitioning: torch.Tensor,
+    src_local_vertices_global: torch.Tensor,
     rank: int,
     num_ranks: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    dst_partitioning: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Returns:
-        send_local_idx: [num_sends] local indices into local_buffer
-        send_offset:    [num_ranks + 1] such that send_local_idx[send_offset[i]:send_offset[i+1]]
-                        are the local vertices to send to rank i
+    Computes boundary vertices and CSR send offsets.
     """
-    # Filter edges where source is local, destination is remote
-    src_rank = partitioning[global_edge_list[:, 0]]
-    dst_rank = partitioning[global_edge_list[:, 1]]
+    # Fallback for homogeneous graphs
+    if dst_partitioning is None:
+        dst_partitioning = src_partitioning
+
+    # 1. Filter cross-rank edges
+    src_rank = src_partitioning[edge_list[:, 0]]
+    dst_rank = dst_partitioning[edge_list[:, 1]]
     cross_mask = (src_rank == rank) & (dst_rank != rank)
-    cross_edges = global_edge_list[cross_mask]
+    cross_edges = edge_list[cross_mask]
 
-    # For each cross edge, we have (local_src_global_id, remote_dst_global_id)
-    # We need unique (src, dst_rank) pairs — a vertex may have multiple edges
-    # to the same remote rank, but we only send it once per rank
+    # 2. Deduplicate (src, dst_rank) pairs
     src_global = cross_edges[:, 0]
-    target_ranks = partitioning[cross_edges[:, 1]]
+    target_ranks = dst_partitioning[cross_edges[:, 1]]
 
-    # Build (target_rank, src_global) pairs and deduplicate
-    # Encode as a single int for unique: target_rank * V + src_global
-    num_vertices = partitioning.size(0)
-    encoded = target_ranks * num_vertices + src_global
+    # v_src_total acts as V for homogeneous, or V_src for heterogeneous
+    v_src_total = src_partitioning.size(0)
+    encoded = target_ranks * v_src_total + src_global
     unique_encoded = torch.unique(encoded)
 
-    target_ranks_unique = unique_encoded.div(num_vertices, rounding_mode="floor")
-    src_global_unique = unique_encoded % num_vertices
+    target_ranks_unique = unique_encoded // v_src_total
+    src_global_unique = unique_encoded % v_src_total
 
-    # Sort by target rank to get contiguous grouping
+    # 3. Sort by target rank
     sort_idx = torch.argsort(target_ranks_unique)
     target_ranks_sorted = target_ranks_unique[sort_idx]
     src_global_sorted = src_global_unique[sort_idx]
 
-    # Build inverse map: global -> local index for local vertices only
-    g2l = torch.empty(num_vertices, dtype=torch.long, device=global_edge_list.device)
-    g2l[local_vertices_global] = torch.arange(
-        local_vertices_global.size(0), device=g2l.device
-    )
-
-    # Remap to local indices
+    # 4. Remap to local indices
+    num_local = src_local_vertices_global.size(0)
+    g2l = torch.empty(v_src_total, dtype=torch.long, device=edge_list.device)
+    g2l[src_local_vertices_global] = torch.arange(num_local, device=edge_list.device)
     send_local_idx = g2l[src_global_sorted]
 
-    # Compute send_offset from the sorted target ranks
-    send_offset = torch.zeros(
-        num_ranks + 1, dtype=torch.long, device=global_edge_list.device
+    # 5. Build CSR offsets
+    send_offset = torch.zeros(num_ranks + 1, dtype=torch.long, device=edge_list.device)
+    send_offset.scatter_add_(
+        0, target_ranks_sorted + 1, torch.ones_like(target_ranks_sorted)
     )
-    ones = torch.ones_like(target_ranks_sorted)
-    send_offset.scatter_add_(0, target_ranks_sorted + 1, ones)
     send_offset = send_offset.cumsum(0)
 
     return send_local_idx, send_offset
