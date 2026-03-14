@@ -4,7 +4,7 @@ from torch.utils.data import Dataset
 from ogb.nodeproppred import NodePropPredDataset
 from DGraph.Communicator import CommunicatorBase
 from DGraph.distributed import CommunicationPattern, build_communication_pattern
-
+from DGraph.data.graph import get_round_robin_node_rank_map
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,7 +56,7 @@ class DGraphOGBDataset(Dataset):
         self,
         dname: str,
         comm: CommunicatorBase,
-        node_rank_placement: torch.Tensor,
+        node_rank_placement: Optional[torch.Tensor] = None,
         root_dir: Optional[str] = None,
         *args,
         **kwargs,
@@ -100,6 +100,11 @@ class DGraphOGBDataset(Dataset):
         node_features = torch.from_numpy(graph_data["node_feat"]).float()
         edge_index = torch.from_numpy(graph_data["edge_index"]).long().T
         labels = torch.from_numpy(labels).long()
+
+        if node_rank_placement is None:
+            node_rank_placement = get_round_robin_node_rank_map(
+                num_nodes, self.world_size
+            )
 
         self.comm_pattern = generate_communication_pattern(
             edge_index, node_rank_placement, self.rank, self.world_size
@@ -158,4 +163,12 @@ if __name__ == "__main__":
     )
 
     data, labels, comm_pattern = dataset[0]
-    print(comm_pattern.comm_map)
+    if rank == 0:
+        import os
+
+        print(comm_pattern.comm_map)
+        file_path = os.path.abspath(__file__)
+        # Get the directory containing the current script
+        file_dir = os.path.dirname(file_path)
+        print(f"Saving to {file_dir}/comm_map_{world_size}.pt")
+        torch.save(comm_pattern.comm_map, f"{file_dir}/comm_map_{world_size}.pt")
