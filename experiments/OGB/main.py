@@ -285,14 +285,12 @@ def main(
     safe_create_dir(log_dir, rank)
 
     # ---- Node rank placement ------------------------------------------------
-    assert node_rank_placement_file is not None, (
-        "--node_rank_placement_file is required. "
-        "Generate one with preprocess.py before running this script."
-    )
-    assert os.path.exists(
-        node_rank_placement_file
-    ), f"Node rank placement file not found: {node_rank_placement_file}"
-    node_rank_placement = torch.load(node_rank_placement_file, weights_only=False)
+    node_rank_placement = None
+    if node_rank_placement_file is not None:
+        assert os.path.exists(
+            node_rank_placement_file
+        ), f"Node rank placement file not found: {node_rank_placement_file}"
+        node_rank_placement = torch.load(node_rank_placement_file, weights_only=False)
 
     # ---- Dataset ------------------------------------------------------------
     training_dataset = DGraphOGBDataset(
