@@ -263,6 +263,23 @@ namespace Local
     }
   };
 
+  // Add specialization
+  template <>
+  struct FloatAtomicAddOp<float4>
+  {
+    __device__ __forceinline__ void operator()(float4 *cur_addr, const float4 new_val)
+    {
+      // Cast the float4 pointer to a standard float pointer
+      float *addr_as_float = reinterpret_cast<float *>(cur_addr);
+
+      // Atomically add each component individually
+      atomicAdd(&addr_as_float[0], new_val.x);
+      atomicAdd(&addr_as_float[1], new_val.y);
+      atomicAdd(&addr_as_float[2], new_val.z);
+      atomicAdd(&addr_as_float[3], new_val.w);
+    }
+  };
+
   template <typename T>
   struct FloatSetOp
   {

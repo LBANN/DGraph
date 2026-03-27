@@ -28,8 +28,31 @@ from .utils import (
 )
 from .preprocess import graphcast_graph_to_nxgraph, partition_graph
 from dataclasses import dataclass
+from DGraph.distributed import CommunicationPattern, build_communication_pattern
 
-import torch.distributed as dist
+
+@dataclass
+class GraphCastCommPatterns:
+    grid2mesh: CommunicationPattern
+    mesh: CommunicationPattern
+    mesh2grid: CommunicationPattern
+
+
+@dataclass
+class GraphCastTopology:
+    rank: int
+    world_size: int
+    ranks_per_graph: int
+    mesh_rank_placement: Tensor
+    grid_rank_placement: Tensor
+
+    mesh_graph_src_indices: Tensor
+    mesh_graph_dst_indices: Tensor
+
+    mesh2grid_graph_src_indices: Tensor
+    mesh2grid_graph_dst_indices: Tensor
+    grid2mesh_graph_src_indices: Tensor
+    grid2mesh_graph_dst_indices: Tensor
 
 
 @dataclass
@@ -55,9 +78,85 @@ class DistributedGraphCastGraph:
     mesh2grid_graph_dst_indices: Tensor
     grid2mesh_graph_node_features: Tensor
     grid2mesh_graph_edge_features: Tensor
-    grid2mesh_graph_edge_rank_placement: Tensor
     grid2mesh_graph_src_indices: Tensor
     grid2mesh_graph_dst_indices: Tensor
+
+
+def build_graphcast_comm_patterns(graph: GraphCastTopology) -> GraphCastCommPatterns:
+    """
+    Build CommunicationPatterns for all three GraphCast edge types.
+
+    The graph's *_src_indices / *_dst_indices use the message-flow convention:
+      src = vertex originating the message (neighbor)
+      dst = vertex aggregating the message (central)
+
+    We swap into [central, neighbor] ordering for the comm pattern edge list.
+    """
+    rank = graph.rank
+    world_size = graph.ranks_per_graph
+    mesh_part = graph.mesh_rank_placement
+    grid_part = graph.grid_rank_placement
+
+    # --- grid2mesh ---
+    # Message flow: grid → mesh.  Central = mesh, neighbor = grid.
+    # Swap: message-flow (grid, mesh) → comm (mesh, grid) = (central, neighbor).
+    grid2mesh_edges = torch.stack(
+        [
+            graph.grid2mesh_graph_dst_indices,  # mesh (central, col 0)
+            graph.grid2mesh_graph_src_indices,
+        ],  # grid (neighbor, col 1)
+        dim=1,
+    )
+    grid2mesh_cp = build_communication_pattern(
+        global_edge_list=grid2mesh_edges,
+        partitioning=mesh_part,
+        neighbor_partitioning=grid_part,
+        rank=rank,
+        world_size=world_size,
+    )
+
+    # --- mesh ↔ mesh ---
+    # Homogeneous, undirected.  Central = mesh, neighbor = mesh.
+    # Message-flow src/dst are both mesh — swap is identity, but we keep
+    # the convention: col 0 = dst (central), col 1 = src (neighbor).
+    mesh_edges = torch.stack(
+        [
+            graph.mesh_graph_dst_indices,  # mesh (central, col 0)
+            graph.mesh_graph_src_indices,
+        ],  # mesh (neighbor, col 1)
+        dim=1,
+    )
+    mesh_cp = build_communication_pattern(
+        global_edge_list=mesh_edges,
+        partitioning=mesh_part,
+        neighbor_partitioning=mesh_part,
+        rank=rank,
+        world_size=world_size,
+    )
+
+    # --- mesh2grid ---
+    # Message flow: mesh → grid.  Central = grid, neighbor = mesh.
+    # Swap: message-flow (mesh, grid) → comm (grid, mesh) = (central, neighbor).
+    mesh2grid_edges = torch.stack(
+        [
+            graph.mesh2grid_graph_dst_indices,  # grid (central, col 0)
+            graph.mesh2grid_graph_src_indices,
+        ],  # mesh (neighbor, col 1)
+        dim=1,
+    )
+    mesh2grid_cp = build_communication_pattern(
+        global_edge_list=mesh2grid_edges,
+        partitioning=grid_part,
+        neighbor_partitioning=mesh_part,
+        rank=rank,
+        world_size=world_size,
+    )
+
+    return GraphCastCommPatterns(
+        grid2mesh=grid2mesh_cp,
+        mesh=mesh_cp,
+        mesh2grid=mesh2grid_cp,
+    )
 
 
 class DistributedGraphCastGraphGenerator:

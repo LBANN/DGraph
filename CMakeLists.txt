@@ -60,7 +60,6 @@ list(APPEND
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
 )
 find_package(CUDAToolkit REQUIRED)
-find_package(MPI 3.0 REQUIRED COMPONENTS CXX)
 find_package(Torch 2.6 REQUIRED CONFIG)
 
 # Also, torch_python!
@@ -79,6 +78,7 @@ find_library(TORCH_PYTHON_LIBRARY
 find_library(TORCH_PYTHON_LIBRARY torch_python REQUIRED)
 
 if (DGRAPH_ENABLE_NVSHMEM)
+  find_package(MPI 3.0 REQUIRED COMPONENTS CXX)
   find_package(NVSHMEM 2.5 REQUIRED MODULE)
 endif ()
 

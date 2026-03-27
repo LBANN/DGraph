@@ -12,7 +12,7 @@
 #
 # SPDX-License-Identifier: (Apache-2.0)
 import torch
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 
 
 class BackendEngine(object):
@@ -63,6 +63,41 @@ class BackendEngine(object):
         **kwargs,
     ) -> torch.Tensor:
         raise NotImplementedError
+
+    def put(
+        self,
+        send_buffer: torch.Tensor,
+        recv_buffer: torch.Tensor,
+        send_offsets: torch.Tensor,
+        recv_offsets: torch.Tensor,
+        remote_offsets: Optional[torch.Tensor] = None,
+    ) -> None:
+        """
+        Exchange data between all ranks.
+
+        Chunks send_buffer by send_offsets, delivers each chunk to the
+        corresponding rank's recv_buffer. Must be synchronous: when this
+        method returns, recv_buffer is fully populated and safe to read.
+
+        Two-sided backends ignore remote_offsets.
+        One-sided backends use remote_offsets[i] as the write position
+        into rank i's recv_buffer.
+        """
+        raise NotImplementedError
+
+    def allocate_buffer(
+        self,
+        size: Tuple[int, ...],
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """
+        Allocate a communication buffer.
+
+        Default: torch.empty. One-sided backends override this to
+        return symmetric / registered memory.
+        """
+        return torch.empty(size, dtype=dtype, device=device)
 
     def finalize(self) -> None:
         raise NotImplementedError
