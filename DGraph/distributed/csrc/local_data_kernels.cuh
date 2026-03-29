@@ -252,8 +252,6 @@ namespace Local
     }
   }
 
-  
-
   template <typename T>
   struct FloatAtomicAddOp
   {
@@ -288,7 +286,6 @@ namespace Local
       *cur_addr = new_val;
     }
   };
-
 
   /**
    *
@@ -398,7 +395,7 @@ namespace Local
         for (; col < num_cols / 4; col += nthreadsx)
         {
           const float4 values_vec = reinterpret_cast<const float4 *>(values)[values_offset + input_row * num_cols / 4 + col];
-          float4* output_addr = &reinterpret_cast<float4 *>(output)[output_offset + output_row * num_cols / 4 + col];
+          float4 *output_addr = &reinterpret_cast<float4 *>(output)[output_offset + output_row * num_cols / 4 + col];
           binary_operator(output_addr, values_vec);
         }
       }
