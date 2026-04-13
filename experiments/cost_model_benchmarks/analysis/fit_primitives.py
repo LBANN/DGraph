@@ -30,11 +30,13 @@ from pathlib import Path
 
 import numpy as np
 from scipy import stats as sp_stats
+from scipy.optimize import curve_fit
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def load_json_files(paths: list) -> list:
     records = []
@@ -70,6 +72,7 @@ def linear_fit(x: np.ndarray, y: np.ndarray):
 # Network fit: T = t_L + bytes / B
 # ---------------------------------------------------------------------------
 
+
 def fit_network(records: list) -> dict:
     """Fit (t_L, B) from ping-pong records (one mode per call)."""
     bytes_arr = []
@@ -102,6 +105,7 @@ def fit_network(records: list) -> dict:
 # ---------------------------------------------------------------------------
 # Compute fit: T = coeff_V * |V| + coeff_E * |E| + intercept
 # ---------------------------------------------------------------------------
+
 
 def fit_compute(records: list, timing_key: str = "forward_trials_seconds") -> dict:
     """Fit compute cost as a function of |V| and |E|.
@@ -136,8 +140,9 @@ def fit_compute(records: list, timing_key: str = "forward_trials_seconds") -> di
 
 
 # ---------------------------------------------------------------------------
-# Gather fit: T = intercept + bytes / B_gather
+# Gather fit: T = intercept + max(overhead, overhead + bytes / B_gather)
 # ---------------------------------------------------------------------------
+
 
 def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict:
     k_arr, T_arr, F_arr = [], [], []
@@ -145,7 +150,9 @@ def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict
         F = rec["config"]["feature_dim"]
         for meas in rec["measurements"]:
             k = meas["params"]["k"]
+
             t_med = median_of_trials(meas[timing_key])
+
             k_arr.append(k)
             T_arr.append(t_med)
             F_arr.append(F)
@@ -153,14 +160,42 @@ def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict
     k_arr = np.array(k_arr, dtype=float)
     F_arr = np.array(F_arr, dtype=float)
     T_arr = np.array(T_arr, dtype=float)
-
     bytes_arr = k_arr * F_arr * 4.0  # float32
-    fit = linear_fit(bytes_arr, T_arr)
-    bandwidth = 1.0 / fit["slope"] if fit["slope"] > 0 else float("nan")
+
+    # 1. Define the piecewise model for curve_fit
+    def time_model(b, overhead, inv_bandwidth):
+        # Time is bounded by a constant overhead until bandwidth saturation is reached
+        return np.maximum(overhead, b * inv_bandwidth)
+
+    # 2. Provide sensible initial guesses (p0) to help the optimizer
+    min_T = np.min(T_arr)
+    slope_guess = (np.max(T_arr) - min_T) / (np.max(bytes_arr) + 1e-9)
+    p0 = [min_T, slope_guess]
+
+    # 3. Fit the curve
+    try:
+        # Bounds ensure overhead and time-per-byte are strictly positive
+        popt, _ = curve_fit(time_model, bytes_arr, T_arr, p0=p0, bounds=(0, np.inf))
+        launch_overhead = popt[0]
+        inv_bandwidth = popt[1]
+    except Exception:
+        raise RuntimeError("Curve fit failed for gather primitive")
+
+    bandwidth = 1.0 / inv_bandwidth if inv_bandwidth > 0 else float("nan")
+
+    # 4. Calculate R-squared manually (curve_fit doesn't return it)
+    if not np.isnan(launch_overhead):
+        T_pred = time_model(bytes_arr, launch_overhead, inv_bandwidth)
+        ss_res = np.sum((T_arr - T_pred) ** 2)
+        ss_tot = np.sum((T_arr - np.mean(T_arr)) ** 2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else float("nan")
+    else:
+        r_squared = float("nan")
+
     return {
         "bandwidth_bytes_per_sec": bandwidth,
-        "intercept_seconds": fit["intercept"],
-        "r_squared": fit["r_squared"],
+        "intercept_seconds": launch_overhead,
+        "r_squared": r_squared,
         "_num_points": len(T_arr),
     }
 
@@ -168,6 +203,7 @@ def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Fit cost-model primitive parameters")
@@ -191,15 +227,19 @@ def main():
     if args.pingpong_intra:
         recs = load_json_files(args.pingpong_intra)
         net["intra"] = fit_network(recs)
-        print(f"[network/intra] B={net['intra']['bandwidth_bytes_per_sec']/1e9:.2f} GB/s  "
-              f"t_L={net['intra']['latency_seconds']*1e6:.2f} µs  "
-              f"R²={net['intra']['r_squared']:.4f}")
+        print(
+            f"[network/intra] B={net['intra']['bandwidth_bytes_per_sec']/1e9:.2f} GB/s  "
+            f"t_L={net['intra']['latency_seconds']*1e6:.2f} µs  "
+            f"R²={net['intra']['r_squared']:.4f}"
+        )
     if args.pingpong_inter:
         recs = load_json_files(args.pingpong_inter)
         net["inter"] = fit_network(recs)
-        print(f"[network/inter] B={net['inter']['bandwidth_bytes_per_sec']/1e9:.2f} GB/s  "
-              f"t_L={net['inter']['latency_seconds']*1e6:.2f} µs  "
-              f"R²={net['inter']['r_squared']:.4f}")
+        print(
+            f"[network/inter] B={net['inter']['bandwidth_bytes_per_sec']/1e9:.2f} GB/s  "
+            f"t_L={net['inter']['latency_seconds']*1e6:.2f} µs  "
+            f"R²={net['inter']['r_squared']:.4f}"
+        )
     result["network"] = net
 
     # Compute
@@ -210,37 +250,43 @@ def main():
             "forward": fit_compute(recs, "forward_trials_seconds"),
             "backward": fit_compute(recs, "backward_trials_seconds"),
         }
-        print(f"[compute/gcn] coeff_V={comp['gcn']['forward']['coeff_V']:.3e}  "
-              f"coeff_E={comp['gcn']['forward']['coeff_E']:.3e}  "
-              f"R²={comp['gcn']['forward']['r_squared']:.4f}")
+        print(
+            f"[compute/gcn] coeff_V={comp['gcn']['forward']['coeff_V']:.3e}  "
+            f"coeff_E={comp['gcn']['forward']['coeff_E']:.3e}  "
+            f"R²={comp['gcn']['forward']['r_squared']:.4f}"
+        )
     if args.compute_edge:
         recs = load_json_files(args.compute_edge)
         comp["edge"] = {
             "forward": fit_compute(recs, "forward_trials_seconds"),
             "backward": fit_compute(recs, "backward_trials_seconds"),
         }
-        print(f"[compute/edge] coeff_V={comp['edge']['forward']['coeff_V']:.3e}  "
-              f"coeff_E={comp['edge']['forward']['coeff_E']:.3e}  "
-              f"R²={comp['edge']['forward']['r_squared']:.4f}")
+        print(
+            f"[compute/edge] coeff_V={comp['edge']['forward']['coeff_V']:.3e}  "
+            f"coeff_E={comp['edge']['forward']['coeff_E']:.3e}  "
+            f"R²={comp['edge']['forward']['r_squared']:.4f}"
+        )
     result["compute"] = comp
 
     # Gather
     gath = {}
     for dist_name, files_attr in [
         ("contiguous", "gather_contiguous"),
-        ("clustered",  "gather_clustered"),
-        ("random",     "gather_random"),
+        ("clustered", "gather_clustered"),
+        ("random", "gather_random"),
     ]:
         files = getattr(args, files_attr.replace("-", "_"))
         if files:
             recs = load_json_files(files)
             gath[dist_name] = {
-                "gather":       fit_gather(recs, "gather_trials_seconds"),
-                "scatter_add":  fit_gather(recs, "scatter_add_trials_seconds"),
+                "gather": fit_gather(recs, "gather_trials_seconds"),
+                "scatter_add": fit_gather(recs, "scatter_add_trials_seconds"),
             }
-            print(f"[gather/{dist_name}] "
-                  f"B_gather={gath[dist_name]['gather']['bandwidth_bytes_per_sec']/1e9:.2f} GB/s  "
-                  f"R²={gath[dist_name]['gather']['r_squared']:.4f}")
+            print(
+                f"[gather/{dist_name}] "
+                f"B_gather={gath[dist_name]['gather']['bandwidth_bytes_per_sec']/1e9:.2f} GB/s  "
+                f"R²={gath[dist_name]['gather']['r_squared']:.4f}"
+            )
     result["gather"] = gath
 
     # Write
