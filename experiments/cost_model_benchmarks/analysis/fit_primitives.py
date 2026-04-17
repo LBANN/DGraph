@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 from scipy import stats as sp_stats
 from scipy.optimize import curve_fit
+from scipy.special import expit
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +141,7 @@ def fit_compute(records: list, timing_key: str = "forward_trials_seconds") -> di
 
 
 # ---------------------------------------------------------------------------
-# Gather fit: T = intercept + max(overhead, overhead + bytes / B_gather)
+# Gather fit: T = intercept + max(overhead, bytes / B_gather)
 # ---------------------------------------------------------------------------
 
 
@@ -150,9 +151,7 @@ def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict
         F = rec["config"]["feature_dim"]
         for meas in rec["measurements"]:
             k = meas["params"]["k"]
-
             t_med = median_of_trials(meas[timing_key])
-
             k_arr.append(k)
             T_arr.append(t_med)
             F_arr.append(F)
@@ -160,43 +159,86 @@ def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict
     k_arr = np.array(k_arr, dtype=float)
     F_arr = np.array(F_arr, dtype=float)
     T_arr = np.array(T_arr, dtype=float)
+
     bytes_arr = k_arr * F_arr * 4.0  # float32
 
-    # 1. Define the piecewise model for curve_fit
-    def time_model(b, overhead, inv_bandwidth):
-        # Time is bounded by a constant overhead until bandwidth saturation is reached
-        return np.maximum(overhead, b * inv_bandwidth)
+    # 1. The Piecewise Linear Model (No Logarithms)
+    def time_model(b, overhead, inv_bw_L2, inv_bw_HBM, L2_thresh, HBM_thresh):
+        # 1. Bucket the bytes into their respective physical regimes
+        # Bytes processed exclusively at L2 speeds
+        bytes_L2 = np.clip(b, 0, L2_thresh)
+        # Bytes processed exclusively at HBM speeds
+        bytes_HBM = np.maximum(0, b - HBM_thresh)
 
-    # 2. Provide sensible initial guesses (p0) to help the optimizer
-    min_T = np.min(T_arr)
-    slope_guess = (np.max(T_arr) - min_T) / (np.max(bytes_arr) + 1e-9)
-    p0 = [min_T, slope_guess]
+        # 2. Apply the specific bandwidth (slope) to each bucket
+        t_mem = (bytes_L2 * inv_bw_L2) + (bytes_HBM * inv_bw_HBM)
 
-    # 3. Fit the curve
+        # 3. Floor the total time by the kernel launch overhead
+        return np.maximum(overhead, t_mem)
+
+    # 2. Strategic initial guesses
+    min_T, max_T = float(np.min(T_arr)), float(np.max(T_arr))
+    max_b = float(np.max(bytes_arr))
+
+    # The asymptotic slope is the difference in max/min time over max bytes
+    inv_bw_HBM_guess = (max_T - min_T) / (max_b + 1e-9)
+
+    p0 = [
+        min_T,  # overhead
+        inv_bw_HBM_guess * 0.3,  # inv_bw_L2
+        inv_bw_HBM_guess,  # inv_bw_HBM
+        max_b * 0.00001,  # L2_thresh
+        max_b * 0.001,  # HBM_thresh
+    ]
+
     try:
-        # Bounds ensure overhead and time-per-byte are strictly positive
-        popt, _ = curve_fit(time_model, bytes_arr, T_arr, p0=p0, bounds=(0, np.inf))
-        launch_overhead = popt[0]
-        inv_bandwidth = popt[1]
-    except Exception:
-        raise RuntimeError("Curve fit failed for gather primitive")
+        bounds = ([0, 0, 0, 0, 0], [np.inf, np.inf, np.inf, max_b, max_b])
 
-    bandwidth = 1.0 / inv_bandwidth if inv_bandwidth > 0 else float("nan")
+        # 3. The Magic Fix: sigma=T_arr weights the fit by relative error
+        popt, _ = curve_fit(
+            time_model,
+            bytes_arr,
+            T_arr,
+            p0=p0,
+            bounds=bounds,
+            method="trf",
+            sigma=T_arr,
+            absolute_sigma=False,
+        )
+        overhead, inv_bw_L2, inv_bw_HBM, L2_thresh, HBM_thresh = popt
 
-    # 4. Calculate R-squared manually (curve_fit doesn't return it)
-    if not np.isnan(launch_overhead):
-        T_pred = time_model(bytes_arr, launch_overhead, inv_bandwidth)
+    except Exception as e:
+        print(f"Fit failed: {e}")
+        overhead = inv_bw_L2 = inv_bw_HBM = L2_thresh = np.nan
+
+    bw_HBM = 1.0 / inv_bw_HBM if inv_bw_HBM > 0 else float("nan")
+    bw_L2 = 1.0 / inv_bw_L2 if inv_bw_L2 > 0 else float("nan")
+
+    # 3. Calculate linear R-squared in linear space
+    if not np.isnan(overhead):
+        T_pred = time_model(
+            bytes_arr, overhead, inv_bw_L2, inv_bw_HBM, L2_thresh, HBM_thresh
+        )
         ss_res = np.sum((T_arr - T_pred) ** 2)
         ss_tot = np.sum((T_arr - np.mean(T_arr)) ** 2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else float("nan")
     else:
         r_squared = float("nan")
 
+    print(
+        f" Fitted gather: overhead={overhead*1e3:.3f} ms ",
+        f"BW_L2={bw_L2/1e9:.2f} GB/s  BW_HBM={bw_HBM/1e9:.2f} GB/s  "
+        f"L2_thresh={L2_thresh/1e6:.2f} MB  HBM_thresh={HBM_thresh/1e6:.2f} MB  "
+        f"R²={r_squared:.4f}",
+    )
+
     return {
-        "bandwidth_bytes_per_sec": bandwidth,
-        "intercept_seconds": launch_overhead,
+        "bandwidth_bytes_per_sec": bw_HBM,
+        "L2_bandwidth_bytes_per_sec": bw_L2,
+        "L2_inflection_bytes": L2_thresh,
+        "HBM_inflection_bytes": HBM_thresh,
+        "launch_overhead_seconds": overhead,
         "r_squared": r_squared,
-        "_num_points": len(T_arr),
     }
 
 
