@@ -47,23 +47,22 @@ def compute_halo_vertices(
     """
     Computes halo vertices. Supports both homogeneous and bipartite/heterogeneous relations.
     """
-    # Fallback for homogeneous graphs
     if dst_partitioning is None:
         dst_partitioning = src_partitioning
 
     src_rank = src_partitioning[edge_list[:, 0]]
     dst_rank = dst_partitioning[edge_list[:, 1]]
 
-    # Cross-rank mask: source is local, destination is remote
-    cross_mask = (src_rank == rank) & (dst_rank != rank)
+    # FIX: Cross-rank mask for pull model: source is remote, destination is local
+    cross_mask = (src_rank != rank) & (dst_rank == rank)
 
-    # Return unique destination vertex IDs from those edges
-    return torch.unique(edge_list[cross_mask, 1])
+    # FIX: Return unique SOURCE vertex IDs from those edges
+    return torch.unique(edge_list[cross_mask, 0])
 
 
 def compute_local_edge_list(
     global_edge_list: torch.Tensor,  # [E, 2]
-    partitioning: torch.Tensor,  # [V]
+    partitioning: torch.Tensor,  # [V] (Acts as dst_partitioning)
     local_vertices_global: torch.Tensor,  # [num_local]
     halo_vertices_global: torch.Tensor,  # [num_halo]
     rank: int,
@@ -72,8 +71,8 @@ def compute_local_edge_list(
     num_halo = halo_vertices_global.size(0)
     num_global = partitioning.size(0)
 
-    # Filter edges owned by this rank
-    local_edge_mask = partitioning[global_edge_list[:, 0]] == rank
+    # FIX: Filter edges where the DESTINATION is owned by this rank (Index 1)
+    local_edge_mask = partitioning[global_edge_list[:, 1]] == rank
     local_edges_global = global_edge_list[local_edge_mask]
 
     # Build inverse map: global_id -> local_idx via scatter

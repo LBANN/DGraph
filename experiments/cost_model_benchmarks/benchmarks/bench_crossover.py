@@ -31,7 +31,7 @@ Partitioners:
 
 Usage — distributed (torchrun)::
 
-    torchrun --nnodes 2 --nproc_per_node 4 \\
+    torchrun --nnodes 1 --nproc_per_node 4 \\
         -m benchmarks.benchmark_crossover \\
         --graph erdos_renyi \\
         --graph-sizes 10000,100000,1000000,10000000 \\
@@ -55,7 +55,7 @@ import os
 import numpy as np
 import torch
 import torch.distributed as dist
-import torch.nn as nn
+import gc
 
 from benchmarks.common import (
     collect_metadata,
@@ -92,7 +92,7 @@ def parse_args():
     p.add_argument(
         "--graph-sizes",
         type=str,
-        default="10000,100000,1000000,10000000",
+        default="100,200,400,800,1000,2000,4000,8000,10000,16000,32000,100000,200000,400000",
         help="Comma-separated list of num_vertices values to sweep",
     )
     p.add_argument("--avg-degree", type=float, default=20.0)
@@ -133,9 +133,7 @@ def _gen_graph(graph_type, num_vertices, avg_degree, sbm_inter_density, seed):
         return gen_sbm(num_vertices, avg_degree, sbm_inter_density, rng)
 
 
-def _intra_inter_halo(
-    comm_pattern: CommunicationPattern, ranks_per_node: int
-) -> tuple:
+def _intra_inter_halo(comm_pattern: CommunicationPattern, ranks_per_node: int) -> tuple:
     """Return (intra_halo_vertices, inter_halo_vertices) from recv_offset."""
     rank = comm_pattern.rank
     my_node = rank // ranks_per_node
@@ -172,17 +170,21 @@ def _build_single_gpu_tensors(num_vertices, edges_np, F, model, device):
 def _single_gpu_fn(x, edge_t, layer, edge_attr):
     """Return a zero-argument closure for single-GPU forward+backward."""
     if edge_attr is None:
+
         def fn():
             out = layer(x, edge_t)
             out.sum().backward()
             if x.grad is not None:
                 x.grad.zero_()
+
     else:
+
         def fn():
             out = layer(x, edge_t, edge_attr)
             out.sum().backward()
             if x.grad is not None:
                 x.grad.zero_()
+
     return fn
 
 
@@ -195,14 +197,18 @@ def _multi_gpu_fn(x_local, comm_pattern, layer, halo_exchange, edge_attr, model)
     edge_index = comm_pattern.local_edge_list.T.contiguous()  # [2, E_local]
 
     if model == "gcn":
+
         def fn():
             recv_buf = halo_exchange(x_local, comm_pattern)
             x_aug = torch.cat([x_local, recv_buf], dim=0)
+
             out = layer(x_aug, edge_index)
             out.sum().backward()
             if x_local.grad is not None:
                 x_local.grad.zero_()
+
     else:
+
         def fn():
             recv_buf = halo_exchange(x_local, comm_pattern)
             x_aug = torch.cat([x_local, recv_buf], dim=0)
@@ -210,6 +216,7 @@ def _multi_gpu_fn(x_local, comm_pattern, layer, halo_exchange, edge_attr, model)
             out.sum().backward()
             if x_local.grad is not None:
                 x_local.grad.zero_()
+
     return fn
 
 
@@ -228,7 +235,11 @@ def run_no_dist(args, graph_sizes, F):
         # Unique seed per graph size so each topology is reproducible independently
         graph_seed = args.seed + num_vertices
         edges_np = _gen_graph(
-            args.graph, num_vertices, args.avg_degree, args.sbm_inter_density, graph_seed
+            args.graph,
+            num_vertices,
+            args.avg_degree,
+            args.sbm_inter_density,
+            graph_seed,
         )
         num_edges = int(edges_np.shape[0])
 
@@ -292,21 +303,23 @@ def run_distributed(args, graph_sizes, F, rank, world_size, local_rank):
     device = torch.device(f"cuda:{local_rank}")
 
     comm = Communicator(backend="nccl")
-    halo_exchange = HaloExchange(comm=comm)
 
     ranks_per_node = int(
-        os.environ.get(
-            "LOCAL_WORLD_SIZE", os.environ.get("SLURM_NTASKS_PER_NODE", "4")
-        )
+        os.environ.get("LOCAL_WORLD_SIZE", os.environ.get("SLURM_NTASKS_PER_NODE", "4"))
     )
 
     measurements = []
 
     for num_vertices in graph_sizes:
+        halo_exchange = HaloExchange(comm=comm)
         # All ranks generate *identical* graph topology (same seed per size)
         graph_seed = args.seed + num_vertices
         edges_np = _gen_graph(
-            args.graph, num_vertices, args.avg_degree, args.sbm_inter_density, graph_seed
+            args.graph,
+            num_vertices,
+            args.avg_degree,
+            args.sbm_inter_density,
+            graph_seed,
         )
 
         # All ranks compute *identical* partition assignment
@@ -319,7 +332,7 @@ def run_distributed(args, graph_sizes, F, rank, world_size, local_rank):
             assignment_np = partition_metis(num_vertices, world_size, edges_np)
 
         # Move to GPU for DGraph's build_communication_pattern (collective)
-        edges_t = torch.from_numpy(edges_np).long().to(device)          # [E, 2]
+        edges_t = torch.from_numpy(edges_np).long().to(device)  # [E, 2]
         partitioning_t = torch.from_numpy(assignment_np).long().to(device)  # [V]
 
         # Collective: all ranks call this in sync (internally calls dist.all_gather)
@@ -375,15 +388,26 @@ def run_distributed(args, graph_sizes, F, rank, world_size, local_rank):
         dist.all_gather_object(all_stats, stats_local)
 
         # Free GPU memory before the single-GPU run
-        del x_local, edges_t, partitioning_t, layer_dist
+        del (
+            x_local,
+            edges_t,
+            partitioning_t,
+            layer_dist,
+            halo_exchange,
+            comm_pattern,
+            fn_multi,
+        )
         if edge_attr_dist is not None:
             del edge_attr_dist
+        gc.collect()
         torch.cuda.empty_cache()
 
         # ---- Rank 0: time single-GPU baseline (non-collective) ----
         times_single = None
         single_oom = False
         if rank == 0:
+            gc.collect()
+            torch.cuda.empty_cache()
             edges_s = _gen_graph(
                 args.graph,
                 num_vertices,
@@ -399,7 +423,7 @@ def run_distributed(args, graph_sizes, F, rank, world_size, local_rank):
                 times_single = cuda_timed(
                     fn_single, warmup=args.warmup, trials=args.trials
                 )
-                del x_s, edge_t_s, layer_s
+                del x_s, edge_t_s, layer_s, fn_single
                 if edge_attr_s is not None:
                     del edge_attr_s
                 torch.cuda.empty_cache()

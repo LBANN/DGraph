@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 
 # ===========================================================================
 # GNN layers (same as bench_compute.py for consistency)
