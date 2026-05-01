@@ -35,6 +35,56 @@ import torch
 import torch.nn as nn
 
 
+def create_sparse_adj(edge_index, num_nodes, device="cpu"):
+    """
+    Converts an edge_index of shape [num_edges, 2] into a PyTorch sparse tensor.
+    """
+    # PyTorch sparse tensors expect indices in shape [2, num_edges]
+    # So we transpose the [num_edges, 2] tensor
+
+    indices = edge_index.t().contiguous()
+
+    # Adjacency values are 1 for unweighted graphs
+    values = torch.ones(edge_index.size(0), device=device)
+    # Create the sparse COO tensor
+    adj_sparse = torch.sparse_coo_tensor(
+        indices, values, size=(num_nodes, num_nodes), device=device
+    )
+
+    # # OPTIONAL BUT RECOMMENDED: Convert to CSR format for faster spmm operations
+    # # PyTorch's sparse.mm is significantly faster on CSR tensors than COO tensors.
+    if adj_sparse.is_coalesced() is False:
+        adj_sparse = adj_sparse.coalesce()
+    adj_sparse_csr = adj_sparse.to_sparse_csr()
+
+    return adj_sparse_csr
+
+
+class GCNLayer_impl_sparse(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(GCNLayer_impl_sparse, self).__init__()
+        self.linear = nn.Linear(in_channels, out_channels)
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x, adj_sparse):
+        """
+        Args:
+            x: Node features tensor of shape [num_nodes, in_channels]
+            adj_sparse: Sparse adjacency tensor of shape [num_nodes, num_nodes]
+        """
+        # 1. Feature transformation (Dense)
+        x = self.linear(x)
+
+        # 2. Message Passing via Sparse Matrix Multiplication
+        # This single line replaces x_j, out.zeros(), and scatter_add()
+        out = torch.sparse.mm(adj_sparse, x)
+
+        # 3. Activation
+        out = self.act(out)
+
+        return out
+
+
 class GCNLayer_impl(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(GCNLayer_impl, self).__init__()
@@ -58,12 +108,15 @@ class GCNLayer_impl(nn.Module):
 
 
 class GCNLayer(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, use_sparse=False):
         super(GCNLayer, self).__init__()
         if PYG_AVAILABLE:
             self.conv = GCNConv(in_channels, out_channels)
         else:
-            self.conv = GCNLayer_impl(in_channels, out_channels)
+            if use_sparse:
+                self.conv = GCNLayer_impl_sparse(in_channels, out_channels)
+            else:
+                self.conv = GCNLayer_impl(in_channels, out_channels)
 
     def forward(self, x, edge_index):
         return self.conv(x, edge_index)
@@ -71,14 +124,20 @@ class GCNLayer(nn.Module):
 
 class GCNModel(nn.Module):
     def __init__(
-        self, in_channels, hidden_channels, out_channels, num_layers, halo_exchanger
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers,
+        halo_exchanger,
+        is_sparse=False,
     ):
         super(GCNModel, self).__init__()
         self.convs = nn.ModuleList()
         self.convs.append(GCNLayer(in_channels, hidden_channels))
         for _ in range(num_layers - 2):
-            self.convs.append(GCNLayer(hidden_channels, hidden_channels))
-        self.convs.append(GCNLayer(hidden_channels, out_channels))
+            self.convs.append(GCNLayer(hidden_channels, hidden_channels, is_sparse))
+        self.convs.append(GCNLayer(hidden_channels, out_channels, is_sparse))
         self.halo_exchanger = halo_exchanger
 
     def forward(self, x, comm_pattern):
