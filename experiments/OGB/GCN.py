@@ -20,9 +20,78 @@ from DGraph import Communicator
 import torch.distributed as dist
 import sys
 
+try:
+    from torch_geometric.nn.conv import GCNConv
+
+    PYG_AVAILABLE = True
+except ImportError:
+    print(
+        "torch_geometric not found, skipping import of GCNConv. Make sure to install torch_geometric if you want to use it."
+    )
+    PYG_AVAILABLE = False
+
 
 import torch
 import torch.nn as nn
+
+
+class GCNLayer_impl(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(GCNLayer_impl, self).__init__()
+        self.linear = nn.Linear(in_channels, out_channels)
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x, edge_index):
+        source_vertices = edge_index[:, 0]
+        target_vertices = edge_index[:, 1]
+        x = self.linear(x)
+
+        x_j = x[target_vertices, :]
+        out_channels = x_j.size(1)
+        out = torch.zeros(x.size(0), out_channels, dtype=x.dtype, device=x.device)
+        scatter_index = (
+            source_vertices.unsqueeze(-1).expand(-1, out_channels).to(x.device)
+        )
+        out = out.scatter_add(0, scatter_index, x_j)
+        out = self.act(out)
+        return out
+
+
+class GCNLayer(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(GCNLayer, self).__init__()
+        if PYG_AVAILABLE:
+            self.conv = GCNConv(in_channels, out_channels)
+        else:
+            self.conv = GCNLayer_impl(in_channels, out_channels)
+
+    def forward(self, x, edge_index):
+        return self.conv(x, edge_index)
+
+
+class GCNModel(nn.Module):
+    def __init__(
+        self, in_channels, hidden_channels, out_channels, num_layers, halo_exchanger
+    ):
+        super(GCNModel, self).__init__()
+        self.convs = nn.ModuleList()
+        self.convs.append(GCNLayer(in_channels, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.convs.append(GCNLayer(hidden_channels, hidden_channels))
+        self.convs.append(GCNLayer(hidden_channels, out_channels))
+        self.halo_exchanger = halo_exchanger
+
+    def forward(self, x, comm_pattern):
+        edge_index = comm_pattern.local_edge_list
+        for conv in self.convs[:-1]:
+            boundary_features = self.halo_exchanger(x, comm_pattern)
+            x = torch.cat([x, boundary_features], dim=0)
+            x = conv(x, edge_index)
+
+        boundary_features = self.halo_exchanger(x, comm_pattern)
+        x = torch.cat([x, boundary_features], dim=0)
+        x = self.convs[-1](x, edge_index)
+        return x
 
 
 class GraphConvLayer(nn.Module):
