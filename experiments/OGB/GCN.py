@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 
 
-def create_sparse_adj(edge_index, num_nodes, device="cpu"):
+def create_sparse_adj(edge_index, num_local_nodes, num_halo_nodes, device="cpu"):
     """
     Converts an edge_index of shape [num_edges, 2] into a PyTorch sparse tensor.
     """
@@ -43,18 +43,28 @@ def create_sparse_adj(edge_index, num_nodes, device="cpu"):
     # So we transpose the [num_edges, 2] tensor
 
     indices = edge_index.t().contiguous()
-
-    # Adjacency values are 1 for unweighted graphs
-    values = torch.ones(edge_index.size(0), device=device)
-    # Create the sparse COO tensor
-    adj_sparse = torch.sparse_coo_tensor(
-        indices, values, size=(num_nodes, num_nodes), device=device
+    indices = torch.stack(
+        [
+            edge_index[:, 1],  # Rows: Targets (strictly < num_local_nodes)
+            edge_index[:, 0],  # Cols: Sources (< num_local_nodes + num_halo_nodes)
+        ]
     )
 
-    # # OPTIONAL BUT RECOMMENDED: Convert to CSR format for faster spmm operations
-    # # PyTorch's sparse.mm is significantly faster on CSR tensors than COO tensors.
-    if adj_sparse.is_coalesced() is False:
+    # Adjacency values are 1 for unweighted graphs
+    values = torch.ones(edge_index.size(0), dtype=torch.float32, device=device)
+
+    # Create the sparse COO tensor
+    adj_sparse = torch.sparse_coo_tensor(
+        indices,
+        values,
+        size=(num_local_nodes, num_local_nodes + num_halo_nodes),
+        device=device,
+    )
+
+    # Convert to CSR format for faster spmm operations
+    if not adj_sparse.is_coalesced():
         adj_sparse = adj_sparse.coalesce()
+
     adj_sparse_csr = adj_sparse.to_sparse_csr()
 
     return adj_sparse_csr
@@ -134,7 +144,7 @@ class GCNModel(nn.Module):
     ):
         super(GCNModel, self).__init__()
         self.convs = nn.ModuleList()
-        self.convs.append(GCNLayer(in_channels, hidden_channels))
+        self.convs.append(GCNLayer(in_channels, hidden_channels, is_sparse))
         for _ in range(num_layers - 2):
             self.convs.append(GCNLayer(hidden_channels, hidden_channels, is_sparse))
         self.convs.append(GCNLayer(hidden_channels, out_channels, is_sparse))
