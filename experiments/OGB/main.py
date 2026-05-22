@@ -80,10 +80,7 @@ def _run_experiment(
     local_node_features, local_labels, comm_pattern = dataset[0]
 
     if not comm_pattern.local_edge_list.is_sparse_csr:
-        print(
-            comm_pattern.local_edge_list.is_sparse,
-            comm_pattern.local_edge_list.is_sparse_csr,
-        )
+
         comm_pattern.local_edge_list = create_sparse_adj(
             comm_pattern.local_edge_list,
             num_local_nodes=comm_pattern.num_local_vertices,
