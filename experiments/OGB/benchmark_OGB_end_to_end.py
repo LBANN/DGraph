@@ -115,7 +115,14 @@ def benchmark_ogb_end_to_end(
             json.dump(report, f, indent=4)
 
 
-def main():
+def main(dataset: str = "arxiv"):
+
+    assert dataset in (
+        "arxiv",
+        "products",
+    ), f"Unsupported dataset '{dataset}'. Choose from: arxiv, products."
+
+    num_classes = {"arxiv": 40, "products": 47}[dataset]
 
     comm = Communicator.init_process_group("nccl")
     rank = comm.get_rank()
@@ -126,7 +133,7 @@ def main():
 
     cur_dir = os.path.dirname(os.path.abspath(__file__))
     dataset = DGraphOGBDataset(
-        dname="ogbn-products",
+        dname=f"ogbn-{dataset}",
         comm=comm,
         root_dir=f"{cur_dir}/data",
     )
@@ -136,9 +143,9 @@ def main():
         comm=comm,
         lr=0.01,
         epochs=100,
-        log_prefix=f"ogbn_arxiv-{world_size}",
+        log_prefix=f"ogbn_{dataset}-{world_size}",
         hidden_dims=128,
-        num_classes=47,
+        num_classes=num_classes,
         num_layers=3,
         device="cuda",
         rank=rank,
@@ -148,4 +155,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)
