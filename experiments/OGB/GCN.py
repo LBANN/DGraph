@@ -17,8 +17,7 @@ import torch.nn as nn
 from DGraph.distributed import HaloExchange, CommunicationPattern
 from DGraph.utils.TimingReport import TimingReport
 from DGraph import Communicator
-import torch.distributed as dist
-import sys
+from typing import Union
 
 try:
     from torch_geometric.nn.conv import GCNConv
@@ -35,7 +34,12 @@ import torch
 import torch.nn as nn
 
 
-def create_sparse_adj(edge_index, num_local_nodes, num_halo_nodes, device="cpu"):
+def create_sparse_adj(
+    edge_index,
+    num_local_nodes,
+    num_halo_nodes,
+    device: Union[str, torch.device] = "cpu",
+):
     """
     Converts an edge_index of shape [num_edges, 2] into a PyTorch sparse tensor.
     """
@@ -173,7 +177,7 @@ class GraphConvLayer(nn.Module):
         source_vertices = edge_index[:, 0]
         target_vertices = edge_index[:, 1]
 
-        assert (source_vertices < num_local_nodes).all(), (
+        assert (target_vertices < num_local_nodes).all(), (
             f"Graph routing error: Found source_vertices >= num_local_nodes ({num_local_nodes}). "
             "Boundary nodes must only act as targets (x_j) in this aggregation scheme!"
         )

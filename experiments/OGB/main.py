@@ -14,6 +14,7 @@
 """
 Distributed GCN benchmark on OGB node-property-prediction datasets.
 """
+
 import os
 import json
 from typing import Optional
@@ -28,8 +29,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from DGraph.Communicator import Communicator
 from DGraph.distributed import HaloExchange
 from DGraph.utils.TimingReport import TimingReport
-
-from GCN import CommAwareGCN as GCN
+from GCN import GCNModel, create_sparse_adj
 from ogb_comm_dataset import DGraphOGBDataset
 from utils import (
     calculate_accuracy,
@@ -40,7 +40,6 @@ from utils import (
     visualize_trajectories,
     write_experiment_log,
 )
-
 
 # ---------------------------------------------------------------------------
 # Training / evaluation loop
@@ -77,9 +76,22 @@ def _run_experiment(
     """
 
     # ---- Extract local data from the dataset --------------------------------
-    comm_pattern = dataset.comm_pattern
 
     local_node_features, local_labels, comm_pattern = dataset[0]
+
+    if not comm_pattern.local_edge_list.is_sparse_csr:
+        print(
+            comm_pattern.local_edge_list.is_sparse,
+            comm_pattern.local_edge_list.is_sparse_csr,
+        )
+        comm_pattern.local_edge_list = create_sparse_adj(
+            comm_pattern.local_edge_list,
+            num_local_nodes=comm_pattern.num_local_vertices,
+            num_halo_nodes=comm_pattern.num_halo_vertices,
+            device=device,
+        )
+    dist.barrier()
+
     local_node_features = local_node_features.to(device)
     local_labels = local_labels.to(device)
 
@@ -100,12 +112,13 @@ def _run_experiment(
 
     # ---- Model setup --------------------------------------------------------
     halo_exchanger = HaloExchange(comm)
-    model = GCN(
+    model = GCNModel(
         in_channels=in_dim,
-        hidden_dims=hidden_dims,
-        num_classes=num_classes,
+        hidden_channels=hidden_dims,
+        out_channels=num_classes,
+        num_layers=3,
         halo_exchanger=halo_exchanger,
-        comm=comm,
+        is_sparse=True,
     ).to(device)
 
     if comm.get_world_size() > 1:

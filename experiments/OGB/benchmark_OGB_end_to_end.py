@@ -132,14 +132,14 @@ def main(dataset: str = "arxiv"):
     torch.cuda.set_device(local_rank)
 
     cur_dir = os.path.dirname(os.path.abspath(__file__))
-    dataset = DGraphOGBDataset(
+    dist_dataset = DGraphOGBDataset(
         dname=f"ogbn-{dataset}",
         comm=comm,
         root_dir=f"{cur_dir}/data",
     )
 
     benchmark_ogb_end_to_end(
-        dataset=dataset,
+        dataset=dist_dataset,
         comm=comm,
         lr=0.01,
         epochs=100,
