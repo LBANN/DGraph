@@ -17,7 +17,7 @@ def make_experiment_log(fname, rank):
 
 def write_experiment_log(log: str, fname: str, rank: int):
     if rank == 0:
-        with open(fname, "a") as f:
+        with open(fname, "w") as f:
             f.write(log + "\n")
 
 

@@ -124,7 +124,7 @@ class GCNLayer_impl(nn.Module):
 class GCNLayer(nn.Module):
     def __init__(self, in_channels, out_channels, use_sparse=False):
         super(GCNLayer, self).__init__()
-        if PYG_AVAILABLE:
+        if False:
             self.conv = GCNConv(in_channels, out_channels)
         else:
             if use_sparse:
@@ -156,14 +156,23 @@ class GCNModel(nn.Module):
 
     def forward(self, x, comm_pattern):
         edge_index = comm_pattern.local_edge_list
+        counter = 1
         for conv in self.convs[:-1]:
-            boundary_features = self.halo_exchanger(x, comm_pattern)
-            x = torch.cat([x, boundary_features], dim=0)
-            x = conv(x, edge_index)
+            with TimingReport(f"feature-exchange-{counter}"):
+                boundary_features = self.halo_exchanger(x, comm_pattern)
 
-        boundary_features = self.halo_exchanger(x, comm_pattern)
-        x = torch.cat([x, boundary_features], dim=0)
-        x = self.convs[-1](x, edge_index)
+            with TimingReport(f"process-{counter}"):
+                x = torch.cat([x, boundary_features], dim=0)
+                x = conv(x, edge_index)
+
+            counter += 1
+
+        with TimingReport(f"feature-exchange-{counter}"):
+            boundary_features = self.halo_exchanger(x, comm_pattern)
+
+        with TimingReport(f"process-{counter}"):
+            x = torch.cat([x, boundary_features], dim=0)
+            x = self.convs[-1](x, edge_index)
         return x
 
 
@@ -177,7 +186,7 @@ class GraphConvLayer(nn.Module):
         source_vertices = edge_index[:, 0]
         target_vertices = edge_index[:, 1]
 
-        assert (target_vertices < num_local_nodes).all(), (
+        assert (source_vertices < num_local_nodes).all(), (
             f"Graph routing error: Found source_vertices >= num_local_nodes ({num_local_nodes}). "
             "Boundary nodes must only act as targets (x_j) in this aggregation scheme!"
         )

@@ -154,10 +154,11 @@ def _run_experiment(
         train_labels = local_labels[train_mask]
         loss = criterion(train_output, train_labels.reshape(-1))
 
-        with TimingReport("backward"):
-            loss.backward()
+        comm.barrier()
+        # with TimingReport("backward"):
+        #     loss.backward()
 
-        optimizer.step()
+        # optimizer.step()
 
         comm.barrier()
         end_time.record(stream)
@@ -349,19 +350,19 @@ def main(
     visualize_trajectories(
         training_trajectories,
         "Training Loss",
-        f"{log_dir}/training_loss.png",
+        f"{log_dir}/{dataset}_world_{world_size}_training_loss.png",
         rank,
     )
     visualize_trajectories(
         validation_trajectories,
         "Validation Loss",
-        f"{log_dir}/validation_loss.png",
+        f"{log_dir}/{dataset}_world_{world_size}_validation_loss.png",
         rank,
     )
     visualize_trajectories(
         validation_accuracies,
         "Validation Accuracy",
-        f"{log_dir}/validation_accuracy.png",
+        f"{log_dir}/{dataset}_world_{world_size}_validation_accuracy.png",
         rank,
     )
 
