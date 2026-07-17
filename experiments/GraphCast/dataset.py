@@ -20,8 +20,6 @@ from data_utils.graphcast_graph import (
     DistributedGraphCastGraphGenerator,
     move_graphcast_graph_to_device,
 )
-from data_utils.utils import padded_size
-from torch.nn.functional import pad
 
 
 class SyntheticWeatherDataset(Dataset):
@@ -100,6 +98,15 @@ class SyntheticWeatherDataset(Dataset):
         # The graph is constructed on CPU; lift its features and comm-pattern
         # index tensors onto the compute device so the model (which lives on
         # self.device) can consume it without device-mismatch errors.
+        # Original grid ids this rank owns, in the comm-pattern local order. Grid
+        # input/output MUST be sharded/reordered with this (NOT a contiguous
+        # chunk): the grid2mesh/mesh2grid CommunicationPatterns number grid
+        # vertices by grid_part's connectivity-weighted vote, so a naive chunk
+        # both mis-sizes the buffer (send_local_idx out-of-bounds) and misorders
+        # its rows. Kept on CPU to index the CPU inputs in __getitem__.
+        self.local_grid_original_indices = (
+            self.graph_cast_graph.local_grid_original_indices.detach().cpu().long()
+        )
         self.graph_cast_graph = move_graphcast_graph_to_device(
             self.graph_cast_graph, self.device
         )
@@ -213,21 +220,14 @@ class SyntheticWeatherDataset(Dataset):
         )
 
         if self.world_size > 1:
-            # Get oartitioned inputs instead of the full graph
-            num_grid_nodes = in_var.shape[0]
-            padded_num_grid_nodes = padded_size(num_grid_nodes, self.ranks_per_graph)
-
-            num_nodes_per_rank = padded_num_grid_nodes // self.ranks_per_graph
-            in_var = pad(in_var, (padded_num_grid_nodes - num_grid_nodes, 0), value=-0)
-            out_var = pad(
-                out_var, (padded_num_grid_nodes - num_grid_nodes, 0), value=-0
-            )
-
-            start_index = self.rank * num_nodes_per_rank
-            end_index = start_index + num_nodes_per_rank
-
-            in_var = in_var[start_index:end_index]
-            out_var = out_var[start_index:end_index]
+            # Select this rank's grid vertices in the comm-pattern's local order.
+            # local_grid_original_indices is a permutation-slice into the full
+            # grid (original grid ids owned by this rank, rank-sorted), so it both
+            # picks the right vertices and orders their rows to match
+            # send_local_idx / local_edge_list. No padding needed: the union of
+            # all ranks' indices covers every grid node exactly once.
+            in_var = in_var[self.local_grid_original_indices]
+            out_var = out_var[self.local_grid_original_indices]
 
         return {
             "invar": in_var.to(self.device),

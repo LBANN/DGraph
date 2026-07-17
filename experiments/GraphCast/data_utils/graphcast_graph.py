@@ -81,6 +81,15 @@ class DistributedGraphCastGraph:
     # Distributed graph info
     distributed_comm_patterns: GraphCastCommPatterns
 
+    # Original grid-vertex ids owned by this rank, in the comm-pattern local
+    # order. This is the frame the grid2mesh/mesh2grid CommunicationPatterns use:
+    # local grid vertex i corresponds to original grid id
+    # local_grid_original_indices[i]. The dataset MUST select/reorder its grid
+    # input & output with this tensor so grid_node_features rows align with
+    # send_local_idx / local_edge_list. Kept on CPU (indexes CPU inputs in the
+    # dataset's __getitem__ before the device move).
+    local_grid_original_indices: Tensor
+
 
 def _move_communication_pattern_to_device(
     cp: CommunicationPattern, device
@@ -518,6 +527,11 @@ class DistributedGraphCastGraphGenerator:
         grid2mesh_graph = self.get_grid2mesh_graph(mesh_graph, mesh2grid_raw=mesh2grid_raw)
         grid_vertex_rank_placement = grid2mesh_graph["grid_vertex_rank_placement"]
         inverse_grid_renumbering = grid2mesh_graph["inverse_grid_renumbering"]
+        # renumbered_grid maps rank-sorted slot -> original grid id. Selecting the
+        # slots this rank owns gives the original grid ids in comm-pattern local
+        # order, which the dataset uses to shard/reorder grid features (see the
+        # local_grid_original_indices field docstring).
+        renumbered_grid = grid2mesh_graph["renumbered_grid"]
 
         mesh2grid_graph = self.get_mesh2grid_edges(
             inverse_vertex_renumbering,
@@ -550,6 +564,9 @@ class DistributedGraphCastGraphGenerator:
         # here with the exact same masks build_communication_pattern used internally
         # (vertex: placement==rank; edge: dst-owned-by-rank) so rows stay aligned.
         rank = topology.rank
+
+        # Original grid ids owned by this rank, in comm-pattern local order.
+        local_grid_original_indices = renumbered_grid[grid_vertex_rank_placement == rank]
 
         mesh_node_local_mask = mesh_vertex_rank_placement == rank
         local_mesh_node_features = mesh_graph["node_features"][mesh_node_local_mask]
@@ -584,4 +601,5 @@ class DistributedGraphCastGraphGenerator:
             mesh2grid_graph_edge_features=local_mesh2grid_edge_features,
             grid2mesh_graph_edge_features=local_grid2mesh_edge_features,
             distributed_comm_patterns=comm_patterns,
+            local_grid_original_indices=local_grid_original_indices,
         )
