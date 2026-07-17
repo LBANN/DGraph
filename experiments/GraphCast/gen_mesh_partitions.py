@@ -56,6 +56,21 @@ def generate_partition(
     return path
 
 
+def _parse_int_list(value) -> list:
+    """Parse a CLI arg into a list of ints, tolerating Fire's auto-conversion.
+
+    Fire turns "4,6" into a tuple (4, 6) and "1" into the int 1, so the value
+    can arrive as a str, int, or tuple/list. Normalize all of these to
+    list[int] so `--mesh_levels="4,6"`, `--mesh_levels=4`, and
+    `--mesh_levels 4 6` all work.
+    """
+    if isinstance(value, str):
+        return [int(x) for x in value.split(",") if x != ""]
+    if isinstance(value, (list, tuple)):
+        return [int(x) for x in value]
+    return [int(value)]
+
+
 def main(
     mesh_levels: str = "2,5,6",
     world_sizes: str = "1,2,4",
@@ -70,8 +85,8 @@ def main(
         output_dir: directory to write mesh_vertex_rank_placement_L{L}_W{W}.pt files to.
         force: recompute and overwrite even if a cached file already exists.
     """
-    levels = [int(x) for x in mesh_levels.split(",")]
-    sizes = [int(x) for x in world_sizes.split(",")]
+    levels = _parse_int_list(mesh_levels)
+    sizes = _parse_int_list(world_sizes)
 
     for mesh_level in levels:
         for world_size in sizes:
