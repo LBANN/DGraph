@@ -16,7 +16,10 @@ import numpy as np
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 from torch.utils.data import Dataset
-from data_utils.graphcast_graph import DistributedGraphCastGraphGenerator
+from data_utils.graphcast_graph import (
+    DistributedGraphCastGraphGenerator,
+    move_graphcast_graph_to_device,
+)
 from data_utils.utils import padded_size
 from torch.nn.functional import pad
 
@@ -94,6 +97,12 @@ class SyntheticWeatherDataset(Dataset):
             rank=self.rank,
             world_size=self.world_size,
         ).get_graphcast_graph(mesh_vertex_rank_placement=mesh_vertex_placement)
+        # The graph is constructed on CPU; lift its features and comm-pattern
+        # index tensors onto the compute device so the model (which lives on
+        # self.device) can consume it without device-mismatch errors.
+        self.graph_cast_graph = move_graphcast_graph_to_device(
+            self.graph_cast_graph, self.device
+        )
         print(f"Generated static graph in {time.time() - start_time:.2f} seconds.")
         self.extra_args: Dict[str, Any] = kwargs
 

@@ -67,17 +67,24 @@ def compute_local_edge_list(
     halo_vertices_global: torch.Tensor,  # [num_halo], src vertex space
     rank: int,
     src_partitioning: Optional[torch.Tensor] = None,
+    src_local_vertices_global: Optional[torch.Tensor] = None,  # [num_src_local], src space
 ) -> torch.Tensor:
     """
     Remaps a global edge list [E, 2] (col0=src/neighbor, col1=dst/local) into
-    local numbering: dst ids -> [0, num_local), src halo ids ->
-    [num_local, num_local + num_halo).
+    local numbering.
+
+    The dst column (col1) maps to ``[0, num_local)``. The src column (col0) maps
+    into the augmented src feature buffer ``[src_local ; halo]`` that the halo
+    exchange produces: locally-owned src vertices -> ``[0, num_src_local)`` and
+    halo (remote) src vertices -> ``[num_src_local, num_src_local + num_halo)``.
 
     For homogeneous graphs (src_partitioning=None), src and dst share one vertex
-    ID space and a single remap table is used for both columns, identical to the
-    original behavior. For bipartite/heterogeneous graphs, src_partitioning's
-    vertex space may be sized differently than partitioning's (dst) space, so two
-    independent remap tables are built.
+    ID space (num_src_local == num_local) and a single remap table is used for
+    both columns. For bipartite/heterogeneous graphs, src_partitioning's vertex
+    space may be sized differently than partitioning's (dst) space, so a separate
+    src remap table is built; it must cover BOTH local and halo src vertices,
+    since a bipartite relation can have on-rank src vertices (e.g. every edge is
+    intra-rank at world_size=1, so num_halo=0 and every src is local).
     """
     num_local = local_vertices_global.size(0)
     num_halo = halo_vertices_global.size(0)
@@ -94,7 +101,8 @@ def compute_local_edge_list(
     g2l_dst.scatter_(0, local_vertices_global, torch.arange(num_local, device=g2l_dst.device))
 
     if src_partitioning is None:
-        # Homogeneous: src and dst share one ID space and one remap table.
+        # Homogeneous: src and dst share one ID space and one remap table. Local
+        # src vertices are already mapped to [0, num_local) via g2l_dst above.
         g2l_dst.scatter_(
             0,
             halo_vertices_global,
@@ -102,16 +110,33 @@ def compute_local_edge_list(
         )
         g2l_src = g2l_dst
     else:
-        # Heterogeneous/bipartite: halo vertices live in the (differently-sized)
-        # src vertex space, so they need their own remap table.
+        # Heterogeneous/bipartite: src vertices live in the (differently-sized)
+        # src vertex space and need their own remap table covering both the
+        # locally-owned src vertices and the halo (remote) src vertices, matching
+        # the augmented src feature buffer layout [src_local ; halo].
+        if src_local_vertices_global is None:
+            raise ValueError(
+                "src_local_vertices_global is required for bipartite/heterogeneous "
+                "edge lists (src_partitioning is not None)."
+            )
         num_src_global = src_partitioning.size(0)
+        num_src_local = src_local_vertices_global.size(0)
         g2l_src = torch.empty(
             num_src_global, dtype=torch.long, device=global_edge_list.device
         )
+        # local src -> [0, num_src_local)
+        g2l_src.scatter_(
+            0,
+            src_local_vertices_global,
+            torch.arange(num_src_local, device=g2l_src.device),
+        )
+        # halo src -> [num_src_local, num_src_local + num_halo)
         g2l_src.scatter_(
             0,
             halo_vertices_global,
-            torch.arange(num_local, num_local + num_halo, device=g2l_src.device),
+            torch.arange(
+                num_src_local, num_src_local + num_halo, device=g2l_src.device
+            ),
         )
 
     # Remap to local numbering: col0 via src table, col1 via dst table.
@@ -238,6 +263,7 @@ def build_communication_pattern(
         halo_verts,
         rank,
         src_partitioning=src_partitioning,
+        src_local_vertices_global=src_local_verts,
     )
     send_idx, send_off = compute_boundary_vertices(
         global_edge_list,

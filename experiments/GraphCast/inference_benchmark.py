@@ -20,7 +20,10 @@ from benchmarks.common import (  # noqa: E402
 from DGraph.Communicator import Communicator  # noqa: E402
 from DGraph.utils.TimingReport import TimingReport  # noqa: E402
 
-from data_utils.graphcast_graph import DistributedGraphCastGraphGenerator  # noqa: E402
+from data_utils.graphcast_graph import (  # noqa: E402
+    DistributedGraphCastGraphGenerator,
+    move_graphcast_graph_to_device,
+)
 from data_utils.utils import padded_size  # noqa: E402
 from dataset import SyntheticWeatherDataset  # noqa: E402
 from dist_utils import SingleProcessDummyCommunicator  # noqa: E402
@@ -254,6 +257,8 @@ def run_correctness_check(
     ref_static_graph = ref_generator.get_graphcast_graph(
         mesh_vertex_rank_placement=ref_placement
     )
+    # Built on CPU; move onto the compute device to match ref_model / ref_input.
+    ref_static_graph = move_graphcast_graph_to_device(ref_static_graph, device)
     ref_mesh_graph = ref_generator.get_mesh_graph(ref_placement)
     ref_grid2mesh = ref_generator.get_grid2mesh_graph(ref_mesh_graph)
     ref_renumbered_grid = ref_grid2mesh["renumbered_grid"]

@@ -82,6 +82,61 @@ class DistributedGraphCastGraph:
     distributed_comm_patterns: GraphCastCommPatterns
 
 
+def _move_communication_pattern_to_device(
+    cp: CommunicationPattern, device
+) -> CommunicationPattern:
+    """In-place move of every tensor field of a CommunicationPattern to device.
+
+    build_communication_pattern leaves its outputs on a mix of devices (e.g.
+    compute_comm_map runs .cuda() collectives, while the index tensors stay on
+    CPU). The halo exchange indexes local features and runs NCCL all-to-all with
+    these tensors, so they must all sit on the same device as the node/edge
+    features.
+    """
+    for field_name in (
+        "local_edge_list",
+        "send_local_idx",
+        "send_offset",
+        "recv_offset",
+        "comm_map",
+        "put_forward_remote_offset",
+        "put_backward_remote_offset",
+    ):
+        value = getattr(cp, field_name)
+        if isinstance(value, torch.Tensor):
+            setattr(cp, field_name, value.to(device))
+    return cp
+
+
+def move_graphcast_graph_to_device(
+    graph: "DistributedGraphCastGraph", device
+) -> "DistributedGraphCastGraph":
+    """In-place move of a DistributedGraphCastGraph (features + comm patterns) to device.
+
+    The graph is constructed on CPU (nearest-neighbor search, METIS, etc.); this
+    lifts all of its tensors onto the compute device so the model can consume it
+    directly. Returns the same object for convenience.
+    """
+    for field_name in (
+        "lat_lon_grid",
+        "mesh_graph_node_features",
+        "mesh_graph_edge_features",
+        "mesh2grid_graph_node_features",
+        "grid2mesh_graph_node_features",
+        "mesh2grid_graph_edge_features",
+        "grid2mesh_graph_edge_features",
+    ):
+        value = getattr(graph, field_name)
+        if isinstance(value, torch.Tensor):
+            setattr(graph, field_name, value.to(device))
+
+    cps = graph.distributed_comm_patterns
+    _move_communication_pattern_to_device(cps.grid2mesh, device)
+    _move_communication_pattern_to_device(cps.mesh, device)
+    _move_communication_pattern_to_device(cps.mesh2grid, device)
+    return graph
+
+
 def build_graphcast_comm_patterns(graph: GraphCastTopology) -> GraphCastCommPatterns:
     """
     Build CommunicationPatterns for all three GraphCast edge types.
