@@ -155,13 +155,13 @@ class GraphCastEncoder(nn.Module):
         num_local = comm_pattern.num_local_vertices
 
         with TimingReport("encoder/halo_exchange"):
-            halo_features = self.exchanger(mesh_node_features, comm_pattern)
-            augmented = torch.cat([mesh_node_features, halo_features], dim=0)
+            halo_features = self.exchanger(grid_node_features, comm_pattern)
+            augmented_grid = torch.cat([grid_node_features, halo_features], dim=0)
 
         with TimingReport("encoder/edge_block"):
             e_feats = self.edge_mlp(
-                src_node_features=augmented,
-                dst_node_features=augmented,
+                src_node_features=augmented_grid,
+                dst_node_features=mesh_node_features,
                 edge_features=grid2mesh_edge_features,
                 src_indices=src_indices,
                 dst_indices=dst_indices,
@@ -169,7 +169,7 @@ class GraphCastEncoder(nn.Module):
 
         with TimingReport("encoder/node_block"):
             n_feats = self.mesh_node_mlp(
-                node_features=augmented[:num_local],
+                node_features=mesh_node_features,
                 edge_features=e_feats,
                 src_indices=dst_indices,
             )
