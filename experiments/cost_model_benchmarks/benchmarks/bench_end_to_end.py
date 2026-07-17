@@ -57,78 +57,12 @@ from benchmarks.graph_data_common import (
     partition_balanced,
     partition_metis,
     partition_random,
+    build_local_comm_pattern,
 )
 from benchmarks.nn_layer_common import GCNLayer, EdgeConditionedLayer
 
-
-class MinimalHaloExchange(torch.autograd.Function):
-    """Forward: gather boundary features → all_to_all → populate recv buffer.
-    Backward: reverse the transfer to accumulate gradients.
-    """
-
-    @staticmethod
-    def forward(ctx, x_local, send_idx_flat, send_counts, recv_counts, world_size):
-        # Gather send buffer
-        send_buf = x_local[send_idx_flat]  # [total_send, F]
-
-        # Split by destination rank
-        send_list = list(send_buf.split(send_counts, dim=0))
-        recv_list = [
-            torch.zeros(
-                rc, x_local.shape[1], dtype=x_local.dtype, device=x_local.device
-            )
-            for rc in recv_counts
-        ]
-
-        dist.all_to_all(recv_list, send_list)
-
-        recv_buf = (
-            torch.cat(recv_list, dim=0)
-            if sum(recv_counts) > 0
-            else torch.zeros(0, x_local.shape[1], device=x_local.device)
-        )
-
-        ctx.save_for_backward(send_idx_flat)
-        ctx.send_counts = send_counts
-        ctx.recv_counts = recv_counts
-        ctx.world_size = world_size
-        ctx.n_local = x_local.shape[0]
-        ctx.feature_dim = x_local.shape[1]
-        ctx.device = x_local.device
-
-        return recv_buf
-
-    @staticmethod
-    def backward(ctx, grad_recv):
-        (send_idx_flat,) = ctx.saved_tensors
-        send_counts = ctx.send_counts
-        recv_counts = ctx.recv_counts
-        world_size = ctx.world_size
-        n_local = ctx.n_local
-        F = ctx.feature_dim
-        device = ctx.device
-
-        # Reverse: recv_counts become send_counts and vice versa
-        grad_recv_list = (
-            list(grad_recv.split(recv_counts, dim=0))
-            if grad_recv.shape[0] > 0
-            else [torch.zeros(0, F, device=device)] * world_size
-        )
-        grad_send_list = [torch.zeros(sc, F, device=device) for sc in send_counts]
-
-        dist.all_to_all(grad_send_list, grad_recv_list)
-
-        grad_send = torch.cat(grad_send_list, dim=0)
-
-        # Scatter-add back to local vertices
-        grad_x_local = torch.zeros(n_local, F, device=device, dtype=grad_recv.dtype)
-        grad_x_local.scatter_add_(
-            0,
-            send_idx_flat.unsqueeze(1).expand_as(grad_send),
-            grad_send,
-        )
-        return grad_x_local, None, None, None, None
-
+from DGraph.distributed import HaloExchange, CommunicationPattern
+from DGraph import Communicator
 
 # ===========================================================================
 # Main
@@ -212,12 +146,13 @@ def main():
         else None
     )
 
+    comm = Communicator(backend="nccl")
+    halo_exchange = HaloExchange(comm=comm)
+
     # --- Timed forward + backward ---
     def one_layer():
         # Forward halo exchange
-        recv_buf = MinimalHaloExchange.apply(
-            x_local, send_idx_flat, send_counts, recv_counts, world_size
-        )
+        recv_buf = halo_exchange(x_local, comm_pattern=pattern)
         # Augment: local + halo
         x_aug = torch.cat([x_local, recv_buf], dim=0)
         # Message passing

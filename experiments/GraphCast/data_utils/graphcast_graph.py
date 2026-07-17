@@ -223,12 +223,12 @@ class DistributedGraphCastGraphGenerator:
 
     @staticmethod
     def get_grid_vertex_partition(
-        lat: int,
-        lon: int,
+        num_grid: int,
         mesh_vertex_rank_placement: torch.Tensor,
         grid2mesh_grid_src_indices: torch.Tensor,
         grid2mesh_mesh_dst_indices: torch.Tensor,
         mesh2grid_mesh_src_indices: torch.Tensor,
+        mesh2grid_grid_dst_indices: torch.Tensor,
         world_size: int,
     ) -> torch.Tensor:
         """Generate the partitioning of grid vertices to minimize cross-rank edges.
@@ -237,11 +237,9 @@ class DistributedGraphCastGraphGenerator:
         (via both grid2mesh and mesh2grid edges) live on each rank, then assigns
         the grid vertex to the rank with the plurality of connections.
 
-        mesh2grid grid destinations are implicit: grid vertex i owns edges
-        [3i, 3i+1, 3i+2] since create_mesh2grid_graph assigns exactly 3
-        edges (one face's vertices) per grid vertex.
+        All indices/placements here are in the *original* (pre rank-sort) mesh
+        and grid vertex numbering.
         """
-        num_grid = lat * lon
         votes = torch.zeros(num_grid, world_size, dtype=torch.long)
 
         # --- grid2mesh contribution: grid vertex is src, mesh vertex is dst ---
@@ -251,16 +249,29 @@ class DistributedGraphCastGraphGenerator:
         votes.view(-1).scatter_add_(0, g2m_flat_idx, torch.ones_like(g2m_flat_idx))
 
         # --- mesh2grid contribution: mesh vertex is src, grid vertex is dst ---
-        # Each grid vertex i has exactly 3 mesh2grid edges at positions [3i, 3i+1, 3i+2]
-        m2g_grid_dst = torch.arange(num_grid, dtype=torch.long).repeat_interleave(3)
         m2g_ranks = mesh_vertex_rank_placement[mesh2grid_mesh_src_indices.long()]
-        m2g_flat_idx = m2g_grid_dst * world_size + m2g_ranks
+        m2g_flat_idx = mesh2grid_grid_dst_indices.long() * world_size + m2g_ranks
         votes.view(-1).scatter_add_(0, m2g_flat_idx, torch.ones_like(m2g_flat_idx))
 
         # Assign each grid vertex to the rank with the most connections
         grid_partitioning = votes.argmax(dim=1)
 
         return grid_partitioning
+
+    @staticmethod
+    def _renumber_by_rank(rank_placement: torch.Tensor):
+        """Sort vertices by rank so each rank owns a contiguous numbering range.
+
+        Returns (sorted_ranks, forward_perm, inverse_perm): forward_perm maps
+        new (sorted) position -> original vertex id, and is used to reorder
+        per-vertex feature tensors. inverse_perm maps original vertex id ->
+        new position, and is used to remap edge-index tensors that still
+        reference original vertex ids into the new numbering.
+        """
+        sorted_ranks, forward_perm = torch.sort(rank_placement)
+        inverse_perm = torch.empty_like(forward_perm)
+        inverse_perm[forward_perm] = torch.arange(forward_perm.numel())
+        return sorted_ranks, forward_perm, inverse_perm
 
     def get_mesh_graph(self, mesh_vertex_rank_placement: torch.Tensor):
         """Get the graph for the distributed graphcast graph."""
@@ -280,16 +291,12 @@ class DistributedGraphCastGraphGenerator:
 
         assert num_nodes == mesh_vertex_rank_placement.size(0)
 
-        contiguous_rank_mapping, renumbered_nodes = torch.sort(
-            mesh_vertex_rank_placement
+        contiguous_rank_mapping, renumbered_nodes, reverse_renumbered_nodes = (
+            self._renumber_by_rank(mesh_vertex_rank_placement)
         )
 
         # renumber the nodes
         node_features = node_features[renumbered_nodes]
-
-        reverse_renumbered_nodes = torch.zeros_like(renumbered_nodes)
-
-        reverse_renumbered_nodes[renumbered_nodes] = torch.arange(num_nodes)
 
         # renumber the edges
         new_src_indices = reverse_renumbered_nodes[src_indices]
@@ -320,44 +327,39 @@ class DistributedGraphCastGraphGenerator:
             "edge_rank_placement": contigous_edge_mapping,
             "src_rank_placement": src_indices_rank_placement,
             "dst_rank_placement": dst_indices_rank_placement,
+            "original_rank_placement": mesh_vertex_rank_placement,
             "mesh_vertex_renumbering": renumbered_nodes,
             "renumbered_vertices": renumbered_nodes,
+            "inverse_vertex_renumbering": reverse_renumbered_nodes,
         }
 
         return mesh_graph_dict
 
-    def get_grid_placement(
-        self, mesh_vertex_rank_placement, grid2mesh_mesh_dst_indices
-    ):
-        meshtogrid_edge_placement = mesh_vertex_rank_placement[
-            grid2mesh_mesh_dst_indices
-        ]
+    def _get_raw_mesh2grid_edges(self):
+        """mesh2grid edge_features/src(mesh)/dst(grid), all in original vertex ids."""
+        lat_lon_grid_flat = self.lat_lon_grid.permute(2, 0, 1).view(2, -1).permute(1, 0)
+        return create_mesh2grid_graph(
+            lat_lon_grid_flat, self.mesh_vertices, self.mesh_faces
+        )
 
-        return meshtogrid_edge_placement
+    def get_grid2mesh_graph(self, mesh_graph_dict: dict, mesh2grid_raw: tuple = None):
+        """Get the grid2mesh bipartite graph, renumbered into per-rank-contiguous order.
 
-    def get_grid2mesh_graph(self, mesh_graph_dict: dict):
+        Each grid vertex is assigned to the rank holding the plurality of its
+        connected mesh vertices, counting both grid2mesh and mesh2grid edges
+        (see get_grid_vertex_partition) -- not just the grid2mesh direction.
 
-        # SUSPECTED BUG (unverified -- flagged for review, not fixed here): this is
-        # named "mesh_vertex_rank_placement" but is actually
-        # mesh_graph_dict["mesh_vertex_renumbering"] = the SORT PERMUTATION from
-        # get_mesh_graph (renumbered_nodes: sorted_position -> original_vertex_id),
-        # not a rank-lookup-by-original-id array. get_grid_placement below then
-        # does mesh_vertex_rank_placement[grid2mesh_mesh_dst_indices], i.e. indexes
-        # the permutation by ORIGINAL mesh vertex ids (dst_mesh_indices, from
-        # create_grid2mesh_graph, pre-renumbering) -- this looks like it computes
-        # "original id of whichever vertex sorts to position == this original id",
-        # not "rank that owns this original vertex". The value actually needed
-        # (rank of an original-id vertex) isn't exposed by mesh_graph_dict at all;
-        # it would require the inverse of renumbered_nodes (computed locally inside
-        # get_mesh_graph as reverse_renumbered_nodes but never returned), composed
-        # with node_rank_placement. Not fixed pending confirmation this analysis is
-        # correct (untestable without GPU access to run and inspect actual values).
-        mesh_vertex_rank_placement = mesh_graph_dict["mesh_vertex_renumbering"]
+        mesh2grid_raw lets callers that already computed the mesh2grid edges
+        (get_graphcast_graph) pass them in so the mesh2grid nearest-neighbor
+        search isn't repeated; if omitted (e.g. external callers that only need
+        the grid2mesh graph) it is computed here.
+        """
+        inverse_vertex_renumbering = mesh_graph_dict["inverse_vertex_renumbering"]
+        original_mesh_rank_placement = mesh_graph_dict["original_rank_placement"]
+
         max_edge_len = max_edge_length(
             self.finest_mesh_vertices, self.finest_mesh_src, self.finest_mesh_dst
         )
-
-        renumbered_vertices = mesh_graph_dict["node_rank_placement"]
 
         # create the grid2mesh bipartite graph
         lat_lon_grid_flat = self.lat_lon_grid.permute(2, 0, 1).view(2, -1).permute(1, 0)
@@ -367,67 +369,58 @@ class DistributedGraphCastGraphGenerator:
         )
         edge_features, src_grid_indices, dst_mesh_indices = g2m_graph
 
-        meshtogrid_edge_placement = self.get_grid_placement(
-            mesh_vertex_rank_placement, dst_mesh_indices
-        )
-        dst_mesh_indices = renumbered_vertices[dst_mesh_indices]
+        if mesh2grid_raw is None:
+            mesh2grid_raw = self._get_raw_mesh2grid_edges()
+        _, m2g_src_mesh_indices, m2g_dst_grid_indices = mesh2grid_raw
 
-        contigous_edge_mapping, renumbered_edges = torch.sort(meshtogrid_edge_placement)
-
-        src_grid_indices = src_grid_indices[renumbered_edges]
-        # NOTE: must be a 1D tensor of length num_grid_vertices, NOT
-        # torch.zeros_like(lat_lon_grid_flat) (shape [num_grid_vertices, 2]) --
-        # the latter made torch.sort() below sort each row's 2 (duplicate) entries
-        # against each other instead of sorting across all grid vertices, silently
-        # corrupting grid_vertex_rank_placement/renumbered_grid into non-1D,
-        # non-permutation tensors that broke every downstream consumer (comm-pattern
-        # construction via build_communication_pattern, get_mesh2grid_edges's
-        # renumbered_grid[dst_grid_indices] lookup) at any world_size, including 1.
-        grid_vertex_rank_placement = torch.zeros(
-            lat_lon_grid_flat.shape[0], dtype=meshtogrid_edge_placement.dtype
+        num_grid = lat_lon_grid_flat.shape[0]
+        grid_vertex_rank_placement = self.get_grid_vertex_partition(
+            num_grid=num_grid,
+            mesh_vertex_rank_placement=original_mesh_rank_placement,
+            grid2mesh_grid_src_indices=src_grid_indices,
+            grid2mesh_mesh_dst_indices=dst_mesh_indices,
+            mesh2grid_mesh_src_indices=m2g_src_mesh_indices,
+            mesh2grid_grid_dst_indices=m2g_dst_grid_indices,
+            world_size=self.world_size,
         )
-        for i, rank in enumerate(meshtogrid_edge_placement):
-            loc = src_grid_indices[i]
-            grid_vertex_rank_placement[loc] = rank
-
-        continuous_grid_mapping, renumbered_grid = torch.sort(
-            grid_vertex_rank_placement, dim=0
+        continuous_grid_mapping, renumbered_grid, inverse_grid_renumbering = (
+            self._renumber_by_rank(grid_vertex_rank_placement)
         )
+
+        # Remap edge endpoints from original ids into the new, rank-contiguous
+        # numbering: grid side via the grid renumbering, mesh side via the
+        # mesh renumbering computed in get_mesh_graph.
+        src_grid_indices = inverse_grid_renumbering[src_grid_indices.long()]
+        dst_mesh_indices = inverse_vertex_renumbering[dst_mesh_indices.long()]
 
         grid2mesh_graph_dict = {
             "node_features": torch.tensor([]),
             "edge_features": edge_features,
             "src_indices": src_grid_indices,
             "dst_indices": dst_mesh_indices,
-            "grid2mesh_edge_rank_placement": contigous_edge_mapping,
             "grid_vertex_rank_placement": continuous_grid_mapping,
             "renumbered_grid": renumbered_grid,
+            "inverse_grid_renumbering": inverse_grid_renumbering,
         }
         return grid2mesh_graph_dict
 
     def get_mesh2grid_edges(
         self,
-        grid_vertex_rank_placement,
-        renumbered_vertices,
-        renumbered_grid,
+        inverse_vertex_renumbering,
+        inverse_grid_renumbering,
+        mesh2grid_raw: tuple = None,
     ):
-        lat_lon_grid_flat = self.lat_lon_grid.permute(2, 0, 1).view(2, -1).permute(1, 0)
+        if mesh2grid_raw is None:
+            mesh2grid_raw = self._get_raw_mesh2grid_edges()
+        edge_features, src_mesh_indices, dst_grid_indices = mesh2grid_raw
 
-        m2g_graph = create_mesh2grid_graph(
-            lat_lon_grid_flat, self.mesh_vertices, self.mesh_faces
-        )
-
-        edge_features, src_mesh_indices, dst_grid_indices = m2g_graph
-        src_mesh_indices = renumbered_vertices[src_mesh_indices]
-        dst_grid_indices = renumbered_grid[dst_grid_indices]
-
-        mesh2grid_edge_rank_placement = grid_vertex_rank_placement[dst_grid_indices]
+        src_mesh_indices = inverse_vertex_renumbering[src_mesh_indices.long()]
+        dst_grid_indices = inverse_grid_renumbering[dst_grid_indices.long()]
 
         mesh2grid_graph_dict = {
             "edge_features": edge_features,
             "src_indices": src_mesh_indices,
             "dst_indices": dst_grid_indices,
-            "mesh2grid_edge_rank_placement": mesh2grid_edge_rank_placement,
         }
 
         return mesh2grid_graph_dict
@@ -460,13 +453,21 @@ class DistributedGraphCastGraphGenerator:
 
         mesh_graph = self.get_mesh_graph(mesh_vertex_rank_placement)
         mesh_vertex_rank_placement = mesh_graph["node_rank_placement"]
-        renumbered_vertices = mesh_graph["renumbered_vertices"]
-        grid2mesh_graph = self.get_grid2mesh_graph(mesh_graph)
+        inverse_vertex_renumbering = mesh_graph["inverse_vertex_renumbering"]
+
+        # Computed once and shared between get_grid2mesh_graph (needs it for the
+        # grid rank vote) and get_mesh2grid_edges (needs it for the edges
+        # themselves), so the mesh2grid nearest-neighbor search isn't repeated.
+        mesh2grid_raw = self._get_raw_mesh2grid_edges()
+
+        grid2mesh_graph = self.get_grid2mesh_graph(mesh_graph, mesh2grid_raw=mesh2grid_raw)
         grid_vertex_rank_placement = grid2mesh_graph["grid_vertex_rank_placement"]
-        renumbered_grid = grid2mesh_graph["renumbered_grid"]
+        inverse_grid_renumbering = grid2mesh_graph["inverse_grid_renumbering"]
 
         mesh2grid_graph = self.get_mesh2grid_edges(
-            grid_vertex_rank_placement, renumbered_vertices, renumbered_grid
+            inverse_vertex_renumbering,
+            inverse_grid_renumbering,
+            mesh2grid_raw=mesh2grid_raw,
         )
 
         topology = GraphCastTopology(

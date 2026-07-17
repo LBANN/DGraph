@@ -1,4 +1,3 @@
-import metis
 import torch
 import numpy as np
 import pickle
@@ -15,8 +14,18 @@ from fire import Fire
 
 
 def partition_graph(G: nx.Graph, num_ranks: int):
-    metis_graph = metis.networkx_to_metis(G)
-    (edgecuts, node_rank_placement) = metis.part_graph(metis_graph, nparts=num_ranks)
+    if num_ranks == 1:
+        return np.zeros(G.number_of_nodes(), dtype=int)
+
+    try:
+        import pymetis
+    except ImportError:
+        raise ImportError(
+            "Please install pymetis to use this function (`pip install pymetis`)."
+        )
+
+    adjacency = [sorted(G.neighbors(node)) for node in range(G.number_of_nodes())]
+    (edgecuts, node_rank_placement) = pymetis.part_graph(num_ranks, adjacency=adjacency)
     # Node_rank_placement is of shape (num_nodes, ), where each element is the
     # rank of the node in the partitioning.
 
