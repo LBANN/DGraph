@@ -62,30 +62,62 @@ def compute_halo_vertices(
 
 def compute_local_edge_list(
     global_edge_list: torch.Tensor,  # [E, 2]
-    partitioning: torch.Tensor,  # [V] (Acts as dst_partitioning)
-    local_vertices_global: torch.Tensor,  # [num_local]
-    halo_vertices_global: torch.Tensor,  # [num_halo]
+    partitioning: torch.Tensor,  # [V_dst] (Acts as dst_partitioning)
+    local_vertices_global: torch.Tensor,  # [num_local], dst vertex space
+    halo_vertices_global: torch.Tensor,  # [num_halo], src vertex space
     rank: int,
+    src_partitioning: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
+    """
+    Remaps a global edge list [E, 2] (col0=src/neighbor, col1=dst/local) into
+    local numbering: dst ids -> [0, num_local), src halo ids ->
+    [num_local, num_local + num_halo).
+
+    For homogeneous graphs (src_partitioning=None), src and dst share one vertex
+    ID space and a single remap table is used for both columns, identical to the
+    original behavior. For bipartite/heterogeneous graphs, src_partitioning's
+    vertex space may be sized differently than partitioning's (dst) space, so two
+    independent remap tables are built.
+    """
     num_local = local_vertices_global.size(0)
     num_halo = halo_vertices_global.size(0)
-    num_global = partitioning.size(0)
+    num_dst_global = partitioning.size(0)
 
     # FIX: Filter edges where the DESTINATION is owned by this rank (Index 1)
     local_edge_mask = partitioning[global_edge_list[:, 1]] == rank
     local_edges_global = global_edge_list[local_edge_mask]
 
-    # Build inverse map: global_id -> local_idx via scatter
-    g2l = torch.empty(num_global, dtype=torch.long, device=global_edge_list.device)
-    g2l.scatter_(0, local_vertices_global, torch.arange(num_local, device=g2l.device))
-    g2l.scatter_(
-        0,
-        halo_vertices_global,
-        torch.arange(num_local, num_local + num_halo, device=g2l.device),
+    # dst remap table: dst global id -> local index [0, num_local)
+    g2l_dst = torch.empty(
+        num_dst_global, dtype=torch.long, device=global_edge_list.device
     )
+    g2l_dst.scatter_(0, local_vertices_global, torch.arange(num_local, device=g2l_dst.device))
 
-    # Remap to local numbering
-    local_edge_list = g2l[local_edges_global]
+    if src_partitioning is None:
+        # Homogeneous: src and dst share one ID space and one remap table.
+        g2l_dst.scatter_(
+            0,
+            halo_vertices_global,
+            torch.arange(num_local, num_local + num_halo, device=g2l_dst.device),
+        )
+        g2l_src = g2l_dst
+    else:
+        # Heterogeneous/bipartite: halo vertices live in the (differently-sized)
+        # src vertex space, so they need their own remap table.
+        num_src_global = src_partitioning.size(0)
+        g2l_src = torch.empty(
+            num_src_global, dtype=torch.long, device=global_edge_list.device
+        )
+        g2l_src.scatter_(
+            0,
+            halo_vertices_global,
+            torch.arange(num_local, num_local + num_halo, device=g2l_src.device),
+        )
+
+    # Remap to local numbering: col0 via src table, col1 via dst table.
+    local_edge_list = torch.stack(
+        [g2l_src[local_edges_global[:, 0]], g2l_dst[local_edges_global[:, 1]]], dim=1
+    )
 
     return local_edge_list
 
@@ -168,25 +200,52 @@ def build_communication_pattern(
     partitioning: torch.Tensor,
     rank: int,
     world_size: int,
+    src_partitioning: Optional[torch.Tensor] = None,
 ) -> CommunicationPattern:
     """
 
     Args:
-        global_edge_list (torch.Tensor)): A tensor of shape [E, 2]
-        partitioning (torch.Tensor): A tensor of shape [V]
+        global_edge_list (torch.Tensor)): A tensor of shape [E, 2], col0=src/neighbor,
+            col1=dst/local (dst is always the aggregation target and is guaranteed local)
+        partitioning (torch.Tensor): A tensor of shape [V_dst]; the dst/local-vertex
+            partitioning
         rank (int): Rank of this process
         world_size (int): Total number of processes
+        src_partitioning (Optional[torch.Tensor]): A tensor of shape [V_src], the
+            partitioning of the (possibly differently-sized) neighbor/src vertex
+            space, for bipartite/heterogeneous relations. Defaults to `partitioning`
+            for homogeneous graphs.
 
     Returns:
         CommunicationPattern
     """
+    src_part = partitioning if src_partitioning is None else src_partitioning
+
     local_verts = compute_local_vertices(partitioning, rank)
-    halo_verts = compute_halo_vertices(global_edge_list, partitioning, rank)
+    src_local_verts = (
+        local_verts
+        if src_partitioning is None
+        else compute_local_vertices(src_partitioning, rank)
+    )
+
+    halo_verts = compute_halo_vertices(
+        global_edge_list, src_part, rank, dst_partitioning=partitioning
+    )
     local_edges = compute_local_edge_list(
-        global_edge_list, partitioning, local_verts, halo_verts, rank
+        global_edge_list,
+        partitioning,
+        local_verts,
+        halo_verts,
+        rank,
+        src_partitioning=src_partitioning,
     )
     send_idx, send_off = compute_boundary_vertices(
-        global_edge_list, partitioning, local_verts, rank, world_size
+        global_edge_list,
+        src_part,
+        src_local_verts,
+        rank,
+        world_size,
+        dst_partitioning=partitioning,
     )
     comm = compute_comm_map(send_off, world_size)
     recv_off, recv_back_off = compute_recv_offsets(comm, rank)

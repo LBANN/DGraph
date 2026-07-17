@@ -17,7 +17,7 @@ def partition_graph(G: nx.Graph, num_ranks: int):
     except ImportError:
         raise ImportError("Please install metis to use this function.")
     if num_ranks == 1:
-        return np.ones(len(G.nodes), dtype=int)
+        return np.zeros(len(G.nodes), dtype=int)
     if num_ranks < 1:
         raise ValueError("Number of ranks must be greater than 0.")
 

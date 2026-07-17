@@ -136,7 +136,9 @@ class GraphCastEncoder(nn.Module):
             output_node_dim=hidden_dim,
             hidden_dim=hidden_dim,
         )
-        self.grid_node_mlp = MeshGraphMLP(input_dim=hidden_dim, output_dim=hidden_dim)
+        self.grid_node_mlp = MeshGraphMLP(
+            input_dim=hidden_dim, output_dim=hidden_dim, hidden_dim=hidden_dim
+        )
 
     def forward(
         self,
@@ -145,10 +147,11 @@ class GraphCastEncoder(nn.Module):
         grid2mesh_edge_features: Tensor,
         comm_pattern: CommunicationPattern,
     ) -> Tuple[Tensor, Tensor]:
-        # local_edge_list: [E, 2] with [central=mesh, neighbor=grid/halo]
+        # local_edge_list: [E, 2] with [neighbor=grid/halo, central=mesh] (col1 is
+        # always the locally-owned aggregation target per CommunicationPattern's contract)
         edge_index = comm_pattern.local_edge_list
-        dst_indices = edge_index[:, 0]  # mesh (central, aggregation target)
-        src_indices = edge_index[:, 1]  # grid/halo (neighbor, message source)
+        src_indices = edge_index[:, 0]  # grid/halo (neighbor, message source)
+        dst_indices = edge_index[:, 1]  # mesh (central, aggregation target)
         num_local = comm_pattern.num_local_vertices
 
         with TimingReport("encoder/halo_exchange"):
@@ -227,10 +230,11 @@ class GraphCastProcessor(nn.Module):
         e_feats = embedded_mesh2mesh_edge_features
         n_feats = embedded_mesh_features
 
-        # local_edge_list: [E, 2] with [central=mesh_dst, neighbor=mesh_src]
+        # local_edge_list: [E, 2] with [neighbor=mesh_src, central=mesh_dst] (col1 is
+        # always the locally-owned aggregation target per CommunicationPattern's contract)
         edge_index = comm_pattern.local_edge_list
-        dst_indices = edge_index[:, 0]  # central (aggregation target)
-        src_indices = edge_index[:, 1]  # neighbor (message source)
+        src_indices = edge_index[:, 0]  # neighbor (message source)
+        dst_indices = edge_index[:, 1]  # central (aggregation target)
         num_local = comm_pattern.num_local_vertices
 
         for i, (edge_layer, node_layer) in enumerate(
@@ -308,10 +312,11 @@ class GraphCastDecoder(nn.Module):
         Returns:
             (Tensor): The updated grid node features
         """
-        # local_edge_list: [E, 2] with [central=grid, neighbor=mesh/halo]
+        # local_edge_list: [E, 2] with [neighbor=mesh/halo, central=grid] (col1 is
+        # always the locally-owned aggregation target per CommunicationPattern's contract)
         edge_index = comm_pattern.local_edge_list
-        dst_indices = edge_index[:, 0]  # grid (central, aggregation target)
-        src_indices = edge_index[:, 1]  # mesh/halo (neighbor, message source)
+        src_indices = edge_index[:, 0]  # mesh/halo (neighbor, message source)
+        dst_indices = edge_index[:, 1]  # grid (central, aggregation target)
         num_local = comm_pattern.num_local_vertices
 
         with TimingReport("decoder/halo_exchange"):
@@ -355,7 +360,9 @@ class DGraphCast(nn.Module):
         self.processor = GraphCastProcessor(cfg=cfg, comm=comm, *args, **kwargs)
         self.decoder = GraphCastDecoder(cfg=cfg, comm=comm, *args, **kwargs)
         self.final_prediction = MeshGraphMLP(
-            input_dim=self.hidden_dim, output_dim=self.output_grid_dim
+            input_dim=self.hidden_dim,
+            output_dim=self.output_grid_dim,
+            hidden_dim=self.hidden_dim,
         )
 
     def forward(

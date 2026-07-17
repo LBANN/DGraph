@@ -90,7 +90,13 @@ def build_graphcast_comm_patterns(graph: GraphCastTopology) -> GraphCastCommPatt
       src = vertex originating the message (neighbor)
       dst = vertex aggregating the message (central)
 
-    We swap into [central, neighbor] ordering for the comm pattern edge list.
+    DGraph.distributed.commInfo's CommunicationPattern contract guarantees
+    col1 of local_edge_list is always the locally-owned aggregation target
+    (dst/central); col0 is the neighbor (src), which may be a halo vertex.
+    We therefore keep the edge list in [src (neighbor), dst (central)] =
+    [col0, col1] order, i.e. unchanged message-flow order, and pass the two
+    endpoints' partitionings as (dst partitioning, src partitioning) for the
+    bipartite grid2mesh/mesh2grid relations.
     """
     rank = graph.rank
     world_size = graph.ranks_per_graph
@@ -98,31 +104,29 @@ def build_graphcast_comm_patterns(graph: GraphCastTopology) -> GraphCastCommPatt
     grid_part = graph.grid_rank_placement
 
     # --- grid2mesh ---
-    # Message flow: grid → mesh.  Central = mesh, neighbor = grid.
-    # Swap: message-flow (grid, mesh) → comm (mesh, grid) = (central, neighbor).
+    # Message flow: grid → mesh.  Central/dst = mesh, neighbor/src = grid.
     grid2mesh_edges = torch.stack(
         [
-            graph.grid2mesh_graph_dst_indices,  # mesh (central, col 0)
-            graph.grid2mesh_graph_src_indices,
-        ],  # grid (neighbor, col 1)
+            graph.grid2mesh_graph_src_indices,  # grid (neighbor, col 0)
+            graph.grid2mesh_graph_dst_indices,
+        ],  # mesh (central, col 1)
         dim=1,
     )
     grid2mesh_cp = build_communication_pattern(
         global_edge_list=grid2mesh_edges,
         partitioning=mesh_part,
+        src_partitioning=grid_part,
         rank=rank,
         world_size=world_size,
     )
 
     # --- mesh ↔ mesh ---
-    # Homogeneous, undirected.  Central = mesh, neighbor = mesh.
-    # Message-flow src/dst are both mesh — swap is identity, but we keep
-    # the convention: col 0 = dst (central), col 1 = src (neighbor).
+    # Homogeneous, undirected.  Central/dst = mesh, neighbor/src = mesh.
     mesh_edges = torch.stack(
         [
-            graph.mesh_graph_dst_indices,  # mesh (central, col 0)
-            graph.mesh_graph_src_indices,
-        ],  # mesh (neighbor, col 1)
+            graph.mesh_graph_src_indices,  # mesh (neighbor, col 0)
+            graph.mesh_graph_dst_indices,
+        ],  # mesh (central, col 1)
         dim=1,
     )
     mesh_cp = build_communication_pattern(
@@ -133,18 +137,18 @@ def build_graphcast_comm_patterns(graph: GraphCastTopology) -> GraphCastCommPatt
     )
 
     # --- mesh2grid ---
-    # Message flow: mesh → grid.  Central = grid, neighbor = mesh.
-    # Swap: message-flow (mesh, grid) → comm (grid, mesh) = (central, neighbor).
+    # Message flow: mesh → grid.  Central/dst = grid, neighbor/src = mesh.
     mesh2grid_edges = torch.stack(
         [
-            graph.mesh2grid_graph_dst_indices,  # grid (central, col 0)
-            graph.mesh2grid_graph_src_indices,
-        ],  # mesh (neighbor, col 1)
+            graph.mesh2grid_graph_src_indices,  # mesh (neighbor, col 0)
+            graph.mesh2grid_graph_dst_indices,
+        ],  # grid (central, col 1)
         dim=1,
     )
     mesh2grid_cp = build_communication_pattern(
         global_edge_list=mesh2grid_edges,
         partitioning=grid_part,
+        src_partitioning=mesh_part,
         rank=rank,
         world_size=world_size,
     )
@@ -333,6 +337,21 @@ class DistributedGraphCastGraphGenerator:
 
     def get_grid2mesh_graph(self, mesh_graph_dict: dict):
 
+        # SUSPECTED BUG (unverified -- flagged for review, not fixed here): this is
+        # named "mesh_vertex_rank_placement" but is actually
+        # mesh_graph_dict["mesh_vertex_renumbering"] = the SORT PERMUTATION from
+        # get_mesh_graph (renumbered_nodes: sorted_position -> original_vertex_id),
+        # not a rank-lookup-by-original-id array. get_grid_placement below then
+        # does mesh_vertex_rank_placement[grid2mesh_mesh_dst_indices], i.e. indexes
+        # the permutation by ORIGINAL mesh vertex ids (dst_mesh_indices, from
+        # create_grid2mesh_graph, pre-renumbering) -- this looks like it computes
+        # "original id of whichever vertex sorts to position == this original id",
+        # not "rank that owns this original vertex". The value actually needed
+        # (rank of an original-id vertex) isn't exposed by mesh_graph_dict at all;
+        # it would require the inverse of renumbered_nodes (computed locally inside
+        # get_mesh_graph as reverse_renumbered_nodes but never returned), composed
+        # with node_rank_placement. Not fixed pending confirmation this analysis is
+        # correct (untestable without GPU access to run and inspect actual values).
         mesh_vertex_rank_placement = mesh_graph_dict["mesh_vertex_renumbering"]
         max_edge_len = max_edge_length(
             self.finest_mesh_vertices, self.finest_mesh_src, self.finest_mesh_dst
@@ -356,13 +375,23 @@ class DistributedGraphCastGraphGenerator:
         contigous_edge_mapping, renumbered_edges = torch.sort(meshtogrid_edge_placement)
 
         src_grid_indices = src_grid_indices[renumbered_edges]
-        grid_vertex_rank_placement = torch.zeros_like(lat_lon_grid_flat)
+        # NOTE: must be a 1D tensor of length num_grid_vertices, NOT
+        # torch.zeros_like(lat_lon_grid_flat) (shape [num_grid_vertices, 2]) --
+        # the latter made torch.sort() below sort each row's 2 (duplicate) entries
+        # against each other instead of sorting across all grid vertices, silently
+        # corrupting grid_vertex_rank_placement/renumbered_grid into non-1D,
+        # non-permutation tensors that broke every downstream consumer (comm-pattern
+        # construction via build_communication_pattern, get_mesh2grid_edges's
+        # renumbered_grid[dst_grid_indices] lookup) at any world_size, including 1.
+        grid_vertex_rank_placement = torch.zeros(
+            lat_lon_grid_flat.shape[0], dtype=meshtogrid_edge_placement.dtype
+        )
         for i, rank in enumerate(meshtogrid_edge_placement):
             loc = src_grid_indices[i]
             grid_vertex_rank_placement[loc] = rank
 
         continuous_grid_mapping, renumbered_grid = torch.sort(
-            grid_vertex_rank_placement
+            grid_vertex_rank_placement, dim=0
         )
 
         grid2mesh_graph_dict = {
@@ -456,17 +485,47 @@ class DistributedGraphCastGraphGenerator:
 
         comm_patterns = build_graphcast_comm_patterns(topology)
 
+        # --- Slice node/edge feature tensors down to this rank's local partition ---
+        # HaloExchange (DGraph/distributed/haloExchange.py) expects x_local of shape
+        # [num_local, F]: only this rank's locally-owned vertices/edges, row-aligned
+        # with comm_patterns.*.local_edge_list's local numbering. mesh_graph/
+        # grid2mesh_graph/mesh2grid_graph's raw feature tensors are the FULL
+        # (renumbered-by-rank, but unfiltered) global set, so they must be filtered
+        # here with the exact same masks build_communication_pattern used internally
+        # (vertex: placement==rank; edge: dst-owned-by-rank) so rows stay aligned.
+        rank = topology.rank
+
+        mesh_node_local_mask = mesh_vertex_rank_placement == rank
+        local_mesh_node_features = mesh_graph["node_features"][mesh_node_local_mask]
+
+        mesh_edge_local_mask = mesh_vertex_rank_placement[mesh_graph["dst_indices"]] == rank
+        local_mesh_edge_features = mesh_graph["edge_features"][mesh_edge_local_mask]
+
+        grid2mesh_edge_local_mask = (
+            mesh_vertex_rank_placement[grid2mesh_graph["dst_indices"]] == rank
+        )
+        local_grid2mesh_edge_features = grid2mesh_graph["edge_features"][
+            grid2mesh_edge_local_mask
+        ]
+
+        mesh2grid_edge_local_mask = (
+            grid_vertex_rank_placement[mesh2grid_graph["dst_indices"]] == rank
+        )
+        local_mesh2grid_edge_features = mesh2grid_graph["edge_features"][
+            mesh2grid_edge_local_mask
+        ]
+
         return DistributedGraphCastGraph(
             rank=self.rank,
             world_size=self.world_size,
             ranks_per_graph=self.ranks_per_graph,
             mesh_level=self.mesh_level,
             lat_lon_grid=self.lat_lon_grid,
-            mesh_graph_node_features=mesh_graph["node_features"],
-            mesh_graph_edge_features=mesh_graph["edge_features"],
+            mesh_graph_node_features=local_mesh_node_features,
+            mesh_graph_edge_features=local_mesh_edge_features,
             mesh2grid_graph_node_features=torch.tensor([]),
             grid2mesh_graph_node_features=grid2mesh_graph["node_features"],
-            mesh2grid_graph_edge_features=mesh2grid_graph["edge_features"],
-            grid2mesh_graph_edge_features=grid2mesh_graph["edge_features"],
+            mesh2grid_graph_edge_features=local_mesh2grid_edge_features,
+            grid2mesh_graph_edge_features=local_grid2mesh_edge_features,
             distributed_comm_patterns=comm_patterns,
         )

@@ -22,6 +22,15 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
     def get_world_size(self):
         return self._world_size
 
+    def init_process_group(self, backend: str, **kwargs):
+        pass
+
+    def barrier(self) -> None:
+        pass
+
+    def destroy(self) -> None:
+        pass
+
     def scatter(
         self, tensor: torch.Tensor, src: torch.Tensor, rank_mappings, num_local_nodes
     ):
