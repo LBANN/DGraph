@@ -43,7 +43,9 @@ def build_comm(mode: str, backend: str, world_size: int):
     return Communicator.init_process_group(backend, ranks_per_graph=world_size)
 
 
-def load_partition(partition_dir: str, mesh_level: int, world_size: int) -> torch.Tensor:
+def load_partition(
+    partition_dir: str, mesh_level: int, world_size: int
+) -> torch.Tensor:
     path = os.path.join(
         partition_dir, f"mesh_vertex_rank_placement_L{mesh_level}_W{world_size}.pt"
     )
@@ -208,7 +210,9 @@ def run_correctness_check(
 
     dataset = build_dataset(cfg, mesh_level, partition, rank, world_size, device)
     static_graph = dataset.get_static_graph()
-    num_local_actual = static_graph.distributed_comm_patterns.mesh2grid.num_local_vertices
+    num_local_actual = (
+        static_graph.distributed_comm_patterns.mesh2grid.num_local_vertices
+    )
 
     gathered = [None] * world_size
     dist.all_gather_object(gathered, (rank, num_local_expected, num_local_actual))
@@ -216,15 +220,21 @@ def run_correctness_check(
 
     if rank == 0:
         if step1_ok:
-            print("[correctness] STEP 1 PASS: dataset chunk size vs grid_part local "
-                  "vertex count agree on every rank.")
+            print(
+                "[correctness] STEP 1 PASS: dataset chunk size vs grid_part local "
+                "vertex count agree on every rank."
+            )
         else:
             mismatches = [(r, e, a) for (r, e, a) in gathered if e != a]
-            print(f"[correctness] STEP 1 FAIL: per-rank (rank, expected, actual) "
-                  f"mismatches: {mismatches}")
-            print("[correctness] Halting -- do not trust world_size>1 benchmark "
-                  "numbers until this is resolved (see plan's known dataset.py vs "
-                  "grid_part mismatch).")
+            print(
+                f"[correctness] STEP 1 FAIL: per-rank (rank, expected, actual) "
+                f"mismatches: {mismatches}"
+            )
+            print(
+                "[correctness] Halting -- do not trust world_size>1 benchmark "
+                "numbers until this is resolved (see plan's known dataset.py vs "
+                "grid_part mismatch)."
+            )
     dist.barrier()
     if not step1_ok:
         return False
@@ -235,12 +245,17 @@ def run_correctness_check(
     # Recover this run's grid renumbering (original grid index for each
     # renumbered/rank-sorted slot) without re-triggering comm-pattern construction.
     dist_generator = DistributedGraphCastGraphGenerator(
-        lat_lon_grid, mesh_level=mesh_level, ranks_per_graph=world_size,
-        rank=rank, world_size=world_size,
+        lat_lon_grid,
+        mesh_level=mesh_level,
+        ranks_per_graph=world_size,
+        rank=rank,
+        world_size=world_size,
     )
     dist_mesh_graph = dist_generator.get_mesh_graph(partition)
     dist_grid2mesh = dist_generator.get_grid2mesh_graph(dist_mesh_graph)
-    dist_renumbered_grid = dist_grid2mesh["renumbered_grid"]  # [N_grid] -> original grid idx
+    dist_renumbered_grid = dist_grid2mesh[
+        "renumbered_grid"
+    ]  # [N_grid] -> original grid idx
     dist_grid_placement = dist_grid2mesh["grid_vertex_rank_placement"]  # sorted by rank
 
     local_mask = dist_grid_placement == rank
@@ -270,7 +285,9 @@ def run_correctness_check(
     ref_input = canonical_input[ref_renumbered_grid].unsqueeze(0).to(device)
 
     with torch.no_grad():
-        ref_pred = ref_model(ref_input, ref_static_graph)  # [N_grid, C], ref-renumbered order
+        ref_pred = ref_model(
+            ref_input, ref_static_graph
+        )  # [N_grid, C], ref-renumbered order
 
     ref_pred_original_order = torch.zeros_like(ref_pred)
     ref_pred_original_order[ref_renumbered_grid.to(device)] = ref_pred
@@ -296,12 +313,16 @@ def run_correctness_check(
     if rank == 0:
         all_close = all(c for (_, c, _, _) in gathered2)
         if all_close:
-            print(f"[correctness] STEP 2 PASS: all ranks match reference within "
-                  f"atol={atol}, rtol={rtol}. Per-rank (rank, close, max_abs_diff, "
-                  f"max_rel_diff): {gathered2}")
+            print(
+                f"[correctness] STEP 2 PASS: all ranks match reference within "
+                f"atol={atol}, rtol={rtol}. Per-rank (rank, close, max_abs_diff, "
+                f"max_rel_diff): {gathered2}"
+            )
         else:
-            print(f"[correctness] STEP 2 FAIL. Per-rank (rank, close, max_abs_diff, "
-                  f"max_rel_diff): {gathered2}")
+            print(
+                f"[correctness] STEP 2 FAIL. Per-rank (rank, close, max_abs_diff, "
+                f"max_rel_diff): {gathered2}"
+            )
         return all_close
     return close
 
@@ -321,7 +342,9 @@ def main(
     correctness_rtol: float = 1e-3,
 ) -> None:
     assert mode in ("single", "distributed"), "mode must be 'single' or 'distributed'"
-    assert batch_size == 1, "only batch_size=1 is supported (matches GraphCast's one-step inference)"
+    assert (
+        batch_size == 1
+    ), "only batch_size=1 is supported (matches GraphCast's one-step inference)"
     assert not correctness or mode == "distributed", (
         "--correctness checks cross-rank partitioning; run it with --mode distributed "
         "(and --nproc_per_node >= 2), not --mode single"
@@ -343,12 +366,22 @@ def main(
     if correctness:
         if world_size < 2:
             if rank == 0:
-                print("[correctness] world_size < 2: nothing to check (single-GPU "
-                      "baseline has no cross-rank partitioning to verify).")
+                print(
+                    "[correctness] world_size < 2: nothing to check (single-GPU "
+                    "baseline has no cross-rank partitioning to verify)."
+                )
             return
         ok = run_correctness_check(
-            cfg, mesh_level, comm, partition_dir, rank, world_size, device,
-            seed, correctness_atol, correctness_rtol,
+            cfg,
+            mesh_level,
+            comm,
+            partition_dir,
+            rank,
+            world_size,
+            device,
+            seed,
+            correctness_atol,
+            correctness_rtol,
         )
         if rank == 0:
             print(f"[correctness] Overall: {'PASS' if ok else 'FAIL'}")
@@ -378,27 +411,39 @@ def main(
 
     if any_oom:
         if rank == 0:
-            print(f"[inference_benchmark] OOM at mode={mode} mesh_level={mesh_level} "
-                  f"world_size={world_size} (per-rank oom={oom_flags}) -- infeasible "
-                  f"at this scale on this hardware, not a benchmark failure.")
+            print(
+                f"[inference_benchmark] OOM at mode={mode} mesh_level={mesh_level} "
+                f"world_size={world_size} (per-rank oom={oom_flags}) -- infeasible "
+                f"at this scale on this hardware, not a benchmark failure."
+            )
             payload = {
                 "benchmark": "graphcast_inference",
                 "metadata": collect_metadata(),
                 "config": {
-                    "mode": mode, "backend": backend, "world_size": world_size,
-                    "mesh_level": mesh_level, "hidden_dim": cfg.model.hidden_dim,
+                    "mode": mode,
+                    "backend": backend,
+                    "world_size": world_size,
+                    "mesh_level": mesh_level,
+                    "hidden_dim": cfg.model.hidden_dim,
                     "processor_layers": cfg.model.processor_layers,
-                    "batch_size": batch_size, "warmup_iters": warmup_iters,
-                    "measure_iters": measure_iters, "seed": seed,
+                    "batch_size": batch_size,
+                    "warmup_iters": warmup_iters,
+                    "measure_iters": measure_iters,
+                    "seed": seed,
                 },
-                "measurements": [{
-                    "params": {"world_size": world_size, "mesh_level": mesh_level},
-                    "oom": True,
-                    "oom_per_rank": oom_flags,
-                }],
+                "measurements": [
+                    {
+                        "params": {"world_size": world_size, "mesh_level": mesh_level},
+                        "oom": True,
+                        "oom_per_rank": oom_flags,
+                    }
+                ],
             }
             write_result(
-                os.path.join(output_dir, f"graphcast_infer_{mode}_W{world_size}_L{mesh_level}.json"),
+                os.path.join(
+                    output_dir,
+                    f"graphcast_infer_{mode}_W{world_size}_L{mesh_level}.json",
+                ),
                 payload,
             )
         return
@@ -420,26 +465,35 @@ def main(
             "benchmark": "graphcast_inference",
             "metadata": collect_metadata(),
             "config": {
-                "mode": mode, "backend": backend, "world_size": world_size,
-                "mesh_level": mesh_level, "hidden_dim": cfg.model.hidden_dim,
+                "mode": mode,
+                "backend": backend,
+                "world_size": world_size,
+                "mesh_level": mesh_level,
+                "hidden_dim": cfg.model.hidden_dim,
                 "processor_layers": cfg.model.processor_layers,
-                "batch_size": batch_size, "warmup_iters": warmup_iters,
-                "measure_iters": measure_iters, "seed": seed,
+                "batch_size": batch_size,
+                "warmup_iters": warmup_iters,
+                "measure_iters": measure_iters,
+                "seed": seed,
             },
-            "measurements": [{
-                "params": {"world_size": world_size, "mesh_level": mesh_level},
-                "end_to_end_latency_ms": latency_summary,
-                "throughput_grid_points_per_sec": throughput,
-                "peak_memory_bytes": {
-                    "per_rank": peak_memory_list,
-                    "max": max(m for m in peak_memory_list if m is not None),
-                },
-                "phase_breakdown_ms": phase_breakdown,
-                "per_rank_end_to_end_trials_ms": trials_list,
-            }],
+            "measurements": [
+                {
+                    "params": {"world_size": world_size, "mesh_level": mesh_level},
+                    "end_to_end_latency_ms": latency_summary,
+                    "throughput_grid_points_per_sec": throughput,
+                    "peak_memory_bytes": {
+                        "per_rank": peak_memory_list,
+                        "max": max(m for m in peak_memory_list if m is not None),
+                    },
+                    "phase_breakdown_ms": phase_breakdown,
+                    "per_rank_end_to_end_trials_ms": trials_list,
+                }
+            ],
         }
         write_result(
-            os.path.join(output_dir, f"graphcast_infer_{mode}_W{world_size}_L{mesh_level}.json"),
+            os.path.join(
+                output_dir, f"graphcast_infer_{mode}_W{world_size}_L{mesh_level}.json"
+            ),
             payload,
         )
         print(
@@ -447,6 +501,10 @@ def main(
             f"mesh_level={mesh_level}: p50={latency_summary['p50']:.2f}ms "
             f"throughput={throughput:.1f} grid-points/sec"
         )
+
+    if mode == "distributed":
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
