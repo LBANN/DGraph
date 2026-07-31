@@ -113,9 +113,23 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
     net = primitives.get("network", {})
 
     def net_time(nbytes: int, mode: str) -> float:
-        params = net.get(mode, None)
-        if params is None or nbytes == 0:
+        if nbytes == 0:
             return 0.0
+        params = net.get(mode, None)
+        if params is None:
+            # A missing network fit is fine when this mode never carries
+            # traffic (e.g. single-node runs never have inter-node bytes,
+            # so "inter" is legitimately absent). But if a run actually
+            # has nonzero bytes for this mode, silently treating them as
+            # zero-cost would bias T_comm and every downstream prediction/
+            # overhead fit without any signal that it happened.
+            raise ValueError(
+                f"per_rank_stats has {nbytes} bytes of {mode}-node "
+                f"communication but fitted_primitives.json has no '{mode}' "
+                f"network fit. Re-run fit_primitives.py with "
+                f"--pingpong-{mode} data, or confirm this run should never "
+                f"have {mode}-node traffic in the first place."
+            )
         B = params.get("bandwidth_bytes_per_sec", 1e10)
         t_L = params.get("latency_seconds", 0.0)
         return t_L + nbytes / B
