@@ -74,7 +74,6 @@ def benchmark_ogb_end_to_end(
         out_channels=num_classes,
         num_layers=num_layers,
         halo_exchanger=halo_exchanger,
-        is_sparse=True,
     ).to(device)
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     optimizer = optim.Adam(model.parameters(), lr=lr)

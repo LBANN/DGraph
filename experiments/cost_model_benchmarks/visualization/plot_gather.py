@@ -45,50 +45,36 @@ def fitted_gather(
     min_val,
     max_val,
     feature_dim,
-    hbm_bandwidth_bytes_per_sec,
-    l2_bandwidth_bytes_per_sec,
+    bandwidth_bytes_per_sec,
     launch_overhead_seconds,
-    L2_thresh,
-    HBM_thresh,
 ):
-    """Return a function that models gather time as a function of k."""
+    """Sample the fitted Hockney gather curve over a range of k values.
 
-    def time_model(b, overhead, inv_bw_L2, inv_bw_HBM, L2_thresh, HBM_thresh):
-        # 1. Bucket the bytes into their respective physical regimes
-        # Bytes processed exclusively at L2 speeds
-        bytes_L2 = np.clip(b, 0, L2_thresh)
-        # Bytes processed exclusively at HBM speeds
-        bytes_HBM = np.maximum(0, b - HBM_thresh)
-
-        # 2. Apply the specific bandwidth (slope) to each bucket
-        t_mem = (bytes_L2 * inv_bw_L2) + (bytes_HBM * inv_bw_HBM)
-
-        # 3. Floor the total time by the kernel launch overhead
-        return np.maximum(overhead, t_mem)
-
-    x = np.linspace(min_val, max_val, 100)
-    inv_bw_L2 = 1.0 / l2_bandwidth_bytes_per_sec
-    inv_bw_HBM = 1.0 / hbm_bandwidth_bytes_per_sec
-    y = (
-        time_model(
-            x * feature_dim * 4.0,
-            launch_overhead_seconds,
-            inv_bw_L2,
-            inv_bw_HBM,
-            L2_thresh,
-            HBM_thresh,
-        )
-        * 1e3
-    )
+    Mirrors ``time_model`` in ``analysis/fit_primitives.py::fit_gather``:
+    ``T(bytes) = launch_overhead + bytes / B_gather``. Returns (k, T_ms).
+    """
+    # Log-spaced, since the k sweep itself is log-spaced and the plot's x
+    # axis is logarithmic — linspace would leave the low decades unsampled
+    # and render the curve as a straight chord across them.
+    x = np.logspace(np.log10(min_val), np.log10(max_val), 200)
+    y = (launch_overhead_seconds + x * feature_dim * 4.0 / bandwidth_bytes_per_sec) * 1e3
     return x, y
 
 
 def load_gather_file(paths: list, timing_key: str):
-    """Merge multiple JSON files, return sorted (k, median, q25, q75) arrays."""
+    """Merge multiple JSON files, return sorted (k, median, q25, q75) arrays
+    plus the feature_dim the runs were measured at.
+
+    feature_dim must come from the data, not a hardcoded constant: it sets the
+    bytes-per-index (``k * feature_dim * 4``) used to evaluate the fitted
+    curve, so a wrong value tilts the overlay by exactly that ratio.
+    """
     rows = []
+    feature_dims = set()
     for p in paths:
         with open(p) as f:
             data = json.load(f)
+        feature_dims.add(data["config"]["feature_dim"])
         for meas in data["measurements"]:
             trials = np.array(meas[timing_key])
             rows.append(
@@ -104,7 +90,13 @@ def load_gather_file(paths: list, timing_key: str):
     med_arr = np.array([r[1] for r in rows])
     q25_arr = np.array([r[2] for r in rows])
     q75_arr = np.array([r[3] for r in rows])
-    return k_arr, med_arr, q25_arr, q75_arr
+    if len(feature_dims) > 1:
+        raise ValueError(
+            f"Merged gather files have mismatched feature_dim values "
+            f"{sorted(feature_dims)}; the bytes-per-index conversion is only "
+            "well-defined for one. Plot them separately."
+        )
+    return k_arr, med_arr, q25_arr, q75_arr, feature_dims.pop()
 
 
 def parse_args():
@@ -139,7 +131,7 @@ def main():
     ]:
         if not files:
             continue
-        k, med, q25, q75 = load_gather_file(files, timing_key)
+        k, med, q25, q75, feature_dim = load_gather_file(files, timing_key)
         min_k = k[0]
         max_k = k[-1]
         color = COLORS[dist_name]
@@ -157,28 +149,13 @@ def main():
         )
 
         if args.fitted:
-            hbm_bw = primitives["gather"][dist_name]["gather"][
-                "bandwidth_bytes_per_sec"
-            ]
-            l2_bw = primitives["gather"][dist_name]["gather"][
-                "L2_bandwidth_bytes_per_sec"
-            ]
-            overhead = primitives["gather"][dist_name]["gather"][
-                "launch_overhead_seconds"
-            ]
-            thresh = primitives["gather"][dist_name]["gather"]["L2_inflection_bytes"]
-            hbm_thresh = primitives["gather"][dist_name]["gather"][
-                "HBM_inflection_bytes"
-            ]
+            fit = primitives["gather"][dist_name][args.operation]
             x, y = fitted_gather(
                 min_k,
                 max_k,
-                feature_dim=512,
-                hbm_bandwidth_bytes_per_sec=hbm_bw,
-                l2_bandwidth_bytes_per_sec=l2_bw,
-                launch_overhead_seconds=overhead,
-                L2_thresh=thresh,
-                HBM_thresh=hbm_thresh,
+                feature_dim=feature_dim,
+                bandwidth_bytes_per_sec=fit["bandwidth_bytes_per_sec"],
+                launch_overhead_seconds=fit["launch_overhead_seconds"],
             )
             ax.plot(
                 x * 1e-6,

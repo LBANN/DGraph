@@ -164,6 +164,60 @@ def setup_distributed() -> tuple[int, int, int]:
 
 
 # ---------------------------------------------------------------------------
+# Rank placement
+# ---------------------------------------------------------------------------
+
+
+def gather_node_of_rank() -> list:
+    """Return a list mapping each rank -> an opaque node identifier.
+
+    Derived from the actual hostname each rank is running on, so it reflects
+    real placement rather than an assumed ``rank // ranks_per_node`` layout.
+    Collective: every rank must call it.
+    """
+    hostnames = [None] * dist.get_world_size()
+    dist.all_gather_object(hostnames, socket.gethostname())
+    return hostnames
+
+
+def assert_placement(expected_same_node: list, context: str = "") -> None:
+    """Verify the real rank->node placement matches what a benchmark assumes.
+
+    ``expected_same_node`` is a list of (rank_a, rank_b, same) triples: *same*
+    is True if the benchmark requires the two ranks to be co-located, False if
+    it requires them to be on different nodes.
+
+    Benchmarks that measure intra- vs inter-node traffic encode their layout
+    assumption implicitly (in a ``--mode`` label, or a hardcoded peer map).
+    Nothing about the launch command enforces it, so a wrong ``--nnodes`` /
+    ``--nproc_per_node`` combination would silently mislabel intra-node
+    numbers as inter-node (or vice versa) and quietly corrupt the
+    hierarchical network fit that ``T_comm = max(T_intra, T_inter)`` rests on.
+    Fail loudly instead.
+    """
+    node_of = gather_node_of_rank()
+    problems = []
+    for rank_a, rank_b, same in expected_same_node:
+        actually_same = node_of[rank_a] == node_of[rank_b]
+        if actually_same != same:
+            problems.append(
+                f"  ranks {rank_a} and {rank_b} must be on "
+                f"{'the SAME node' if same else 'DIFFERENT nodes'}, but rank "
+                f"{rank_a} is on {node_of[rank_a]!r} and rank {rank_b} is on "
+                f"{node_of[rank_b]!r}"
+            )
+    if problems:
+        raise RuntimeError(
+            f"Rank placement does not match what this benchmark requires"
+            f"{' (' + context + ')' if context else ''}:\n"
+            + "\n".join(problems)
+            + f"\n\nObserved rank -> host mapping: {list(enumerate(node_of))}\n"
+            "Fix the launcher's --nnodes/--nproc_per_node (torchrun) or "
+            "-N/--ntasks-per-node (srun) so the layout matches."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Seeding
 # ---------------------------------------------------------------------------
 

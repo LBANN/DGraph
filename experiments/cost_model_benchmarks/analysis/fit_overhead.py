@@ -32,28 +32,21 @@ import numpy as np
 # Cost model (without overhead)
 # ---------------------------------------------------------------------------
 
-def _gather_piecewise_time(nbytes: float, params: dict) -> float:
-    """Evaluate the fitted piecewise L2-cache/HBM-bandwidth gather model for
-    a single byte count. Mirrors ``time_model`` in
-    ``analysis/fit_primitives.py::fit_gather`` exactly — this is the single
-    place both ``predict_layer_time`` and ``compute_predictions.py`` should
-    call, rather than re-deriving a simplified linear approximation.
+def _gather_time(nbytes: float, params: dict) -> float:
+    """Evaluate the fitted Hockney gather model for a single byte count:
+
+        T(bytes) = launch_overhead + bytes / B_gather
+
+    Mirrors ``time_model`` in ``analysis/fit_primitives.py::fit_gather``
+    exactly — this is the single place both ``predict_layer_time`` and
+    ``compute_predictions.py`` should call, rather than re-deriving an
+    approximation of it.
     """
     overhead = params.get("launch_overhead_seconds", 0.0)
-    bw_HBM = params.get("bandwidth_bytes_per_sec")
-    bw_L2 = params.get("L2_bandwidth_bytes_per_sec")
-    if not bw_HBM or not bw_L2:
+    bw = params.get("bandwidth_bytes_per_sec")
+    if not bw or not np.isfinite(bw):
         return overhead
-
-    inv_bw_L2 = 1.0 / bw_L2
-    inv_bw_HBM = 1.0 / bw_HBM
-    L2_thresh = params.get("L2_inflection_bytes", 0.0)
-    HBM_thresh = params.get("HBM_inflection_bytes", 0.0)
-
-    bytes_L2 = min(max(nbytes, 0.0), L2_thresh)
-    bytes_HBM = max(0.0, nbytes - HBM_thresh)
-    t_mem = bytes_L2 * inv_bw_L2 + bytes_HBM * inv_bw_HBM
-    return max(overhead, t_mem)
+    return overhead + max(nbytes, 0.0) / bw
 
 
 def predict_layer_time(run_config: dict, per_rank_stats: dict,
@@ -149,12 +142,12 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
     T_inter = max(net_time(inter_bytes, "inter"), 0.0)
     T_comm = max(T_intra, T_inter)
 
-    # T_buffer_copy (gather of send buffer) — uses the fitted piecewise
-    # L2/HBM model, not a simplified single-slope linear stand-in.
+    # T_buffer_copy (gather of send buffer) — uses the fitted Hockney gather
+    # model, evaluated by the same function fit_gather fits.
     send_bytes = per_rank_stats.get("send_total", 0) * F * 4
     gath_params = primitives.get("gather", {}).get("clustered", {}).get("gather", None)
     if gath_params and send_bytes > 0:
-        T_buffer_copy = _gather_piecewise_time(send_bytes, gath_params)
+        T_buffer_copy = _gather_time(send_bytes, gath_params)
     else:
         T_buffer_copy = 0.0
     T_buffer_copy = max(T_buffer_copy, 0.0)

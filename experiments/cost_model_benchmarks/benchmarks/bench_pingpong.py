@@ -21,6 +21,7 @@ import torch
 import torch.distributed as dist
 
 from benchmarks.common import (
+    assert_placement,
     collect_metadata,
     seed_everything,
     setup_distributed,
@@ -95,6 +96,16 @@ def main():
 
     if world_size != 2:
         raise ValueError(f"bench_pingpong requires exactly 2 ranks, got {world_size}")
+
+    # --mode is only a label written into the output JSON; it does not change
+    # which ranks talk to each other (always 0 <-> 1). Verify the launcher
+    # actually placed those two ranks the way the label claims, so an
+    # --nnodes/--nproc_per_node mistake can't silently produce intra-node
+    # timings filed as inter-node (or vice versa).
+    assert_placement(
+        [(0, 1, args.mode == "intra")],
+        context=f"--mode {args.mode}",
+    )
 
     seed_everything(args.seed)
     device = torch.device(f"cuda:{local_rank}")

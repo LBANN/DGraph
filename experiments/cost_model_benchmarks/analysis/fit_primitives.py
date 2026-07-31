@@ -178,7 +178,7 @@ def fit_compute(records: list, timing_key: str = "forward_trials_seconds") -> di
 
 
 # ---------------------------------------------------------------------------
-# Gather fit: T = intercept + max(overhead, bytes / B_gather)
+# Gather fit: T = launch_overhead + bytes / B_gather  (Hockney)
 # ---------------------------------------------------------------------------
 
 
@@ -199,63 +199,57 @@ def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict
 
     bytes_arr = k_arr * F_arr * 4.0  # float32
 
-    # 1. The Piecewise Linear Model (No Logarithms)
-    def time_model(b, overhead, inv_bw_L2, inv_bw_HBM, L2_thresh, HBM_thresh):
-        # 1. Bucket the bytes into their respective physical regimes
-        # Bytes processed exclusively at L2 speeds
-        bytes_L2 = np.clip(b, 0, L2_thresh)
-        # Bytes processed exclusively at HBM speeds
-        bytes_HBM = np.maximum(0, b - HBM_thresh)
+    # Hockney model: a fixed per-kernel launch/setup cost plus a linear
+    # bandwidth term.
+    #
+    #     T(bytes) = launch_overhead + bytes / B_gather
+    #
+    # This replaces an earlier 5-parameter piecewise "L2-cache vs HBM
+    # bandwidth" model. That model was unidentifiable on this benchmark's
+    # data and fit garbage: because it capped the L2 term at L2_thresh but
+    # only started the HBM term at a *separate*, larger HBM_thresh, every
+    # byte count between the two thresholds had zero marginal cost — a flat
+    # plateau spanning most of the sweep. It routinely converged with
+    # B_L2 far SLOWER than B_HBM (physically backwards) and R² as low as
+    # 0.60.
+    #
+    # The measured curve shows no two-regime structure to fit in the first
+    # place: effective bandwidth rises smoothly to a single asymptote, and
+    # the smallest transfers in the sweep are already large enough that any
+    # cache effect is masked by the launch-overhead floor. Two parameters
+    # are what the data supports, and this is the same Hockney form
+    # fit_network uses for the interconnect (R² >= 0.999 here).
+    def time_model(b, overhead, inv_bw):
+        return overhead + b * inv_bw
 
-        # 2. Apply the specific bandwidth (slope) to each bucket
-        t_mem = (bytes_L2 * inv_bw_L2) + (bytes_HBM * inv_bw_HBM)
-
-        # 3. Floor the total time by the kernel launch overhead
-        return np.maximum(overhead, t_mem)
-
-    # 2. Strategic initial guesses
     min_T, max_T = float(np.min(T_arr)), float(np.max(T_arr))
     max_b = float(np.max(bytes_arr))
-
-    # The asymptotic slope is the difference in max/min time over max bytes
-    inv_bw_HBM_guess = (max_T - min_T) / (max_b + 1e-9)
-
-    p0 = [
-        min_T,  # overhead
-        inv_bw_HBM_guess * 0.3,  # inv_bw_L2
-        inv_bw_HBM_guess,  # inv_bw_HBM
-        max_b * 0.00001,  # L2_thresh
-        max_b * 0.001,  # HBM_thresh
-    ]
+    p0 = [min_T, (max_T - min_T) / (max_b + 1e-9)]
 
     try:
-        bounds = ([0, 0, 0, 0, 0], [np.inf, np.inf, np.inf, max_b, max_b])
-
-        # 3. The Magic Fix: sigma=T_arr weights the fit by relative error
+        # sigma=T_arr weights residuals by relative error, consistent with
+        # fit_network/fit_compute — byte counts span ~4 orders of magnitude,
+        # so an unweighted fit would be dominated by the largest transfers.
         popt, _ = curve_fit(
             time_model,
             bytes_arr,
             T_arr,
             p0=p0,
-            bounds=bounds,
+            bounds=([0, 0], [np.inf, np.inf]),
             method="trf",
             sigma=T_arr,
             absolute_sigma=False,
         )
-        overhead, inv_bw_L2, inv_bw_HBM, L2_thresh, HBM_thresh = popt
+        overhead, inv_bw = popt
 
     except Exception as e:
         print(f"Fit failed: {e}")
-        overhead = inv_bw_L2 = inv_bw_HBM = L2_thresh = HBM_thresh = np.nan
+        overhead = inv_bw = np.nan
 
-    bw_HBM = 1.0 / inv_bw_HBM if inv_bw_HBM > 0 else float("nan")
-    bw_L2 = 1.0 / inv_bw_L2 if inv_bw_L2 > 0 else float("nan")
+    bw = 1.0 / inv_bw if inv_bw > 0 else float("nan")
 
-    # 3. Calculate linear R-squared in linear space
     if not np.isnan(overhead):
-        T_pred = time_model(
-            bytes_arr, overhead, inv_bw_L2, inv_bw_HBM, L2_thresh, HBM_thresh
-        )
+        T_pred = time_model(bytes_arr, overhead, inv_bw)
         ss_res = np.sum((T_arr - T_pred) ** 2)
         ss_tot = np.sum((T_arr - np.mean(T_arr)) ** 2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else float("nan")
@@ -263,17 +257,12 @@ def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict
         r_squared = float("nan")
 
     print(
-        f" Fitted gather: overhead={overhead*1e3:.3f} ms ",
-        f"BW_L2={bw_L2/1e9:.2f} GB/s  BW_HBM={bw_HBM/1e9:.2f} GB/s  "
-        f"L2_thresh={L2_thresh/1e6:.2f} MB  HBM_thresh={HBM_thresh/1e6:.2f} MB  "
-        f"R²={r_squared:.4f}",
+        f" Fitted gather: launch_overhead={overhead*1e6:.2f} us  "
+        f"BW={bw/1e9:.2f} GB/s  R²={r_squared:.4f}"
     )
 
     return {
-        "bandwidth_bytes_per_sec": bw_HBM,
-        "L2_bandwidth_bytes_per_sec": bw_L2,
-        "L2_inflection_bytes": L2_thresh,
-        "HBM_inflection_bytes": HBM_thresh,
+        "bandwidth_bytes_per_sec": bw,
         "launch_overhead_seconds": overhead,
         "r_squared": r_squared,
     }

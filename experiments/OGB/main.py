@@ -115,7 +115,6 @@ def _run_experiment(
         out_channels=num_classes,
         num_layers=3,
         halo_exchanger=halo_exchanger,
-        is_sparse=True,
     ).to(device)
 
     if comm.get_world_size() > 1:

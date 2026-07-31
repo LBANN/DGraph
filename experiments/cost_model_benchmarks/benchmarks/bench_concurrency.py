@@ -28,6 +28,7 @@ import torch
 import torch.distributed as dist
 
 from benchmarks.common import (
+    assert_placement,
     collect_metadata,
     seed_everything,
     setup_distributed,
@@ -127,6 +128,17 @@ def main():
             f"bench_concurrency requires exactly 4 ranks (got {world_size}).\n"
             "Layout: rank 0,1 on node A; rank 2,3 on node B."
         )
+
+    # The peer maps below hardcode "ranks 0,1 on node A; ranks 2,3 on node B".
+    # Nothing in the launch command enforces that, and running all 4 ranks on
+    # one node would make the "inter" peers actually intra-node — silently
+    # turning the overlap measurement (which the whole
+    # T_comm = max(T_intra, T_inter) assumption rests on) into a comparison of
+    # intra-node against intra-node.
+    assert_placement(
+        [(0, 1, True), (2, 3, True), (0, 2, False)],
+        context="layout: ranks 0,1 on node A; ranks 2,3 on node B",
+    )
 
     seed_everything(args.seed)
     device = torch.device(f"cuda:{local_rank}")
