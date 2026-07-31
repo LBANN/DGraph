@@ -34,6 +34,14 @@ E2E_VERTEX_SIZES=(${E2E_VERTEX_SIZES:-10000 100000 1000000})
 DATA_DIR=${DATA_DIR:-data}
 FIG_DIR=${FIG_DIR:-figures}
 
+# fit_overhead.py / compute_predictions.py default to "world_size <= 8",
+# which never holds anything out for a single-node run limited to <=8 GPUs
+# (held-out MAPE would always report NaN over an empty set). Hold out the
+# largest swept GPU count instead, so held-out MAPE reflects genuine
+# extrapolation across the GPU_COUNTS actually being run.
+MAX_GPU_COUNT=$(printf '%s\n' "${GPU_COUNTS[@]}" | sort -n | tail -1)
+FIT_FILTER=${FIT_FILTER:-"world_size < ${MAX_GPU_COUNT}"}
+
 mkdir -p "$DATA_DIR" "$FIG_DIR"
 
 step() { echo; echo "=== $* ==="; }
@@ -102,6 +110,18 @@ for K in "${GPU_COUNTS[@]}"; do
   done
 done
 
+# Explicit list of exactly the e2e files this script just produced — not a
+# e2e_*.json wildcard glob, which would also match any stray file sharing
+# that prefix (e.g. a leftover data/e2e_K8_F128_er_bal.json from manually
+# running a docstring example) and silently pool it into the fit/held-out
+# split as if it were part of this run's matrix.
+E2E_FILES=()
+for K in "${GPU_COUNTS[@]}"; do
+  for N in "${E2E_VERTEX_SIZES[@]}"; do
+    E2E_FILES+=("${DATA_DIR}/e2e_K${K}_N${N}.json")
+  done
+done
+
 # -------------------------------------------------------------------------
 # 4. Fit primitives, fit overhead, apply the assembled model.
 # -------------------------------------------------------------------------
@@ -120,19 +140,19 @@ python -m analysis.fit_primitives \
   --gather-random "${DATA_DIR}/gather_random.json" \
   --output "${DATA_DIR}/fitted_primitives.json"
 
-step "fit_overhead"
+step "fit_overhead (fit-filter: ${FIT_FILTER})"
 python -m analysis.fit_overhead \
   --primitives "${DATA_DIR}/fitted_primitives.json" \
-  --e2e-runs "${DATA_DIR}"/e2e_*.json \
-  --fit-filter "world_size <= 8" \
+  --e2e-runs "${E2E_FILES[@]}" \
+  --fit-filter "${FIT_FILTER}" \
   --output "${DATA_DIR}/fitted_overhead.json"
 
-step "compute_predictions"
+step "compute_predictions (fit-filter: ${FIT_FILTER})"
 python -m analysis.compute_predictions \
   --primitives "${DATA_DIR}/fitted_primitives.json" \
   --overhead "${DATA_DIR}/fitted_overhead.json" \
-  --e2e-runs "${DATA_DIR}"/e2e_*.json \
-  --fit-filter "world_size <= 8" \
+  --e2e-runs "${E2E_FILES[@]}" \
+  --fit-filter "${FIT_FILTER}" \
   --output "${DATA_DIR}/predictions.json"
 
 # -------------------------------------------------------------------------
