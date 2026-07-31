@@ -246,7 +246,7 @@ def fit_gather(records: list, timing_key: str = "gather_trials_seconds") -> dict
 
     except Exception as e:
         print(f"Fit failed: {e}")
-        overhead = inv_bw_L2 = inv_bw_HBM = L2_thresh = np.nan
+        overhead = inv_bw_L2 = inv_bw_HBM = L2_thresh = HBM_thresh = np.nan
 
     bw_HBM = 1.0 / inv_bw_HBM if inv_bw_HBM > 0 else float("nan")
     bw_L2 = 1.0 / inv_bw_L2 if inv_bw_L2 > 0 else float("nan")

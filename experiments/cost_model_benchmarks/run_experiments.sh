@@ -106,10 +106,15 @@ done
 # 4. Fit primitives, fit overhead, apply the assembled model.
 # -------------------------------------------------------------------------
 step "fit_primitives"
+# NOTE: explicit filenames, not a wildcard glob. A glob like
+# compute_gcn_*.json would also match unrelated stale files that happen to
+# share the prefix (e.g. data/compute_gcn_eswp_test.json left over from
+# run_local_compute_tests.sh, which uses a different --feature-dim) and
+# silently pool incompatible data into one regression.
 python -m analysis.fit_primitives \
   --pingpong-intra "${DATA_DIR}/pingpong_intra.json" \
-  --compute-gcn "${DATA_DIR}"/compute_gcn_*.json \
-  --compute-edge "${DATA_DIR}"/compute_edge_*.json \
+  --compute-gcn "${DATA_DIR}/compute_gcn_vswp.json" "${DATA_DIR}/compute_gcn_eswp.json" \
+  --compute-edge "${DATA_DIR}/compute_edge_vswp.json" "${DATA_DIR}/compute_edge_eswp.json" \
   --gather-contiguous "${DATA_DIR}/gather_contiguous.json" \
   --gather-clustered "${DATA_DIR}/gather_clustered.json" \
   --gather-random "${DATA_DIR}/gather_random.json" \
