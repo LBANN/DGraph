@@ -176,6 +176,13 @@ def main():
             out = model(x, edge_index, edge_attr)
         loss_ref = out.sum()
 
+        # NOTE: this closure times grad-zero + FORWARD + backward, not the
+        # backward pass alone — the forward must be re-run inside the timed
+        # region to rebuild the autograd graph consumed by each .backward()
+        # call. So "backward_trials_seconds" below is really the combined
+        # forward+backward cost (which is what the assembled cost model's
+        # T_comp needs, since bench_end_to_end.py times the same op set).
+        # Do not subtract or add "forward_trials_seconds" to it.
         def bwd():
             if x.grad is not None:
                 x.grad.zero_()

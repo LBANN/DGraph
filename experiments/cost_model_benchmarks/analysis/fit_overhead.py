@@ -96,8 +96,19 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
         avg_degree = run_config.get("avg_degree", 20.0)
         n_edges_local = int(n_local * avg_degree)
 
-    # T_comp
-    comp_params = primitives.get("compute", {}).get(model_type, {}).get("forward", None)
+    # T_comp — the end-to-end benchmark times forward + backward + grad-zero
+    # per iteration (bench_end_to_end.py::one_layer), so T_comp must be the
+    # forward+backward cost, not forward alone.
+    #
+    # NOTE: the fit stored under the "backward" key is ALREADY that combined
+    # cost. bench_compute.py's bwd() closure re-runs the forward pass inside
+    # its own timed region (it has to, to rebuild the autograd graph each
+    # trial), so "backward_trials_seconds" measures grad-zero + forward +
+    # backward — exactly the op set one_layer() performs. The key is a
+    # misnomer; "forward" is the only fit that is forward-alone.
+    # Using "forward" here undercounted T_comp and cost ~30% MAPE; adding
+    # forward+backward together instead would double-count the forward pass.
+    comp_params = primitives.get("compute", {}).get(model_type, {}).get("backward", None)
     if comp_params:
         T_comp = (comp_params["coeff_V"] * n_total
                   + comp_params["coeff_E"] * n_edges_local
