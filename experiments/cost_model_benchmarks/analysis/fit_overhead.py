@@ -86,11 +86,11 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
     n_total = n_local + n_halo
 
     # Prefer the real local edge count recorded by bench_end_to_end.py
-    # (edge_index.shape[1] in graph_data_common.build_local_comm_pattern);
-    # fall back to the avg_degree*n_local proxy only for older run data that
-    # predates recording it. The proxy ignores partitioner-dependent edge-cut
-    # effects (random/balanced/metis produce very different local edge
-    # densities for the same avg_degree).
+    # (edge_index.shape[1], from DGraph.distributed.build_communication_pattern's
+    # comm_pattern.local_edge_list); fall back to the avg_degree*n_local proxy
+    # only for older run data that predates recording it. The proxy ignores
+    # partitioner-dependent edge-cut effects (random/balanced/metis produce
+    # very different local edge densities for the same avg_degree).
     n_edges_local = per_rank_stats.get("n_edges_local")
     if n_edges_local is None:
         avg_degree = run_config.get("avg_degree", 20.0)

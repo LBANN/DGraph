@@ -97,94 +97,29 @@ def partition_metis(
 
 
 # ===========================================================================
-# Minimal halo-exchange infrastructure
+# Communication-pattern derived stats
+#
+# The comm pattern itself (local vertex/edge remapping, send/recv CSR
+# indexing, per-rank comm map) is built exclusively via
+# ``DGraph.distributed.build_communication_pattern`` — see bench_crossover.py
+# and bench_end_to_end.py.  This module previously hand-rolled its own
+# ``build_local_comm_pattern`` with an independent (and inconsistent) halo/
+# send/recv layout that was never a ``CommunicationPattern`` and was not
+# ordered per-rank the way ``recv_offset``'s CSR layout requires, which made
+# it unusable as input to ``DGraph.distributed.HaloExchange``. Only the
+# small derived-stats helpers below remain; they consume a real
+# ``CommunicationPattern``.
 # ===========================================================================
 
 
-def build_local_comm_pattern(
-    edges: np.ndarray, assignment: np.ndarray, rank: int, world_size: int
-):
-    """Compute the local communication pattern for this rank.
+def get_ranks_per_node() -> int:
+    """Return the number of ranks co-located on this node.
 
-    Returns a CommunicationPattern object with:
-        local_vertices      — np.ndarray of vertex IDs owned by this rank
-        local_edge_index    — torch.Tensor [2, E_local] with local vertex IDs
-                              remapped so that 0..n_local-1 are owned vertices
-                              and n_local..n_local+n_halo-1 are halo vertices
-        send_counts         — list[int] of length world_size: vertices to send
-        recv_counts         — list[int] of length world_size: vertices to recv
-        send_idx            — local indices (into local_vertices) to send per rank
-        halo_global_ids     — global vertex IDs of halo vertices, in recv order
-        intra_halo_size     — halo vertices from same node (ranks sharing node)
-        inter_halo_size     — halo vertices from remote nodes
-        ranks_per_node      — int (derived from LOCAL_RANK / RANK relationship)
+    Required to split a comm pattern's halo traffic into intra-/inter-node
+    volumes (``c_intra_bytes`` vs ``c_inter_bytes``) for the hierarchical
+    cost model. Refuses to guess: silently defaulting this would bias every
+    downstream fit.
     """
-    local_mask = assignment == rank
-    local_vertices = np.where(local_mask)[0]
-    n_local = len(local_vertices)
-
-    # Global -> local index map
-    g2l = {int(v): i for i, v in enumerate(local_vertices)}
-
-    # Find edges where dst is local
-    local_dst_mask = np.isin(edges[:, 1], local_vertices)
-    local_edges = edges[local_dst_mask]
-
-    # Halo: src vertices not owned by this rank
-    halo_src_mask = ~np.isin(local_edges[:, 0], local_vertices)
-    halo_global = np.unique(local_edges[halo_src_mask, 0])
-
-    # Group halo vertices by owning rank
-    halo_owners = assignment[halo_global]
-    recv_by_rank = []
-    halo_order = []
-    for r in range(world_size):
-        verts = halo_global[halo_owners == r]
-        recv_by_rank.append(verts)
-        halo_order.extend(verts.tolist())
-    halo_order = np.array(halo_order, dtype=np.int64)
-
-    # Global halo id -> local halo index
-    halo_g2l = {int(v): n_local + i for i, v in enumerate(halo_order)}
-    all_g2l = {**g2l, **halo_g2l}
-
-    # Find which local vertices other ranks need (send pattern)
-    # We exchange recv_counts via all_to_all to learn send_counts
-    recv_counts = [len(rv) for rv in recv_by_rank]
-
-    # Build send: for each rank r, which of our local vertices does r need?
-    # We do a global exchange of halo_global per rank
-    all_recv = [None] * world_size
-    dist.all_gather_object(all_recv, halo_order.tolist())
-
-    send_idx_by_rank = []
-    for r in range(world_size):
-        needed = np.array(all_recv[r], dtype=np.int64)
-        owned_mask = (
-            assignment[needed] == rank if len(needed) > 0 else np.array([], dtype=bool)
-        )
-        owned = needed[owned_mask] if len(needed) > 0 else np.array([], dtype=np.int64)
-        # Map to local indices
-        local_idxs = np.array([g2l[int(v)] for v in owned], dtype=np.int64)
-        send_idx_by_rank.append(local_idxs)
-
-    send_counts = [len(s) for s in send_idx_by_rank]
-
-    # Remap edges to local indices
-    valid_edge_mask = np.array(
-        [(int(s) in all_g2l) and (int(d) in all_g2l) for s, d in local_edges]
-    )
-    local_edges_valid = local_edges[valid_edge_mask]
-    if len(local_edges_valid) > 0:
-        remapped_src = np.array([all_g2l[int(s)] for s in local_edges_valid[:, 0]])
-        remapped_dst = np.array([all_g2l[int(d)] for d in local_edges_valid[:, 1]])
-        edge_index = torch.tensor(
-            np.stack([remapped_src, remapped_dst], axis=0), dtype=torch.long
-        )
-    else:
-        edge_index = torch.zeros((2, 0), dtype=torch.long)
-
-    # Compute intra / inter halo sizes
     ranks_per_node_str = os.environ.get(
         "LOCAL_WORLD_SIZE", os.environ.get("SLURM_NTASKS_PER_NODE")
     )
@@ -198,27 +133,27 @@ def build_local_comm_pattern(
             "LOCAL_WORLD_SIZE) or under srun/SLURM (which sets "
             "SLURM_NTASKS_PER_NODE)."
         )
-    ranks_per_node = int(ranks_per_node_str)
-    my_node = rank // ranks_per_node
-    intra_halo_size = 0
-    inter_halo_size = 0
-    for r, verts in enumerate(recv_by_rank):
-        peer_node = r // ranks_per_node
-        if peer_node == my_node:
-            intra_halo_size += len(verts)
-        else:
-            inter_halo_size += len(verts)
+    return int(ranks_per_node_str)
 
-    return {
-        "local_vertices": local_vertices,
-        "n_local": n_local,
-        "n_halo": len(halo_order),
-        "edge_index": edge_index,
-        "send_counts": send_counts,
-        "recv_counts": recv_counts,
-        "send_idx_by_rank": send_idx_by_rank,
-        "halo_order": halo_order,
-        "intra_halo_size": intra_halo_size,
-        "inter_halo_size": inter_halo_size,
-        "ranks_per_node": ranks_per_node,
-    }
+
+def intra_inter_halo(comm_pattern, ranks_per_node: int) -> tuple:
+    """Split a ``CommunicationPattern``'s halo receive counts into
+    (intra_node, inter_node) vertex totals, using ``recv_offset`` — the
+    authoritative per-source-rank CSR layout ``build_communication_pattern``
+    produces — rather than re-deriving halo ownership by hand.
+    """
+    rank = comm_pattern.rank
+    my_node = rank // ranks_per_node
+    recv_counts = (
+        comm_pattern.recv_offset[1:] - comm_pattern.recv_offset[:-1]
+    ).tolist()
+    intra = 0
+    inter = 0
+    for r, count in enumerate(recv_counts):
+        if r == rank:
+            continue
+        if (r // ranks_per_node) == my_node:
+            intra += int(count)
+        else:
+            inter += int(count)
+    return intra, inter

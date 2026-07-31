@@ -50,7 +50,6 @@ Usage — single-GPU baseline only::
 """
 
 import argparse
-import os
 
 import numpy as np
 import torch
@@ -70,6 +69,8 @@ from benchmarks.graph_data_common import (
     partition_balanced,
     partition_metis,
     partition_random,
+    get_ranks_per_node,
+    intra_inter_halo,
 )
 from benchmarks.nn_layer_common import GCNLayer, EdgeConditionedLayer
 
@@ -131,25 +132,6 @@ def _gen_graph(graph_type, num_vertices, avg_degree, sbm_inter_density, seed):
         return gen_erdos_renyi(num_vertices, avg_degree, rng)
     else:
         return gen_sbm(num_vertices, avg_degree, sbm_inter_density, rng)
-
-
-def _intra_inter_halo(comm_pattern: CommunicationPattern, ranks_per_node: int) -> tuple:
-    """Return (intra_halo_vertices, inter_halo_vertices) from recv_offset."""
-    rank = comm_pattern.rank
-    my_node = rank // ranks_per_node
-    recv_counts = (
-        comm_pattern.recv_offset[1:] - comm_pattern.recv_offset[:-1]
-    ).tolist()
-    intra = 0
-    inter = 0
-    for r, count in enumerate(recv_counts):
-        if r == rank:
-            continue
-        if (r // ranks_per_node) == my_node:
-            intra += int(count)
-        else:
-            inter += int(count)
-    return intra, inter
 
 
 def _build_single_gpu_tensors(num_vertices, edges_np, F, model, device):
@@ -304,9 +286,7 @@ def run_distributed(args, graph_sizes, F, rank, world_size, local_rank):
 
     comm = Communicator(backend="nccl")
 
-    ranks_per_node = int(
-        os.environ.get("LOCAL_WORLD_SIZE", os.environ.get("SLURM_NTASKS_PER_NODE", "4"))
-    )
+    ranks_per_node = get_ranks_per_node()
 
     measurements = []
 
@@ -370,7 +350,7 @@ def run_distributed(args, graph_sizes, F, rank, world_size, local_rank):
         all_times_multi = [None] * world_size
         dist.all_gather_object(all_times_multi, times_multi_local)
 
-        intra_halo, inter_halo = _intra_inter_halo(comm_pattern, ranks_per_node)
+        intra_halo, inter_halo = intra_inter_halo(comm_pattern, ranks_per_node)
         stats_local = {
             "rank": rank,
             "n_local": n_local,

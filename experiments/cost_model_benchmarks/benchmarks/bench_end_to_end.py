@@ -4,9 +4,9 @@ Measures full GNN layer wall time (forward + backward) across a sweep of
 configurations on the full multi-node setup.  Intended to be run as a SLURM
 array job with one invocation per (K, F, graph) combination.
 
-This module contains a self-contained minimal halo-exchange implementation
-(no dependency on the DGraph production library) so the benchmark remains
-isolated and portable.
+Uses DGraph's production ``build_communication_pattern``/``HaloExchange``
+(``DGraph.distributed``) for graph partitioning/halo-exchange, matching
+bench_crossover.py, so the benchmark measures the real communication path.
 
 Synthetic graphs:
     * ``erdos_renyi``  — Erdős-Rényi with ``--avg-degree`` expected degree
@@ -57,11 +57,12 @@ from benchmarks.graph_data_common import (
     partition_balanced,
     partition_metis,
     partition_random,
-    build_local_comm_pattern,
+    get_ranks_per_node,
+    intra_inter_halo,
 )
 from benchmarks.nn_layer_common import GCNLayer, EdgeConditionedLayer
 
-from DGraph.distributed import HaloExchange, CommunicationPattern
+from DGraph.distributed import HaloExchange, CommunicationPattern, build_communication_pattern
 from DGraph import Communicator
 
 # ===========================================================================
@@ -115,21 +116,16 @@ def main():
     else:
         assignment = partition_metis(args.num_vertices, world_size, edges)
 
-    # --- Build local comm pattern ---
-    pattern = build_local_comm_pattern(edges, assignment, rank, world_size)
-    n_local = pattern["n_local"]
-    n_halo = pattern["n_halo"]
-    edge_index = pattern["edge_index"].to(device)
+    # --- Build local comm pattern (collective: internally calls dist.all_gather) ---
+    edges_t = torch.from_numpy(edges).long().to(device)  # [E, 2]
+    assignment_t = torch.from_numpy(assignment).long().to(device)  # [V]
+    comm_pattern = build_communication_pattern(edges_t, assignment_t, rank, world_size)
 
-    send_counts = pattern["send_counts"]
-    recv_counts = pattern["recv_counts"]
-    send_idx_flat = (
-        torch.cat(
-            [torch.tensor(s, dtype=torch.long) for s in pattern["send_idx_by_rank"]]
-        ).to(device)
-        if sum(send_counts) > 0
-        else torch.zeros(0, dtype=torch.long, device=device)
-    )
+    n_local = comm_pattern.num_local_vertices
+    n_halo = comm_pattern.num_halo_vertices
+    edge_index = comm_pattern.local_edge_list.T.contiguous()  # [2, E_local]
+
+    ranks_per_node = get_ranks_per_node()
 
     # --- Model ---
     if args.model == "gcn":
@@ -152,7 +148,7 @@ def main():
     # --- Timed forward + backward ---
     def one_layer():
         # Forward halo exchange
-        recv_buf = halo_exchange(x_local, comm_pattern=pattern)
+        recv_buf = halo_exchange(x_local, comm_pattern)
         # Augment: local + halo
         x_aug = torch.cat([x_local, recv_buf], dim=0)
         # Message passing
@@ -172,17 +168,18 @@ def main():
     dist.barrier()
 
     # Gather per-rank times and stats to rank 0
+    intra_halo, inter_halo = intra_inter_halo(comm_pattern, ranks_per_node)
     stats_local = {
         "rank": rank,
         "n_local": n_local,
         "n_halo": n_halo,
-        "intra_halo_size": pattern["intra_halo_size"],
-        "inter_halo_size": pattern["inter_halo_size"],
-        "c_intra_bytes": pattern["intra_halo_size"] * F * 4,
-        "c_inter_bytes": pattern["inter_halo_size"] * F * 4,
+        "intra_halo_size": intra_halo,
+        "inter_halo_size": inter_halo,
+        "c_intra_bytes": intra_halo * F * 4,
+        "c_inter_bytes": inter_halo * F * 4,
         "n_edges_local": edge_index.shape[1],
-        "send_total": sum(send_counts),
-        "recv_total": sum(recv_counts),
+        "send_total": int(comm_pattern.send_offset[-1].item()),
+        "recv_total": int(comm_pattern.recv_offset[-1].item()),
         "trials_seconds": times_local,
     }
 
@@ -208,7 +205,7 @@ def main():
                 "model": args.model,
                 "partitioner": args.partitioner,
                 "world_size": world_size,
-                "ranks_per_node": pattern["ranks_per_node"],
+                "ranks_per_node": ranks_per_node,
                 "warmup": args.warmup,
                 "trials": args.trials,
                 "seed": args.seed,
