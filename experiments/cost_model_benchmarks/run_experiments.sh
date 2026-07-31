@@ -15,6 +15,11 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# An unmatched glob (e.g. a partial re-run missing an expected output file)
+# should surface as a clear argparse error, not a literal glob-pattern
+# string silently passed through to a file open() call.
+shopt -s nullglob
+
 # --- Config ------------------------------------------------------------
 GPU_COUNTS=(${GPU_COUNTS:-2 4})        # world sizes to sweep via torchrun --nproc_per_node
 SEED=${SEED:-42}
@@ -36,18 +41,25 @@ step() { echo; echo "=== $* ==="; }
 # -------------------------------------------------------------------------
 # 1. Single-GPU primitive microbenchmarks (1.3 compute, 1.4 gather) — no
 #    torchrun, GPU-count independent.
+#
+#    fit_primitives.py fits GCN and edge-conditioned compute costs
+#    independently (--compute-gcn / --compute-edge), regardless of which
+#    single MODEL the distributed crossover/end-to-end sweep below uses —
+#    so both model types are always benchmarked here.
 # -------------------------------------------------------------------------
-step "1.3 compute -- ${MODEL}, vertex sweep"
-python -m benchmarks.bench_compute --model "${MODEL}" --sweep vertices \
-  --min 1000 --max 1000000 --steps 10 --fixed-value 200000 \
-  --feature-dim "${FEATURE_DIM}" --warmup "${WARMUP}" --trials "${TRIALS}" \
-  --output "${DATA_DIR}/compute_${MODEL}_vswp.json" --seed "${SEED}"
+for m in gcn edge; do
+  step "1.3 compute -- ${m}, vertex sweep"
+  python -m benchmarks.bench_compute --model "${m}" --sweep vertices \
+    --min 1000 --max 1000000 --steps 10 --fixed-value 200000 \
+    --feature-dim "${FEATURE_DIM}" --warmup "${WARMUP}" --trials "${TRIALS}" \
+    --output "${DATA_DIR}/compute_${m}_vswp.json" --seed "${SEED}"
 
-step "1.3 compute -- ${MODEL}, edge sweep"
-python -m benchmarks.bench_compute --model "${MODEL}" --sweep edges \
-  --min 1000 --max 1000000 --steps 10 --fixed-value 200000 \
-  --feature-dim "${FEATURE_DIM}" --warmup "${WARMUP}" --trials "${TRIALS}" \
-  --output "${DATA_DIR}/compute_${MODEL}_eswp.json" --seed "${SEED}"
+  step "1.3 compute -- ${m}, edge sweep"
+  python -m benchmarks.bench_compute --model "${m}" --sweep edges \
+    --min 1000 --max 1000000 --steps 10 --fixed-value 200000 \
+    --feature-dim "${FEATURE_DIM}" --warmup "${WARMUP}" --trials "${TRIALS}" \
+    --output "${DATA_DIR}/compute_${m}_eswp.json" --seed "${SEED}"
+done
 
 step "1.4 gather -- contiguous / clustered / random"
 for dist_name in contiguous clustered random; do
