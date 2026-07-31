@@ -32,8 +32,32 @@ import numpy as np
 # Cost model (without overhead)
 # ---------------------------------------------------------------------------
 
+def _gather_piecewise_time(nbytes: float, params: dict) -> float:
+    """Evaluate the fitted piecewise L2-cache/HBM-bandwidth gather model for
+    a single byte count. Mirrors ``time_model`` in
+    ``analysis/fit_primitives.py::fit_gather`` exactly — this is the single
+    place both ``predict_layer_time`` and ``compute_predictions.py`` should
+    call, rather than re-deriving a simplified linear approximation.
+    """
+    overhead = params.get("launch_overhead_seconds", 0.0)
+    bw_HBM = params.get("bandwidth_bytes_per_sec")
+    bw_L2 = params.get("L2_bandwidth_bytes_per_sec")
+    if not bw_HBM or not bw_L2:
+        return overhead
+
+    inv_bw_L2 = 1.0 / bw_L2
+    inv_bw_HBM = 1.0 / bw_HBM
+    L2_thresh = params.get("L2_inflection_bytes", 0.0)
+    HBM_thresh = params.get("HBM_inflection_bytes", 0.0)
+
+    bytes_L2 = min(max(nbytes, 0.0), L2_thresh)
+    bytes_HBM = max(0.0, nbytes - HBM_thresh)
+    t_mem = bytes_L2 * inv_bw_L2 + bytes_HBM * inv_bw_HBM
+    return max(overhead, t_mem)
+
+
 def predict_layer_time(run_config: dict, per_rank_stats: dict,
-                       primitives: dict) -> float:
+                       primitives: dict) -> dict:
     """Predict T_layer for one rank using the assembled primitive model.
 
     T_layer = T_comp + max(T_intra, T_inter) + T_buffer_copy
@@ -46,6 +70,13 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
         Stats for rank 0 from per_rank_stats list.
     primitives : dict
         Loaded fitted_primitives.json.
+
+    Returns
+    -------
+    dict with keys T_comp, T_intra, T_inter, T_comm, T_buffer_copy, T_total
+    (T_total = T_comp + T_comm + T_buffer_copy, i.e. without T_overhead).
+    Every component is floored at 0.0, since noisy fitted intercepts can
+    otherwise extrapolate to physically-meaningless negative times.
     """
     F = run_config["feature_dim"]
     model_type = run_config.get("model", "gcn")
@@ -54,9 +85,16 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
     n_halo  = per_rank_stats.get("n_halo", 0)
     n_total = n_local + n_halo
 
-    # A rough edge count estimate: use avg_degree * n_local as a proxy
-    avg_degree = run_config.get("avg_degree", 20.0)
-    n_edges_local = int(n_local * avg_degree)
+    # Prefer the real local edge count recorded by bench_end_to_end.py
+    # (edge_index.shape[1] in graph_data_common.build_local_comm_pattern);
+    # fall back to the avg_degree*n_local proxy only for older run data that
+    # predates recording it. The proxy ignores partitioner-dependent edge-cut
+    # effects (random/balanced/metis produce very different local edge
+    # densities for the same avg_degree).
+    n_edges_local = per_rank_stats.get("n_edges_local")
+    if n_edges_local is None:
+        avg_degree = run_config.get("avg_degree", 20.0)
+        n_edges_local = int(n_local * avg_degree)
 
     # T_comp
     comp_params = primitives.get("compute", {}).get(model_type, {}).get("forward", None)
@@ -64,9 +102,9 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
         T_comp = (comp_params["coeff_V"] * n_total
                   + comp_params["coeff_E"] * n_edges_local
                   + comp_params["intercept"])
-        T_comp = max(T_comp, 0.0)
     else:
         T_comp = 0.0
+    T_comp = max(T_comp, 0.0)
 
     # T_intra and T_inter
     intra_bytes = per_rank_stats.get("c_intra_bytes", 0)
@@ -82,20 +120,28 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
         t_L = params.get("latency_seconds", 0.0)
         return t_L + nbytes / B
 
-    T_intra = net_time(intra_bytes, "intra")
-    T_inter = net_time(inter_bytes, "inter")
+    T_intra = max(net_time(intra_bytes, "intra"), 0.0)
+    T_inter = max(net_time(inter_bytes, "inter"), 0.0)
     T_comm = max(T_intra, T_inter)
 
-    # T_buffer_copy (gather of send buffer)
+    # T_buffer_copy (gather of send buffer) — uses the fitted piecewise
+    # L2/HBM model, not a simplified single-slope linear stand-in.
     send_bytes = per_rank_stats.get("send_total", 0) * F * 4
     gath_params = primitives.get("gather", {}).get("clustered", {}).get("gather", None)
     if gath_params and send_bytes > 0:
-        B_g = gath_params.get("bandwidth_bytes_per_sec", 1e12)
-        T_buffer_copy = gath_params.get("intercept_seconds", 0.0) + send_bytes / B_g
+        T_buffer_copy = _gather_piecewise_time(send_bytes, gath_params)
     else:
         T_buffer_copy = 0.0
+    T_buffer_copy = max(T_buffer_copy, 0.0)
 
-    return T_comp + T_comm + T_buffer_copy
+    return {
+        "T_comp": T_comp,
+        "T_intra": T_intra,
+        "T_inter": T_inter,
+        "T_comm": T_comm,
+        "T_buffer_copy": T_buffer_copy,
+        "T_total": T_comp + T_comm + T_buffer_copy,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -146,22 +192,37 @@ def apply_filter(runs: list, filter_expr: str) -> tuple:
 # Scalar overhead fitting
 # ---------------------------------------------------------------------------
 
+def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """Return m minimising sum(weights * |values - m|)."""
+    order = np.argsort(values)
+    v = values[order]
+    w = weights[order]
+    cum = np.cumsum(w)
+    cutoff = cum[-1] / 2.0
+    idx = int(np.searchsorted(cum, cutoff))
+    idx = min(idx, len(v) - 1)
+    return float(v[idx])
+
+
 def fit_overhead_scalar(fit_runs: list, primitives: dict) -> tuple:
     """Fit T_overhead to minimise MAPE on fit_runs. Returns (overhead, mape_in_sample)."""
     if not fit_runs:
         return 0.0, float("nan")
 
-    residuals = []
-    for r in fit_runs:
-        T_model = predict_layer_time(r["config"], r["per_rank_stats"], primitives)
-        residuals.append(r["measured_median"] - T_model)
+    residuals = np.array([
+        r["measured_median"] - predict_layer_time(r["config"], r["per_rank_stats"], primitives)["T_total"]
+        for r in fit_runs
+    ])
+    T_meas = np.array([r["measured_median"] for r in fit_runs])
 
-    # Optimal scalar overhead that minimises sum of |err - overhead| / T_meas
-    # is the weighted median; for uniform weights it's just the median of residuals.
-    overhead = float(np.median(residuals))
+    # minimize sum(|residual - overhead| / T_meas) over the scalar overhead
+    # == minimize sum(weight * |residual - overhead|) with weight = 1/T_meas,
+    # whose minimizer is the weighted median (NOT the plain median, which
+    # only minimizes the unweighted sum |residual - overhead|).
+    overhead = weighted_median(residuals, 1.0 / T_meas)
 
     mape = float(np.mean([
-        abs(r["measured_median"] - (predict_layer_time(r["config"], r["per_rank_stats"], primitives) + overhead))
+        abs(r["measured_median"] - (predict_layer_time(r["config"], r["per_rank_stats"], primitives)["T_total"] + overhead))
         / r["measured_median"]
         for r in fit_runs
     ]))

@@ -11,6 +11,7 @@ Usage::
 
     python -m visualization.plot_ablations \\
         --predictions data/predictions.json \\
+        --primitives  data/fitted_primitives.json \\
         --output      figures/ablations
 """
 
@@ -44,6 +45,12 @@ def relative_error(pred, meas):
 def parse_args():
     p = argparse.ArgumentParser(description="Plot ablation studies")
     p.add_argument("--predictions", type=str, required=True)
+    p.add_argument(
+        "--primitives", type=str, required=True,
+        help="fitted_primitives.json; needs the network.flat entry produced "
+             "by fit_primitives.py when both --pingpong-intra and "
+             "--pingpong-inter are supplied",
+    )
     p.add_argument("--output",      type=str, default="figures/ablations")
     return p.parse_args()
 
@@ -53,9 +60,30 @@ def main():
 
     with open(args.predictions) as f:
         data = json.load(f)
+    with open(args.primitives) as f:
+        primitives = json.load(f)
 
     entries = data["predictions"]
     T_overhead = data.get("T_overhead_seconds", 0.0)
+
+    flat_net = primitives.get("network", {}).get("flat")
+    if flat_net is None:
+        raise RuntimeError(
+            "fitted_primitives.json has no 'network.flat' entry. Re-run "
+            "analysis/fit_primitives.py with both --pingpong-intra and "
+            "--pingpong-inter so it can fit a genuine single-tier baseline "
+            "for this ablation, instead of the previous heuristic."
+        )
+
+    def flat_comm_time(c_intra_bytes: float, c_inter_bytes: float) -> float:
+        """Flat (single-tier) model: no intra/inter distinction, no overlap —
+        all halo bytes go over one fitted (B, t_L) pair, sequentially."""
+        total_bytes = c_intra_bytes + c_inter_bytes
+        if total_bytes <= 0:
+            return 0.0
+        B = flat_net.get("bandwidth_bytes_per_sec", 1e10)
+        t_L = flat_net.get("latency_seconds", 0.0)
+        return max(t_L + total_bytes / B, 0.0)
 
     # --- Panel (a): topology sweep (SBM inter-density) ---
     # Filter to SBM entries, group by inter_density
@@ -80,16 +108,14 @@ def main():
             T_pred_full = e["predicted_seconds"]
             full_errs.append(relative_error(T_pred_full, T_meas))
 
-            # Flat model: use a single network term = T_intra + T_inter (not max)
-            # Approximate: flat model can't overlap, so T_comm = T_intra + T_inter
+            # Flat model: swap the hierarchical (intra/inter, overlapped via
+            # max) comm term for one predicted by a genuinely fit single-tier
+            # (B, t_L) model over total halo bytes — not a heuristic ratio.
             bd = e.get("breakdown", {})
             T_comm_hier = bd.get("T_comm_seconds", 0.0)
-            # Flat approximation: assume both intra and inter are sequential
             c_intra = e["partition_stats"].get("c_intra_bytes", 0)
             c_inter = e["partition_stats"].get("c_inter_bytes", 0)
-            # Without knowing the individual bandwidths, use ratio heuristic:
-            # flat ≈ 2 * max (conservative estimate)
-            T_comm_flat = T_comm_hier * 2.0
+            T_comm_flat = flat_comm_time(c_intra, c_inter)
             T_pred_flat = (T_pred_full - T_comm_hier + T_comm_flat)
             flat_errs.append(relative_error(T_pred_flat, T_meas))
 

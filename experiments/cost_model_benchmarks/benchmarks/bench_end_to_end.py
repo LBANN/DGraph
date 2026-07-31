@@ -180,6 +180,7 @@ def main():
         "inter_halo_size": pattern["inter_halo_size"],
         "c_intra_bytes": pattern["intra_halo_size"] * F * 4,
         "c_inter_bytes": pattern["inter_halo_size"] * F * 4,
+        "n_edges_local": edge_index.shape[1],
         "send_total": sum(send_counts),
         "recv_total": sum(recv_counts),
         "trials_seconds": times_local,

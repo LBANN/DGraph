@@ -75,6 +75,14 @@ def main():
         return
 
     K_vals   = sorted(ws_to_meas.keys())
+    if K_vals[0] != 1:
+        raise ValueError(
+            f"No world_size=1 run found (smallest K in data is {K_vals[0]}). "
+            "Ideal-scaling and scaling-efficiency numbers are only meaningful "
+            "relative to a true single-GPU baseline — run bench_end_to_end.py "
+            "(or bench_crossover.py's --no-dist mode) at world_size=1 for this "
+            "graph/config before plotting the tipping point."
+        )
     T_meas   = np.array([np.median(ws_to_meas[K]) for K in K_vals]) * args.num_layers * args.num_epochs
     T_pred   = np.array([np.median(ws_to_pred[K]) for K in K_vals]) * args.num_layers * args.num_epochs
     K_arr    = np.array(K_vals, dtype=float)

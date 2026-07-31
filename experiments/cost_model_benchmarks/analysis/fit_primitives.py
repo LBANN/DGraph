@@ -69,6 +69,31 @@ def linear_fit(x: np.ndarray, y: np.ndarray):
     }
 
 
+def weighted_linear_fit(x: np.ndarray, y: np.ndarray, sigma: np.ndarray = None):
+    """Fit y = slope * x + intercept via weighted least squares.
+
+    ``sigma`` follows the same convention as ``scipy.optimize.curve_fit``:
+    residuals are weighted by ``1/sigma``, i.e. this minimises
+    ``sum(((y - pred) / sigma) ** 2)``. Passing ``sigma=y`` (as ``fit_gather``
+    already does via ``curve_fit``) weights by *relative* error so that
+    points spanning many orders of magnitude don't dominate the fit.
+    """
+    if sigma is None:
+        sigma = np.ones_like(y)
+    w = 1.0 / sigma
+    A = np.column_stack([x, np.ones_like(x)]) * w[:, None]
+    b = y * w
+    result, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+    slope, intercept = result
+    y_pred = slope * x + intercept
+    r2 = r_squared(y, y_pred)
+    return {
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "r_squared": r2,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Network fit: T = t_L + bytes / B
 # ---------------------------------------------------------------------------
@@ -90,7 +115,11 @@ def fit_network(records: list) -> dict:
 
     # T = t_L + bytes / B  →  T = intercept + slope * bytes
     # so slope = 1/B, intercept = t_L
-    fit = linear_fit(bytes_arr, time_arr)
+    # Weighted by relative error (sigma=time_arr) for consistency with
+    # fit_gather's curve_fit(sigma=T_arr) — message sizes span 64B-64MiB, so
+    # an unweighted fit would be dominated by the largest sizes and leave the
+    # latency intercept (small messages) poorly constrained.
+    fit = weighted_linear_fit(bytes_arr, time_arr, sigma=time_arr)
     bandwidth = 1.0 / fit["slope"] if fit["slope"] > 0 else float("nan")
     latency = fit["intercept"]
     return {
@@ -124,9 +153,17 @@ def fit_compute(records: list, timing_key: str = "forward_trials_seconds") -> di
     E_arr = np.array(E_arr, dtype=float)
     T_arr = np.array(T_arr, dtype=float)
 
-    # Design matrix: [V, E, 1]
+    # Design matrix: [V, E, 1], weighted by relative error (1/T) for
+    # consistency with fit_gather's curve_fit(sigma=T_arr) — |V|/|E| sweeps
+    # are log-spaced over several orders of magnitude, so an unweighted fit
+    # would be dominated by the largest graphs and leave the small-graph
+    # intercept (which matters most for the crossover/tipping-point
+    # analysis) poorly constrained.
     A = np.column_stack([V_arr, E_arr, np.ones_like(V_arr)])
-    result, _, _, _ = np.linalg.lstsq(A, T_arr, rcond=None)
+    w = 1.0 / T_arr
+    A_w = A * w[:, None]
+    b_w = T_arr * w
+    result, _, _, _ = np.linalg.lstsq(A_w, b_w, rcond=None)
     coeff_V, coeff_E, intercept = result
     T_pred = A @ result
     r2 = r_squared(T_arr, T_pred)
@@ -281,6 +318,18 @@ def main():
             f"[network/inter] B={net['inter']['bandwidth_bytes_per_sec']/1e9:.2f} GB/s  "
             f"t_L={net['inter']['latency_seconds']*1e6:.2f} µs  "
             f"R²={net['inter']['r_squared']:.4f}"
+        )
+    if args.pingpong_intra and args.pingpong_inter:
+        # Flat (single-tier) network fit: pools intra + inter data into one
+        # (B, t_L) pair, ignoring the intra/inter distinction. Used as a
+        # genuine baseline for the hierarchical-vs-flat ablation, rather than
+        # an ad hoc multiplier on the hierarchical prediction.
+        recs = load_json_files(args.pingpong_intra) + load_json_files(args.pingpong_inter)
+        net["flat"] = fit_network(recs)
+        print(
+            f"[network/flat] B={net['flat']['bandwidth_bytes_per_sec']/1e9:.2f} GB/s  "
+            f"t_L={net['flat']['latency_seconds']*1e6:.2f} µs  "
+            f"R²={net['flat']['r_squared']:.4f}"
         )
     result["network"] = net
 

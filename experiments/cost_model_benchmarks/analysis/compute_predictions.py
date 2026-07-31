@@ -72,34 +72,11 @@ def main():
 
     prediction_entries = []
     for r in all_runs:
-        T_model_base = predict_layer_time(r["config"], r["per_rank_stats"], primitives)
-        T_pred = T_model_base + T_overhead
+        breakdown = predict_layer_time(r["config"], r["per_rank_stats"], primitives)
+        T_pred = breakdown["T_total"] + T_overhead
         T_meas = r["measured_median"]
         abs_err = abs(T_meas - T_pred)
         rel_err = abs_err / T_meas if T_meas > 0 else float("nan")
-
-        # Decompose prediction for ablation figures
-        net = primitives.get("network", {})
-        intra_bytes = r["per_rank_stats"].get("c_intra_bytes", 0)
-        inter_bytes = r["per_rank_stats"].get("c_inter_bytes", 0)
-
-        def net_time(nbytes, mode):
-            params = net.get(mode, None)
-            if params is None or nbytes == 0:
-                return 0.0
-            return params.get("latency_seconds", 0.0) + nbytes / params.get("bandwidth_bytes_per_sec", 1e10)
-
-        T_intra = net_time(intra_bytes, "intra")
-        T_inter = net_time(inter_bytes, "inter")
-        T_comm = max(T_intra, T_inter)
-
-        F = r["config"]["feature_dim"]
-        send_bytes = r["per_rank_stats"].get("send_total", 0) * F * 4
-        gath_params = primitives.get("gather", {}).get("clustered", {}).get("gather", None)
-        T_buffer_copy = 0.0
-        if gath_params and send_bytes > 0:
-            B_g = gath_params.get("bandwidth_bytes_per_sec", 1e12)
-            T_buffer_copy = gath_params.get("intercept_seconds", 0.0) + send_bytes / B_g
 
         entry = {
             "source_file": r["source_file"],
@@ -111,9 +88,9 @@ def main():
             "relative_error": rel_err,
             "in_fit_set": id(r) in fit_set,
             "breakdown": {
-                "T_comp_seconds": T_model_base - T_comm - T_buffer_copy,
-                "T_comm_seconds": T_comm,
-                "T_buffer_copy_seconds": T_buffer_copy,
+                "T_comp_seconds": breakdown["T_comp"],
+                "T_comm_seconds": breakdown["T_comm"],
+                "T_buffer_copy_seconds": breakdown["T_buffer_copy"],
                 "T_overhead_seconds": T_overhead,
             },
         }

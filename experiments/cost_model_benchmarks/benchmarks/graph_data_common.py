@@ -1,4 +1,7 @@
+import os
+
 import numpy as np
+import torch
 import torch.distributed as dist
 
 
@@ -182,9 +185,20 @@ def build_local_comm_pattern(
         edge_index = torch.zeros((2, 0), dtype=torch.long)
 
     # Compute intra / inter halo sizes
-    ranks_per_node = int(
-        os.environ.get("LOCAL_WORLD_SIZE", os.environ.get("SLURM_NTASKS_PER_NODE", "4"))
+    ranks_per_node_str = os.environ.get(
+        "LOCAL_WORLD_SIZE", os.environ.get("SLURM_NTASKS_PER_NODE")
     )
+    if ranks_per_node_str is None:
+        raise RuntimeError(
+            "Neither LOCAL_WORLD_SIZE nor SLURM_NTASKS_PER_NODE is set — cannot "
+            "determine GPUs-per-node. This value directly determines the "
+            "intra/inter halo split (c_intra_bytes vs c_inter_bytes) that the "
+            "hierarchical cost model relies on, so silently guessing would "
+            "bias every downstream fit. Launch with torchrun (which sets "
+            "LOCAL_WORLD_SIZE) or under srun/SLURM (which sets "
+            "SLURM_NTASKS_PER_NODE)."
+        )
+    ranks_per_node = int(ranks_per_node_str)
     my_node = rank // ranks_per_node
     intra_halo_size = 0
     inter_halo_size = 0
