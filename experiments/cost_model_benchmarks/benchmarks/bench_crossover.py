@@ -72,7 +72,12 @@ from benchmarks.graph_data_common import (
     get_ranks_per_node,
     intra_inter_halo,
 )
-from benchmarks.nn_layer_common import GCNLayer, EdgeConditionedLayer
+from benchmarks.nn_layer_common import (
+    GCNLayer,
+    EdgeConditionedLayer,
+    GCNSpMMLayer,
+    create_sparse_adj,
+)
 
 from DGraph.distributed import (
     HaloExchange,
@@ -104,7 +109,7 @@ def parse_args():
         help="Fraction of inter-block edges for SBM graphs",
     )
     p.add_argument("--feature-dim", type=int, default=128)
-    p.add_argument("--model", choices=["gcn", "edge"], default="gcn")
+    p.add_argument("--model", choices=["gcn", "edge", "gcn_spmm"], default="gcn")
     p.add_argument(
         "--partitioner", choices=["random", "balanced", "metis"], default="balanced"
     )
@@ -135,26 +140,47 @@ def _gen_graph(graph_type, num_vertices, avg_degree, sbm_inter_density, seed):
 
 
 def _build_single_gpu_tensors(num_vertices, edges_np, F, model, device):
-    """Allocate full-graph tensors on *device*.  May raise cuda.OutOfMemoryError."""
-    # GCNLayer / EdgeConditionedLayer expect edge_index as [2, E]
+    """Allocate full-graph tensors on *device*.  May raise cuda.OutOfMemoryError.
+
+    Returns (x, aux, layer, edge_attr) where ``aux`` is whatever the layer's
+    second forward argument is: a ``[2, E]`` edge index for GCNLayer /
+    EdgeConditionedLayer, or a prebuilt sparse ``[V, V]`` adjacency for
+    GCNSpMMLayer (which does not take an edge index at all — see
+    nn_layer_common.GCNSpMMLayer.forward). Built once here, outside the timed
+    region, matching bench_compute.py's build_sparse_adj convention.
+    """
     edge_t = torch.from_numpy(edges_np.T.copy()).long().to(device)
     x = torch.randn(num_vertices, F, device=device, requires_grad=True)
     if model == "gcn":
         layer = GCNLayer(F).to(device)
         edge_attr = None
+        aux = edge_t
+    elif model == "gcn_spmm":
+        layer = GCNSpMMLayer(F).to(device)
+        edge_attr = None
+        aux = create_sparse_adj(edge_t, num_vertices, num_vertices, device)
     else:
         layer = EdgeConditionedLayer(F).to(device)
         edge_attr = torch.randn(edges_np.shape[0], F, device=device)
+        aux = edge_t
     layer.train()
-    return x, edge_t, layer, edge_attr
+    return x, aux, layer, edge_attr
 
 
-def _single_gpu_fn(x, edge_t, layer, edge_attr):
+def _single_gpu_fn(x, aux, layer, edge_attr, model):
     """Return a zero-argument closure for single-GPU forward+backward."""
-    if edge_attr is None:
+    if model == "gcn_spmm":
 
         def fn():
-            out = layer(x, edge_t)
+            out = layer(x, aux)
+            out.sum().backward()
+            if x.grad is not None:
+                x.grad.zero_()
+
+    elif edge_attr is None:
+
+        def fn():
+            out = layer(x, aux)
             out.sum().backward()
             if x.grad is not None:
                 x.grad.zero_()
@@ -162,7 +188,7 @@ def _single_gpu_fn(x, edge_t, layer, edge_attr):
     else:
 
         def fn():
-            out = layer(x, edge_t, edge_attr)
+            out = layer(x, aux, edge_attr)
             out.sum().backward()
             if x.grad is not None:
                 x.grad.zero_()
@@ -174,11 +200,30 @@ def _multi_gpu_fn(x_local, comm_pattern, layer, halo_exchange, edge_attr, model)
     """Return a zero-argument closure for distributed forward+backward.
 
     ``comm_pattern.local_edge_list`` has shape ``[E, 2]``; we transpose it
-    once to ``[2, E]`` as required by GCNLayer / EdgeConditionedLayer.
+    once to ``[2, E]`` as required by GCNLayer / EdgeConditionedLayer. For
+    GCNSpMMLayer we instead build the rectangular
+    ``[n_local, n_local + n_halo]`` sparse adjacency once here (outside the
+    timed closure, same as the single-GPU path) since that layer takes the
+    aggregation matrix directly rather than an edge index.
     """
     edge_index = comm_pattern.local_edge_list.T.contiguous()  # [2, E_local]
 
-    if model == "gcn":
+    if model == "gcn_spmm":
+        n_local = comm_pattern.num_local_vertices
+        n_halo = comm_pattern.num_halo_vertices
+        adj = create_sparse_adj(
+            edge_index, n_local, n_local + n_halo, x_local.device
+        )
+
+        def fn():
+            recv_buf = halo_exchange(x_local, comm_pattern)
+            x_aug = torch.cat([x_local, recv_buf], dim=0)
+            out = layer(x_aug, adj)
+            out.sum().backward()
+            if x_local.grad is not None:
+                x_local.grad.zero_()
+
+    elif model == "gcn":
 
         def fn():
             recv_buf = halo_exchange(x_local, comm_pattern)
@@ -228,13 +273,13 @@ def run_no_dist(args, graph_sizes, F):
         times_single = None
         oom = False
         try:
-            x, edge_t, layer, edge_attr = _build_single_gpu_tensors(
+            x, aux, layer, edge_attr = _build_single_gpu_tensors(
                 num_vertices, edges_np, F, args.model, device
             )
-            fn = _single_gpu_fn(x, edge_t, layer, edge_attr)
+            fn = _single_gpu_fn(x, aux, layer, edge_attr, args.model)
             times_single = cuda_timed(fn, warmup=args.warmup, trials=args.trials)
             # Free before next iteration
-            del x, edge_t, layer
+            del x, aux, layer
             if edge_attr is not None:
                 del edge_attr
             torch.cuda.empty_cache()
@@ -330,11 +375,12 @@ def run_distributed(args, graph_sizes, F, rank, world_size, local_rank):
             if args.model == "edge"
             else None
         )
-        layer_dist = (
-            GCNLayer(F).to(device)
-            if args.model == "gcn"
-            else EdgeConditionedLayer(F).to(device)
-        )
+        if args.model == "gcn":
+            layer_dist = GCNLayer(F).to(device)
+        elif args.model == "gcn_spmm":
+            layer_dist = GCNSpMMLayer(F).to(device)
+        else:
+            layer_dist = EdgeConditionedLayer(F).to(device)
         layer_dist.train()
 
         fn_multi = _multi_gpu_fn(
@@ -396,14 +442,14 @@ def run_distributed(args, graph_sizes, F, rank, world_size, local_rank):
                 graph_seed,
             )
             try:
-                x_s, edge_t_s, layer_s, edge_attr_s = _build_single_gpu_tensors(
+                x_s, aux_s, layer_s, edge_attr_s = _build_single_gpu_tensors(
                     num_vertices, edges_s, F, args.model, device
                 )
-                fn_single = _single_gpu_fn(x_s, edge_t_s, layer_s, edge_attr_s)
+                fn_single = _single_gpu_fn(x_s, aux_s, layer_s, edge_attr_s, args.model)
                 times_single = cuda_timed(
                     fn_single, warmup=args.warmup, trials=args.trials
                 )
-                del x_s, edge_t_s, layer_s, fn_single
+                del x_s, aux_s, layer_s, fn_single
                 if edge_attr_s is not None:
                     del edge_attr_s
                 torch.cuda.empty_cache()
