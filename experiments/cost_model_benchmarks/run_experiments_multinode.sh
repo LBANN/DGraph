@@ -55,8 +55,17 @@ GPUS_PER_NODE=${GPUS_PER_NODE:-4}
 # under-predicts every multi-node run by 15-31%.
 NICS_PER_NODE=${NICS_PER_NODE:-1}
 SEED=${SEED:-42}
-FEATURE_DIM=${FEATURE_DIM:-128}
-MODEL=${MODEL:-gcn}
+# Layer variants and feature dims for the distributed runs. Defaults are the
+# paper configuration; keep these in sync with run_experiments.sh, since this
+# script pools that script's K=2/4 files with its own K=${K} files for the fit.
+#
+# Note each launch() is a separately scheduled job, so the job count is
+# |E2E_MODELS| x |E2E_FEATURE_DIMS| x (1 + |E2E_VERTEX_SIZES|). Adding a
+# second feature dim doubles the queue time, which is why F stays single here
+# while the compute microbenchmarks (single-GPU, in run_experiments.sh) sweep
+# five values.
+E2E_MODELS=(${E2E_MODELS:-gcn edge gcn_spmm})
+E2E_FEATURE_DIMS=(${E2E_FEATURE_DIMS:-128})
 GRAPH=${GRAPH:-erdos_renyi}
 PARTITIONER=${PARTITIONER:-balanced}
 WARMUP=${WARMUP:-10}
@@ -157,23 +166,34 @@ launch 2 2 benchmarks/bench_concurrency.py \
   --output "${DATA_DIR}/concurrency.json" --seed "${SEED}"
 expect_output "${DATA_DIR}/concurrency.json"
 
-# 2.2 crossover and 2.1 end-to-end at full scale across all nodes.
-step "2.2 crossover -- K=${K} GPUs (${NNODES} nodes)"
-launch "${NNODES}" "${GPUS_PER_NODE}" benchmarks/bench_crossover.py \
-  --graph "${GRAPH}" --graph-sizes "${CROSSOVER_SIZES}" \
-  --avg-degree 20 --feature-dim "${FEATURE_DIM}" --model "${MODEL}" \
-  --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
-  --output "${DATA_DIR}/crossover_K${K}.json" --seed "${SEED}"
-expect_output "${DATA_DIR}/crossover_K${K}.json"
+# 2.2 crossover and 2.1 end-to-end at full scale across all nodes, swept over
+# E2E_MODELS x E2E_FEATURE_DIMS. Filenames carry K, model and F: they used to
+# be crossover_K${K}.json / e2e_K${K}_N${N}.json, which silently overwrote one
+# model's results with the next as soon as more than one model was swept.
+CROSSOVER_TAGS=()
+for m in "${E2E_MODELS[@]}"; do
+  for f in "${E2E_FEATURE_DIMS[@]}"; do
+    tag="K${K}_${m}_F${f}"
 
-for N in "${E2E_VERTEX_SIZES[@]}"; do
-  step "2.1 end-to-end -- K=${K} GPUs, N=${N}"
-  launch "${NNODES}" "${GPUS_PER_NODE}" benchmarks/bench_end_to_end.py \
-    --graph "${GRAPH}" --num-vertices "${N}" --avg-degree 20 \
-    --feature-dim "${FEATURE_DIM}" --model "${MODEL}" \
-    --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
-    --output "${DATA_DIR}/e2e_K${K}_N${N}.json" --seed "${SEED}"
-  expect_output "${DATA_DIR}/e2e_K${K}_N${N}.json"
+    step "2.2 crossover -- K=${K} GPUs (${NNODES} nodes), model=${m}, F=${f}"
+    launch "${NNODES}" "${GPUS_PER_NODE}" benchmarks/bench_crossover.py \
+      --graph "${GRAPH}" --graph-sizes "${CROSSOVER_SIZES}" \
+      --avg-degree 20 --feature-dim "${f}" --model "${m}" \
+      --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
+      --output "${DATA_DIR}/crossover_${tag}.json" --seed "${SEED}"
+    expect_output "${DATA_DIR}/crossover_${tag}.json"
+    CROSSOVER_TAGS+=("${tag}")
+
+    for N in "${E2E_VERTEX_SIZES[@]}"; do
+      step "2.1 end-to-end -- K=${K} GPUs, model=${m}, F=${f}, N=${N}"
+      launch "${NNODES}" "${GPUS_PER_NODE}" benchmarks/bench_end_to_end.py \
+        --graph "${GRAPH}" --num-vertices "${N}" --avg-degree 20 \
+        --feature-dim "${f}" --model "${m}" \
+        --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
+        --output "${DATA_DIR}/e2e_${tag}_N${N}.json" --seed "${SEED}"
+      expect_output "${DATA_DIR}/e2e_${tag}_N${N}.json"
+    done
+  done
 done
 
 # =======================================================================
@@ -186,15 +206,20 @@ done
 # of this run matrix.
 E2E_FILES=()
 for k in "${SINGLE_NODE_GPU_COUNTS[@]}" "${K}"; do
-  for N in "${E2E_VERTEX_SIZES[@]}"; do
-    f="${DATA_DIR}/e2e_K${k}_N${N}.json"
-    if [[ -f "$f" ]]; then
-      E2E_FILES+=("$f")
-    elif [[ "$k" -eq "$K" ]]; then
-      echo "[warn] missing ${f} — this run should have produced it; check the K=${K} step above for errors"
-    else
-      echo "[warn] missing ${f} — run ./run_experiments.sh first to produce the K=${k} points"
-    fi
+  for m in "${E2E_MODELS[@]}"; do
+    for fd in "${E2E_FEATURE_DIMS[@]}"; do
+      for N in "${E2E_VERTEX_SIZES[@]}"; do
+        f="${DATA_DIR}/e2e_K${k}_${m}_F${fd}_N${N}.json"
+        if [[ -f "$f" ]]; then
+          E2E_FILES+=("$f")
+        elif [[ "$k" -eq "$K" ]]; then
+          echo "[warn] missing ${f} — this run should have produced it; check the K=${K} step above for errors"
+        else
+          echo "[warn] missing ${f} — run ./run_experiments.sh with matching" \
+               "E2E_MODELS/E2E_FEATURE_DIMS to produce the K=${k} points"
+        fi
+      done
+    done
   done
 done
 
@@ -270,8 +295,10 @@ python -m visualization.plot_pingpong \
   --primitives "${DATA_DIR}/fitted_primitives.json" \
   --output "${FIG_DIR}/pingpong"
 
-python -m visualization.plot_crossover --input "${DATA_DIR}/crossover_K${K}.json" \
-  --output "${FIG_DIR}/crossover_K${K}.png"
+for tag in "${CROSSOVER_TAGS[@]}"; do
+  python -m visualization.plot_crossover --input "${DATA_DIR}/crossover_${tag}.json" \
+    --output "${FIG_DIR}/crossover_${tag}.png"
+done
 
 python -m visualization.plot_validation --predictions "${DATA_DIR}/predictions.json" \
   --color-by world_size --output "${FIG_DIR}/validation"

@@ -45,6 +45,12 @@ def parse_args():
     p.add_argument("--num-epochs",  type=int, default=100)
     p.add_argument("--graph",       type=str, default=None,
                    help="Filter to this graph type (optional)")
+    p.add_argument("--model",       type=str, default=None,
+                   help="Restrict to one layer type (gcn | edge | gcn_spmm). "
+                        "Required when predictions.json pools several, since a "
+                        "scaling curve is per-configuration.")
+    p.add_argument("--num-vertices", type=int, default=None,
+                   help="Restrict to one graph size, for the same reason.")
     p.add_argument("--output",      type=str, default="figures/tipping_point")
     return p.parse_args()
 
@@ -62,17 +68,53 @@ def main():
         entries = [e for e in entries
                    if e["config"].get("graph", "") == args.graph]
 
+    if args.model:
+        entries = [e for e in entries if e["config"].get("model", "") == args.model]
+    if args.num_vertices:
+        entries = [e for e in entries
+                   if e["config"].get("num_vertices", 0) == args.num_vertices]
+
     # Group by world_size
     ws_to_meas  = {}
     ws_to_pred  = {}
+    ws_to_cfg   = {}
     for e in entries:
         K = e["config"].get("world_size", 1)
         ws_to_meas.setdefault(K, []).append(e["measured_median_seconds"])
         ws_to_pred.setdefault(K, []).append(e["predicted_seconds"])
+        c = e["config"]
+        ws_to_cfg.setdefault(K, []).append(
+            (c.get("model"), c.get("num_vertices"), c.get("graph"),
+             c.get("feature_dim"), c.get("partitioner"))
+        )
 
     if not ws_to_meas:
         print("[plot_tipping_point] No data found. Exiting.")
         return
+
+    # A scaling curve is only meaningful for ONE configuration measured at
+    # several K. Previously this grouped by world_size alone and took a median
+    # over whatever else was in predictions.json — which silently averaged
+    # across N (1 ms and 49 ms points at the same K), and, once the drivers
+    # began sweeping E2E_MODELS, across layer types too. Refuse instead: the
+    # median of gcn and gcn_spmm is not a runtime of anything.
+    ambiguous = {K: sorted(set(cfgs)) for K, cfgs in ws_to_cfg.items()
+                 if len(set(cfgs)) > 1}
+    if ambiguous:
+        K0 = sorted(ambiguous)[0]
+        varying = [
+            name for i, name in enumerate(
+                ["model", "num_vertices", "graph", "feature_dim", "partitioner"])
+            if len({c[i] for c in ambiguous[K0]}) > 1
+        ]
+        raise ValueError(
+            f"predictions.json holds {len(ambiguous[K0])} different "
+            f"configurations at world_size={K0}, differing in "
+            f"{', '.join(varying)}. A tipping-point curve needs a single "
+            f"configuration swept over K. Narrow it with --model / "
+            f"--num-vertices / --graph. Configurations at K={K0}: "
+            f"{ambiguous[K0]}"
+        )
 
     K_vals   = sorted(ws_to_meas.keys())
     if K_vals[0] != 1:

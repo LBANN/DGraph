@@ -10,7 +10,7 @@
 #   ./run_experiments.sh
 #
 # Override any config variable via the environment, e.g.:
-#   GPU_COUNTS="2 4 8" MODEL=edge ./run_experiments.sh
+#   GPU_COUNTS="2 4 8" E2E_MODELS="gcn edge" ./run_experiments.sh
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -23,8 +23,17 @@ shopt -s nullglob
 # --- Config ------------------------------------------------------------
 GPU_COUNTS=(${GPU_COUNTS:-2 4})        # world sizes to sweep via torchrun --nproc_per_node
 SEED=${SEED:-42}
-FEATURE_DIM=${FEATURE_DIM:-128}
-MODEL=${MODEL:-gcn}                    # gcn | edge | gcn_spmm (distributed runs)
+FEATURE_DIM=${FEATURE_DIM:-128}        # F for the gather microbenchmark (1.4)
+# Layer variants and feature dims for the distributed (crossover + e2e) runs.
+# Defaults are the paper configuration, so a plain ./run_experiments.sh
+# produces exactly what the paper needs with nothing to override.
+#
+# F is a single value here while COMPUTE_FEATURE_DIMS below sweeps five: the
+# F-dependence result is a compute-microbenchmark finding (it yields F*), and
+# every extra F multiplies the whole distributed grid. Add to
+# E2E_FEATURE_DIMS if you want the assembled model validated at other F too.
+E2E_MODELS=(${E2E_MODELS:-gcn edge gcn_spmm})
+E2E_FEATURE_DIMS=(${E2E_FEATURE_DIMS:-128})
 # Layer variants and feature dims for the single-GPU compute sweeps (1.3).
 # Sweeping F is what makes T_comp's F dependence identifiable: at a single F
 # the F^2 and F terms are collinear, so a compute-bound layer and a
@@ -53,18 +62,28 @@ FIT_FILTER=${FIT_FILTER:-"world_size < ${MAX_GPU_COUNT}"}
 
 # Fail before spending GPU hours rather than at the plotting step at the end:
 # plot_compute reads the REF_FEATURE_DIM cell, which only exists if that F was
-# actually swept, and the distributed runs use MODEL, which only gets a fit if
-# it was among the compute models.
+# actually swept, and each model in E2E_MODELS only gets a T_comp fit if it was
+# also benchmarked as a compute model.
 if [[ ! " ${COMPUTE_FEATURE_DIMS[*]} " =~ " ${REF_FEATURE_DIM} " ]]; then
   echo "[error] REF_FEATURE_DIM=${REF_FEATURE_DIM} is not in COMPUTE_FEATURE_DIMS" \
        "(${COMPUTE_FEATURE_DIMS[*]}); the figures would have no data to plot." >&2
   exit 1
 fi
-if [[ ! " ${COMPUTE_MODELS[*]} " =~ " ${MODEL} " ]]; then
-  echo "[error] MODEL=${MODEL} is not in COMPUTE_MODELS (${COMPUTE_MODELS[*]});" \
-       "the distributed runs would have no T_comp fit to predict with." >&2
-  exit 1
-fi
+for m in "${E2E_MODELS[@]}"; do
+  if [[ ! " ${COMPUTE_MODELS[*]} " =~ " ${m} " ]]; then
+    echo "[error] E2E_MODELS contains '${m}', which is not in COMPUTE_MODELS" \
+         "(${COMPUTE_MODELS[*]}); its distributed runs would have no T_comp" \
+         "fit to predict with." >&2
+    exit 1
+  fi
+done
+for f in "${E2E_FEATURE_DIMS[@]}"; do
+  if [[ ! " ${COMPUTE_FEATURE_DIMS[*]} " =~ " ${f} " ]]; then
+    echo "[warn] E2E_FEATURE_DIMS contains F=${f}, which is not in" \
+         "COMPUTE_FEATURE_DIMS (${COMPUTE_FEATURE_DIMS[*]}). T_comp will be" \
+         "extrapolated in F rather than interpolated there." >&2
+  fi
+done
 
 mkdir -p "$DATA_DIR" "$FIG_DIR"
 
@@ -74,10 +93,10 @@ step() { echo; echo "=== $* ==="; }
 # 1. Single-GPU primitive microbenchmarks (1.3 compute, 1.4 gather) — no
 #    torchrun, GPU-count independent.
 #
-#    fit_primitives.py fits GCN and edge-conditioned compute costs
-#    independently (--compute-gcn / --compute-edge), regardless of which
-#    single MODEL the distributed crossover/end-to-end sweep below uses —
-#    so both model types are always benchmarked here.
+#    fit_primitives.py fits each layer variant's compute cost independently
+#    (--compute-gcn / --compute-edge / --compute-gcn-spmm), so every model in
+#    COMPUTE_MODELS is benchmarked here regardless of which subset the
+#    distributed crossover/end-to-end sweep below exercises.
 # -------------------------------------------------------------------------
 # Both sweep directions are required per (model, F) cell: fit_compute needs a
 # vertex sweep (|E| fixed) and an edge sweep (|V| fixed) to identify the |V|
@@ -137,33 +156,41 @@ torchrun --nnodes 1 --nproc_per_node 2 -m benchmarks.bench_pingpong \
 # 3. Distributed benchmarks (2.1 end-to-end, 2.2 crossover), swept over
 #    GPU_COUNTS via torchrun.
 # -------------------------------------------------------------------------
-for K in "${GPU_COUNTS[@]}"; do
-  step "2.2 crossover -- K=${K} GPUs"
-  torchrun --nnodes 1 --nproc_per_node "${K}" -m benchmarks.bench_crossover \
-    --graph "${GRAPH}" --graph-sizes "${CROSSOVER_SIZES}" \
-    --avg-degree 20 --feature-dim "${FEATURE_DIM}" --model "${MODEL}" \
-    --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
-    --output "${DATA_DIR}/crossover_K${K}.json" --seed "${SEED}"
-
-  for N in "${E2E_VERTEX_SIZES[@]}"; do
-    step "2.1 end-to-end -- K=${K} GPUs, N=${N}"
-    torchrun --nnodes 1 --nproc_per_node "${K}" -m benchmarks.bench_end_to_end \
-      --graph "${GRAPH}" --num-vertices "${N}" --avg-degree 20 \
-      --feature-dim "${FEATURE_DIM}" --model "${MODEL}" \
-      --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
-      --output "${DATA_DIR}/e2e_K${K}_N${N}.json" --seed "${SEED}"
-  done
-done
-
-# Explicit list of exactly the e2e files this script just produced — not a
-# e2e_*.json wildcard glob, which would also match any stray file sharing
-# that prefix (e.g. a leftover data/e2e_K8_F128_er_bal.json from manually
-# running a docstring example) and silently pool it into the fit/held-out
-# split as if it were part of this run's matrix.
+# Output filenames carry every axis that varies (K, model, F, N). They used to
+# be e2e_K${K}_N${N}.json, which silently overwrote one model's results with
+# the next as soon as more than one model was swept — the two runs differ only
+# in fields that were not in the name.
+#
+# E2E_FILES is accumulated here rather than rebuilt afterwards from the same
+# nested loops, so the list of files fed to the fit cannot drift out of sync
+# with the list actually produced. It is an explicit list, not an e2e_*.json
+# glob, which would also match stray files from ad-hoc runs (e.g. a leftover
+# data/e2e_K8_F128_er_bal.json) and pool them into the fit/held-out split.
 E2E_FILES=()
+CROSSOVER_TAGS=()
 for K in "${GPU_COUNTS[@]}"; do
-  for N in "${E2E_VERTEX_SIZES[@]}"; do
-    E2E_FILES+=("${DATA_DIR}/e2e_K${K}_N${N}.json")
+  for m in "${E2E_MODELS[@]}"; do
+    for f in "${E2E_FEATURE_DIMS[@]}"; do
+      tag="K${K}_${m}_F${f}"
+
+      step "2.2 crossover -- K=${K} GPUs, model=${m}, F=${f}"
+      torchrun --nnodes 1 --nproc_per_node "${K}" -m benchmarks.bench_crossover \
+        --graph "${GRAPH}" --graph-sizes "${CROSSOVER_SIZES}" \
+        --avg-degree 20 --feature-dim "${f}" --model "${m}" \
+        --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
+        --output "${DATA_DIR}/crossover_${tag}.json" --seed "${SEED}"
+      CROSSOVER_TAGS+=("${tag}")
+
+      for N in "${E2E_VERTEX_SIZES[@]}"; do
+        step "2.1 end-to-end -- K=${K} GPUs, model=${m}, F=${f}, N=${N}"
+        torchrun --nnodes 1 --nproc_per_node "${K}" -m benchmarks.bench_end_to_end \
+          --graph "${GRAPH}" --num-vertices "${N}" --avg-degree 20 \
+          --feature-dim "${f}" --model "${m}" \
+          --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
+          --output "${DATA_DIR}/e2e_${tag}_N${N}.json" --seed "${SEED}"
+        E2E_FILES+=("${DATA_DIR}/e2e_${tag}_N${N}.json")
+      done
+    done
   done
 done
 
@@ -207,11 +234,17 @@ step "visualization"
 # feature dim. NOTE: there is no figure for the F sweep itself yet — the
 # fitted F* values are printed by fit_primitives and stored in
 # fitted_primitives.json, but nothing plots T vs F.
-python -m visualization.plot_compute \
-  --gcn-vertex "${DATA_DIR}/compute_gcn_F${REF_FEATURE_DIM}_vswp.json" \
-  --gcn-edge "${DATA_DIR}/compute_gcn_F${REF_FEATURE_DIM}_eswp.json" \
-  --edge-vertex "${DATA_DIR}/compute_edge_F${REF_FEATURE_DIM}_vswp.json" \
-  --edge-edge "${DATA_DIR}/compute_edge_F${REF_FEATURE_DIM}_eswp.json" \
+PLOT_COMPUTE_ARGS=()
+for m in "${COMPUTE_MODELS[@]}"; do
+  case "$m" in
+    gcn)      vflag=--gcn-vertex;  eflag=--gcn-edge ;;
+    edge)     vflag=--edge-vertex; eflag=--edge-edge ;;
+    gcn_spmm) vflag=--spmm-vertex; eflag=--spmm-edge ;;
+  esac
+  PLOT_COMPUTE_ARGS+=("${vflag}" "${DATA_DIR}/compute_${m}_F${REF_FEATURE_DIM}_vswp.json")
+  PLOT_COMPUTE_ARGS+=("${eflag}" "${DATA_DIR}/compute_${m}_F${REF_FEATURE_DIM}_eswp.json")
+done
+python -m visualization.plot_compute "${PLOT_COMPUTE_ARGS[@]}" \
   --primitives "${DATA_DIR}/fitted_primitives.json" --output "${FIG_DIR}/compute"
 
 # bench_gather records BOTH gather_trials_seconds and
@@ -231,9 +264,9 @@ python -m visualization.plot_pingpong \
   --intra "${DATA_DIR}/pingpong_intra.json" --primitives "${DATA_DIR}/fitted_primitives.json" \
   --output "${FIG_DIR}/pingpong"
 
-for K in "${GPU_COUNTS[@]}"; do
-  python -m visualization.plot_crossover --input "${DATA_DIR}/crossover_K${K}.json" \
-    --output "${FIG_DIR}/crossover_K${K}.png"
+for tag in "${CROSSOVER_TAGS[@]}"; do
+  python -m visualization.plot_crossover --input "${DATA_DIR}/crossover_${tag}.json" \
+    --output "${FIG_DIR}/crossover_${tag}.png"
 done
 
 python -m visualization.plot_validation --predictions "${DATA_DIR}/predictions.json" \

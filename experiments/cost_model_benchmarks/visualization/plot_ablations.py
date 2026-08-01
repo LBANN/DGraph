@@ -76,8 +76,16 @@ def main():
         )
 
     def flat_comm_time(c_intra_bytes: float, c_inter_bytes: float) -> float:
-        """Flat (single-tier) model: no intra/inter distinction, no overlap —
-        all halo bytes go over one fitted (B, t_L) pair, sequentially."""
+        """Flat (single-tier) model: all halo bytes over one fitted (B, t_L).
+
+        NOTE: this baseline is naive in *two* ways relative to the full model —
+        it has no intra/inter tier split, and it applies no per-NIC contention
+        correction (B is not divided by ranks-per-NIC). So the gap this panel
+        shows is the combined value of the hierarchy *and* the contention
+        term, not the hierarchy alone. Do not describe it as isolating the
+        hierarchy; to separate them you would need a third curve with tiers
+        but no contention.
+        """
         total_bytes = c_intra_bytes + c_inter_bytes
         if total_bytes <= 0:
             return 0.0
@@ -96,6 +104,18 @@ def main():
         density_groups.setdefault(d, []).append(e)
 
     densities = sorted(density_groups.keys())
+    # Panel (a) needs SBM runs at several inter-densities. With ER-only data
+    # it renders empty — and the caption below would still assert that "the
+    # hierarchical model degrades more gracefully as inter-block density
+    # increases", a claim with nothing behind it. Fail instead of emitting a
+    # figure whose caption states a result the panel does not show.
+    if len(densities) < 2:
+        raise SystemExit(
+            f"[plot_ablations] Panel (a) needs SBM runs at 2+ inter-densities; "
+            f"found {len(densities)} ({densities or 'none'}) among "
+            f"{len(entries)} predictions. Re-run bench_end_to_end.py with "
+            f"--graph sbm and a swept --sbm-inter-density, or drop this figure."
+        )
     mape_full = []
     mape_flat = []
 
@@ -108,9 +128,12 @@ def main():
             T_pred_full = e["predicted_seconds"]
             full_errs.append(relative_error(T_pred_full, T_meas))
 
-            # Flat model: swap the hierarchical (intra/inter, overlapped via
-            # max) comm term for one predicted by a genuinely fit single-tier
-            # (B, t_L) model over total halo bytes — not a heuristic ratio.
+            # Flat model: swap the hierarchical comm term for one predicted by
+            # a genuinely fit single-tier (B, t_L) model over total halo bytes
+            # — not a heuristic ratio. Reading T_comm_seconds from the stored
+            # breakdown keeps this independent of how the full model combines
+            # its tiers (currently additive; see README's open question on
+            # sum vs max), so this panel needs no change if that flips.
             bd = e.get("breakdown", {})
             T_comm_hier = bd.get("T_comm_seconds", 0.0)
             c_intra = e["partition_stats"].get("c_intra_bytes", 0)

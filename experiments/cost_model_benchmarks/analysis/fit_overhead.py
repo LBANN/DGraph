@@ -111,13 +111,21 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
     # Using "forward" here undercounted T_comp and cost ~30% MAPE; adding
     # forward+backward together instead would double-count the forward pass.
     comp_params = primitives.get("compute", {}).get(model_type, {}).get("backward", None)
-    if comp_params:
-        # Which columns this evaluates depends on the form fit_compute chose
-        # (fixed-F legacy, edge-centric, or vertex-centric). compute_forms owns
-        # both sides so the fit and this evaluation cannot drift apart.
-        T_comp = compute_forms.evaluate(comp_params, n_total, n_edges_local, F)
-    else:
-        T_comp = 0.0
+    if comp_params is None:
+        # Never silently fall back to zero: T_comp is the dominant term in every
+        # run measured so far (44 ms of a 49 ms layer at K=2), so a missing fit
+        # would not look like an error, it would look like a fast prediction.
+        available = sorted(primitives.get("compute", {}))
+        raise ValueError(
+            f"No compute fit for model {model_type!r} in fitted_primitives.json "
+            f"(have: {available or 'none'}), but an end-to-end run uses it. "
+            f"Re-run fit_primitives.py with the matching --compute-* sweeps "
+            f"for {model_type!r}."
+        )
+    # Which columns this evaluates depends on the form fit_compute chose
+    # (fixed-F legacy, edge-centric, or vertex-centric). compute_forms owns
+    # both sides so the fit and this evaluation cannot drift apart.
+    T_comp = compute_forms.evaluate(comp_params, n_total, n_edges_local, F)
     T_comp = max(T_comp, 0.0)
 
     # T_intra and T_inter
