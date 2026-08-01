@@ -1,68 +1,53 @@
-#!/usr/bin/env bash
-#SBATCH --job-name=cost_model_multinode
-#SBATCH --nodes=2
-#SBATCH --ntasks-per-node=1
-#SBATCH --time=02:00:00
-#SBATCH --output=cost_model_multinode_%j.out
-# NOTE: add your cluster's --partition/--account/--gres here, e.g.
-#   #SBATCH --gres=gpu:4          (or --gpus-per-node=4, cluster-dependent)
-#
-# Multi-node extension of run_experiments.sh: adds the inter-node primitives
-# and the K = NNODES*GPUS_PER_NODE end-to-end/crossover points that a
-# single-node run cannot produce.
-#
-# PREREQUISITE: run ./run_experiments.sh on one node first. This script reuses
-# its compute_*/gather_*/pingpong_intra.json outputs and its K=2,4 e2e runs;
-# it only produces what genuinely requires >1 node.
-#
-# Run it ONCE — it fans out to the other nodes itself via srun. Either:
-#
-#   sbatch ./run_experiments_multinode.sh
-#
-# or from an interactive allocation (salloc -N 2 gives one shell on the head
-# node; srun distributes from there):
-#
-#   salloc -N 2 --ntasks-per-node=1 --gres=gpu:4 -t 2:00:00
-#   ./run_experiments_multinode.sh
-#
-# Each step runs `srun --ntasks-per-node=1`, placing exactly one torchrun
-# launcher on each node, which then spawns nproc_per_node worker processes
-# locally. torchrun uses *static* rendezvous (explicit --node_rank taken from
-# SLURM_NODEID) rather than c10d dynamic rendezvous, so global ranks are
-# deterministically block-assigned (global_rank = node_rank*nproc + local_rank).
-# bench_concurrency hardcodes a "ranks 0,1 on node A; ranks 2,3 on node B"
-# layout, and c10d assigns node ranks in join order — which would scramble
-# that mapping nondeterministically between runs.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 shopt -s nullglob
 
-# --- Allocation discovery ----------------------------------------------
-if ! command -v srun >/dev/null 2>&1; then
-  echo "[error] srun not found — this script must run inside a SLURM allocation" >&2
-  echo "        (sbatch ./run_experiments_multinode.sh, or salloc then run it)" >&2
-  exit 1
-fi
-if [[ -z "${SLURM_JOB_ID:-}" ]]; then
-  echo "[error] no SLURM allocation detected (SLURM_JOB_ID unset)." >&2
-  echo "        Run under sbatch, or inside 'salloc -N 2 ... '." >&2
+# =======================================================================
+# Multi-node benchmark driver -- uses hpc-launcher's `torchrun-hpc`
+# (https://github.com/llnl/HPC-launcher) instead of srun+torchrun.
+#
+# torchrun-hpc builds and submits its own SLURM batch script per
+# invocation, which changes the operating model versus the old
+# srun-inside-an-allocation approach:
+#   - This script no longer needs to run inside a pre-existing
+#     salloc/sbatch allocation. Run it directly, e.g. from a login node.
+#   - Every launch() call below requests its own (nnodes, procs/node)
+#     topology and is scheduled independently. Fixed-topology steps
+#     (pingpong-inter, concurrency) are no longer constrained to fit
+#     inside whatever NNODES was chosen for the full-scale crossover/e2e
+#     runs -- see the notes at each call site below.
+#   - MASTER_ADDR/MASTER_PORT/node_rank are handled internally by
+#     torchrun-hpc; no rendezvous port bookkeeping is needed here.
+#   - torchrun-hpc changes into its own launch directory (timestamped, by
+#     default) before running the command, and *relative* path arguments
+#     resolve against that directory, not this script's cwd. DATA_DIR and
+#     FIG_DIR are therefore canonicalized to absolute paths below.
+#
+# Assumption: torchrun-hpc blocks until the submitted job finishes
+# (mirroring srun's blocking behavior), so that the files each step
+# produces are on disk before the next step (or the fit/plot stage) reads
+# them. Each launch() call is followed by a check that its expected
+# output file actually landed, so the script fails fast with a clear
+# message if that assumption doesn't hold for your installed version.
+# If in doubt, sanity-check with `torchrun-hpc --dry-run` first.
+# =======================================================================
+
+if ! command -v torchrun-hpc >/dev/null 2>&1; then
+  echo "[error] torchrun-hpc not found on PATH." >&2
+  echo "        Install hpc-launcher with: pip install hpc-launcher" >&2
   exit 1
 fi
 
-NNODES=${NNODES:-${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-2}}}
+# --- Config ------------------------------------------------------------
+NNODES=${NNODES:-2}
 if [[ "${NNODES}" -lt 2 ]]; then
-  echo "[error] allocation has ${NNODES} node(s); this script needs >= 2." >&2
+  echo "[error] NNODES=${NNODES}; this script needs >= 2." >&2
   echo "        For single-node runs use ./run_experiments.sh instead." >&2
   exit 1
 fi
 
-# Head node hostname, used as the torchrun rendezvous master by every node.
-MASTER_ADDR=${MASTER_ADDR:-$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n1)}
-
-# --- Config ------------------------------------------------------------
 GPUS_PER_NODE=${GPUS_PER_NODE:-4}
-MASTER_PORT=${MASTER_PORT:-29500}
 SEED=${SEED:-42}
 FEATURE_DIM=${FEATURE_DIM:-128}
 MODEL=${MODEL:-gcn}
@@ -77,40 +62,57 @@ SINGLE_NODE_GPU_COUNTS=(${SINGLE_NODE_GPU_COUNTS:-2 4})  # must match run_experi
 DATA_DIR=${DATA_DIR:-data}
 FIG_DIR=${FIG_DIR:-figures}
 
+# torchrun-hpc scheduling options. All optional -- leave unset to let
+# hpc-launcher auto-detect system defaults (queue, time limit, account).
+JOB_NAME_PREFIX=${JOB_NAME_PREFIX:-gnn_bench}
+TORCHRUN_HPC_QUEUE=${TORCHRUN_HPC_QUEUE:-}
+TORCHRUN_HPC_TIME_LIMIT=${TORCHRUN_HPC_TIME_LIMIT:-}   # minutes
+TORCHRUN_HPC_ACCOUNT=${TORCHRUN_HPC_ACCOUNT:-}
+TORCHRUN_HPC_EXCLUSIVE=${TORCHRUN_HPC_EXCLUSIVE:-1}    # non-empty = pass --exclusive
+TORCHRUN_HPC_EXTRA_ARGS=${TORCHRUN_HPC_EXTRA_ARGS:-}   # e.g. "-r mpi --comm-backend NCCL"
+
 K=$((NNODES * GPUS_PER_NODE))   # total world size for the full-scale runs
 
 mkdir -p "$DATA_DIR" "$FIG_DIR"
+# Canonicalize to absolute paths -- see launch-directory note above.
+DATA_DIR=$(cd "${DATA_DIR}" && pwd)
+FIG_DIR=$(cd "${FIG_DIR}" && pwd)
 
-echo "Allocation: ${NNODES} nodes, ${GPUS_PER_NODE} GPU/node -> K=${K}"
-echo "Rendezvous master: ${MASTER_ADDR}"
+echo "Target topology: ${NNODES} nodes x ${GPUS_PER_NODE} GPU/node -> K=${K}"
+echo "Each step below submits (and waits on) its own torchrun-hpc job."
 
 step() { echo; echo "=== $* ==="; }
 
-# Each torchrun invocation gets its own port. Back-to-back runs reusing one
-# port can fail with "address already in use" while the previous rendezvous
-# socket is still in TIME_WAIT. Incremented by a plain assignment in this
-# shell — NOT inside $(...), whose subshell assignment would be discarded,
-# silently pinning every step to the same port.
-_port=$MASTER_PORT
+# Fails loudly if a step's expected output file didn't land -- see the
+# blocking-behavior assumption noted at the top of this file.
+expect_output() {
+  if [[ ! -s "$1" ]]; then
+    echo "[error] expected output file '$1' was not produced by the last step." >&2
+    echo "        If torchrun-hpc returned before the job finished, this" >&2
+    echo "        script's blocking assumption doesn't hold -- see header." >&2
+    exit 1
+  fi
+}
 
-# Launch one torchrun per node via srun.
-#   $1 = nproc_per_node, rest = the module + its args.
-# --node_rank must expand per-node, so the torchrun command runs under a
-# remote shell where $SLURM_NODEID is set; args are %q-quoted so anything
-# containing spaces survives that extra round of shell parsing intact.
+# Runs one Python module under torchrun-hpc. torchrun-hpc builds and
+# submits the SLURM batch script itself; no srun/torchrun/rendezvous
+# plumbing is needed here.
+#   $1 = nnodes, $2 = procs/node, $3 = python module (dotted path),
+#   rest = module args.
 launch() {
-  local nproc=$1; shift
-  _port=$((_port + 1))
-  local quoted_cmd
-  quoted_cmd=$(printf '%q ' "$@")
-  srun --nodes="${NNODES}" --ntasks-per-node=1 --cpu-bind=none \
-    bash -c "torchrun \
-      --nnodes ${NNODES} \
-      --nproc_per_node ${nproc} \
-      --node_rank \${SLURM_NODEID} \
-      --master_addr ${MASTER_ADDR} \
-      --master_port ${_port} \
-      ${quoted_cmd}"
+  local nnodes=$1 nproc=$2 module=$3; shift 3
+  local -a extra=()
+  [[ -n "${TORCHRUN_HPC_EXCLUSIVE}" ]] && extra+=(--exclusive)
+  [[ -n "${TORCHRUN_HPC_QUEUE}" ]] && extra+=(--queue "${TORCHRUN_HPC_QUEUE}")
+  [[ -n "${TORCHRUN_HPC_TIME_LIMIT}" ]] && extra+=(--time-limit "${TORCHRUN_HPC_TIME_LIMIT}")
+  [[ -n "${TORCHRUN_HPC_ACCOUNT}" ]] && extra+=(--account "${TORCHRUN_HPC_ACCOUNT}")
+  # Intentional word-splitting of a user-supplied flag string.
+  local -a passthrough=(${TORCHRUN_HPC_EXTRA_ARGS})
+
+  torchrun-hpc \
+    --nodes "${nnodes}" \
+    --procs-per-node "${nproc}" \
+    "${module}" "$@"
 }
 
 # =======================================================================
@@ -118,45 +120,49 @@ launch() {
 # single-node primitives come from run_experiments.sh.
 # =======================================================================
 
-# 1.1 inter-node ping-pong: exactly 2 ranks, one per node, so rank 0 and
-# rank 1 are guaranteed to be on different nodes (bench_pingpong asserts it).
-step "1.1 pingpong -- inter-node (1 rank/node)"
-launch 1 -m benchmarks.bench_pingpong \
+# 1.1 inter-node ping-pong: fixed at exactly 2 nodes, 1 rank/node, so
+# rank 0 and rank 1 are guaranteed to be on different nodes (bench_pingpong
+# asserts it). This no longer depends on the full-scale NNODES setting.
+step "1.1 pingpong -- inter-node (2 nodes, 1 rank/node)"
+launch 2 1 benchmarks/bench_pingpong.py \
   --mode inter --min-bytes 64 --max-bytes 67108864 --steps 21 \
   --warmup 20 --trials 100 \
   --output "${DATA_DIR}/pingpong_inter.json" --seed "${SEED}"
+expect_output "${DATA_DIR}/pingpong_inter.json"
 
-# 1.2 concurrency: exactly 4 ranks laid out 2-per-node, giving each rank both
+# 1.2 concurrency: fixed at exactly 4 ranks, 2/node, giving each rank both
 # an intra-node peer and an inter-node peer. This is the benchmark that
-# justifies T_comm = max(T_intra, T_inter); it cannot run on one node.
-if [[ "${NNODES}" -eq 2 ]]; then
-  step "1.2 concurrency -- intra/inter overlap (2 ranks/node)"
-  launch 2 -m benchmarks.bench_concurrency \
-    --message-bytes "${CONCURRENCY_BYTES}" --warmup 20 --trials 100 \
-    --output "${DATA_DIR}/concurrency.json" --seed "${SEED}"
-else
-  echo "[skip] bench_concurrency requires exactly 4 ranks (NNODES=2, 2/node); NNODES=${NNODES}"
-fi
+# justifies T_comm = max(T_intra, T_inter). Since this now schedules its
+# own independent 2-node job, it no longer needs to be gated behind
+# NNODES == 2 -- it always runs, regardless of the full-scale topology.
+step "1.2 concurrency -- intra/inter overlap (2 nodes, 2 ranks/node)"
+launch 2 2 benchmarks/bench_concurrency.py \
+  --message-bytes "${CONCURRENCY_BYTES}" --warmup 20 --trials 100 \
+  --output "${DATA_DIR}/concurrency.json" --seed "${SEED}"
+expect_output "${DATA_DIR}/concurrency.json"
 
 # 2.2 crossover and 2.1 end-to-end at full scale across all nodes.
 step "2.2 crossover -- K=${K} GPUs (${NNODES} nodes)"
-launch "${GPUS_PER_NODE}" -m benchmarks.bench_crossover \
+launch "${NNODES}" "${GPUS_PER_NODE}" benchmarks/bench_crossover.py \
   --graph "${GRAPH}" --graph-sizes "${CROSSOVER_SIZES}" \
   --avg-degree 20 --feature-dim "${FEATURE_DIM}" --model "${MODEL}" \
   --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
   --output "${DATA_DIR}/crossover_K${K}.json" --seed "${SEED}"
+expect_output "${DATA_DIR}/crossover_K${K}.json"
 
 for N in "${E2E_VERTEX_SIZES[@]}"; do
   step "2.1 end-to-end -- K=${K} GPUs, N=${N}"
-  launch "${GPUS_PER_NODE}" -m benchmarks.bench_end_to_end \
+  launch "${NNODES}" "${GPUS_PER_NODE}" benchmarks/bench_end_to_end.py \
     --graph "${GRAPH}" --num-vertices "${N}" --avg-degree 20 \
     --feature-dim "${FEATURE_DIM}" --model "${MODEL}" \
     --partitioner "${PARTITIONER}" --warmup "${WARMUP}" --trials "${TRIALS}" \
     --output "${DATA_DIR}/e2e_K${K}_N${N}.json" --seed "${SEED}"
+  expect_output "${DATA_DIR}/e2e_K${K}_N${N}.json"
 done
 
 # =======================================================================
-# Refit and plot (CPU-only post-processing, runs on the head node).
+# Refit and plot (CPU-only post-processing, runs locally -- no launcher
+# involved).
 # =======================================================================
 
 # Explicit file list (single-node K values plus this run's K), never a
