@@ -60,7 +60,12 @@ from benchmarks.graph_data_common import (
     get_ranks_per_node,
     intra_inter_halo,
 )
-from benchmarks.nn_layer_common import GCNLayer, EdgeConditionedLayer
+from benchmarks.nn_layer_common import (
+    GCNLayer,
+    EdgeConditionedLayer,
+    GCNSpMMLayer,
+    create_sparse_adj,
+)
 
 from DGraph.distributed import HaloExchange, CommunicationPattern, build_communication_pattern
 from DGraph import Communicator
@@ -82,7 +87,7 @@ def parse_args():
         help="Fraction of inter-block edges for SBM graphs",
     )
     p.add_argument("--feature-dim", type=int, default=128)
-    p.add_argument("--model", choices=["gcn", "edge"], default="gcn")
+    p.add_argument("--model", choices=["gcn", "edge", "gcn_spmm"], default="gcn")
     p.add_argument(
         "--partitioner", choices=["random", "balanced", "metis"], default="balanced"
     )
@@ -130,6 +135,8 @@ def main():
     # --- Model ---
     if args.model == "gcn":
         layer = GCNLayer(F).to(device)
+    elif args.model == "gcn_spmm":
+        layer = GCNSpMMLayer(F).to(device)
     else:
         layer = EdgeConditionedLayer(F).to(device)
     layer.train()
@@ -139,6 +146,14 @@ def main():
     edge_attr = (
         torch.randn(edge_index.shape[1], F, device=device)
         if args.model == "edge"
+        else None
+    )
+    # GCNSpMMLayer takes the prebuilt rectangular [n_local, n_local+n_halo]
+    # aggregation matrix instead of an edge index (see nn_layer_common) —
+    # built once here, outside the timed closure, matching bench_crossover.py.
+    adj = (
+        create_sparse_adj(edge_index, n_local, n_local + n_halo, device)
+        if args.model == "gcn_spmm"
         else None
     )
 
@@ -154,6 +169,8 @@ def main():
         # Message passing
         if args.model == "gcn":
             out = layer(x_aug, edge_index)
+        elif args.model == "gcn_spmm":
+            out = layer(x_aug, adj)
         else:
             out = layer(x_aug, edge_index, edge_attr)
         # Backward
