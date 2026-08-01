@@ -164,10 +164,18 @@ python -m visualization.plot_compute \
   --edge-vertex "${DATA_DIR}/compute_edge_vswp.json" --edge-edge "${DATA_DIR}/compute_edge_eswp.json" \
   --primitives "${DATA_DIR}/fitted_primitives.json" --output "${FIG_DIR}/compute"
 
-python -m visualization.plot_gather \
-  --contiguous "${DATA_DIR}/gather_contiguous.json" --clustered "${DATA_DIR}/gather_clustered.json" \
-  --random "${DATA_DIR}/gather_random.json" --fitted "${DATA_DIR}/fitted_primitives.json" \
-  --output "${FIG_DIR}/gather"
+# bench_gather records BOTH gather_trials_seconds and
+# scatter_add_trials_seconds, and fit_primitives fits both, but plot_gather
+# renders one --operation per invocation (default: gather). Without the
+# second call the scatter-add fit is never looked at by a human -- which is
+# how an O(N) zero-fill inside the timed region went unnoticed there while
+# the (clean) gather curve looked fine.
+for op in gather scatter_add; do
+  python -m visualization.plot_gather \
+    --contiguous "${DATA_DIR}/gather_contiguous.json" --clustered "${DATA_DIR}/gather_clustered.json" \
+    --random "${DATA_DIR}/gather_random.json" --fitted "${DATA_DIR}/fitted_primitives.json" \
+    --operation "${op}" --output "${FIG_DIR}/${op}"
+done
 
 python -m visualization.plot_pingpong \
   --intra "${DATA_DIR}/pingpong_intra.json" --primitives "${DATA_DIR}/fitted_primitives.json" \

@@ -128,8 +128,20 @@ def main():
         gather_times = cuda_timed(gather_fn, warmup=args.warmup, trials=args.trials)
 
         # --- Backward scatter-add ---
+        # grad_x.zero_() is deliberately NOT in the timed region. grad_x is
+        # [N, F] (10+ GB at the default N), so zeroing it is an O(N) HBM
+        # write costing ~3.1 ms -- while the scatter-add being measured is
+        # O(k) and costs ~13 us at small k. Timing them together put a
+        # k-independent 3.1 ms floor under every measurement (233x the real
+        # cost at k=1000), which fit_gather then absorbed into
+        # launch_overhead_seconds. That silently made the fitted scatter
+        # model a function of N, even though it is applied to O(k) byte
+        # counts (send_total * F * 4) in the cost model.
+        #
+        # Not re-zeroing means grad_x accumulates across trials. That is
+        # harmless here: scatter_add_ runtime does not depend on the
+        # accumulated values, and grad_y is all-ones so the sums stay small.
         def scatter_fn():
-            grad_x.zero_()
             grad_x.scatter_add_(0, idx_expanded, grad_y)
 
         scatter_times = cuda_timed(scatter_fn, warmup=args.warmup, trials=args.trials)

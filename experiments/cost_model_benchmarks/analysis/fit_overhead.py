@@ -50,10 +50,10 @@ def _gather_time(nbytes: float, params: dict) -> float:
 
 
 def predict_layer_time(run_config: dict, per_rank_stats: dict,
-                       primitives: dict) -> dict:
+                       primitives: dict, nics_per_node: int = 1) -> dict:
     """Predict T_layer for one rank using the assembled primitive model.
 
-    T_layer = T_comp + max(T_intra, T_inter) + T_buffer_copy
+    T_layer = T_comp + (T_intra + T_inter) + T_buffer_copy
 
     Parameters
     ----------
@@ -63,6 +63,12 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
         Stats for rank 0 from per_rank_stats list.
     primitives : dict
         Loaded fitted_primitives.json.
+    nics_per_node : int
+        Number of network interfaces per node. Ranks co-located on a node
+        share them, so the per-pair inter-node bandwidth measured by
+        bench_pingpong (1 rank/node, hence 1 rank/NIC) is not what a rank
+        sees once several ranks per node contend for the same rail. See
+        the contention note on ``net_time`` below.
 
     Returns
     -------
@@ -73,6 +79,7 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
     """
     F = run_config["feature_dim"]
     model_type = run_config.get("model", "gcn")
+    ranks_per_node = run_config.get("ranks_per_node", 1)
 
     n_local = per_rank_stats.get("n_local", 0)
     n_halo  = per_rank_stats.get("n_halo", 0)
@@ -116,6 +123,19 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
 
     net = primitives.get("network", {})
 
+    # Ranks co-located on a node share that node's NICs. bench_pingpong
+    # measures the inter-node rate with 1 rank per node -- i.e. one rank per
+    # NIC -- so its B_inter is a *per-NIC* capacity, not a per-rank one. With
+    # r ranks per node and n NICs, ceil(r/n) ranks contend for each rail and
+    # each sees B_inter / ceil(r/n).
+    #
+    # Not a fitted parameter: nics_per_node is a topology constant (read from
+    # `nvidia-smi topo -m`), exactly like ranks_per_node above. Ignoring it
+    # (equivalently, pretending every rank owns a NIC) under-predicts K=8 on
+    # 2 nodes x 4 GPU by 15-31%, because 4 ranks share 2 NICs and each rank
+    # gets half the ping-pong rate.
+    ranks_per_nic = max(1, -(-ranks_per_node // max(1, nics_per_node)))
+
     def net_time(nbytes: int, mode: str) -> float:
         if nbytes == 0:
             return 0.0
@@ -136,11 +156,21 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
             )
         B = params.get("bandwidth_bytes_per_sec", 1e10)
         t_L = params.get("latency_seconds", 0.0)
+        # Intra-node traffic goes over NVLink, which is all-to-all: co-located
+        # ranks do not share a single rail the way they share NICs, so only
+        # the inter-node rate is divided by the contention factor.
+        if mode == "inter":
+            B = B / ranks_per_nic
         return t_L + nbytes / B
 
     T_intra = max(net_time(intra_bytes, "intra"), 0.0)
     T_inter = max(net_time(inter_bytes, "inter"), 0.0)
-    T_comm = max(T_intra, T_inter)
+    # Additive, not max(). bench_concurrency measures exactly this overlap on
+    # this machine and finds none: with 16 MiB exchanges issued on separate
+    # CUDA streams, T_concurrent / max(T_intra, T_inter) = 1.60 while
+    # T_concurrent / (T_intra + T_inter) = 0.97. NVLink and IB transfers
+    # serialize, so the optimistic max() under-predicts every multi-node run.
+    T_comm = T_intra + T_inter
 
     # T_buffer_copy (gather of send buffer) — uses the fitted Hockney gather
     # model, evaluated by the same function fit_gather fits.
@@ -222,13 +252,14 @@ def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
     return float(v[idx])
 
 
-def fit_overhead_scalar(fit_runs: list, primitives: dict) -> tuple:
+def fit_overhead_scalar(fit_runs: list, primitives: dict,
+                        nics_per_node: int = 1) -> tuple:
     """Fit T_overhead to minimise MAPE on fit_runs. Returns (overhead, mape_in_sample)."""
     if not fit_runs:
         return 0.0, float("nan")
 
     residuals = np.array([
-        r["measured_median"] - predict_layer_time(r["config"], r["per_rank_stats"], primitives)["T_total"]
+        r["measured_median"] - predict_layer_time(r["config"], r["per_rank_stats"], primitives, nics_per_node)["T_total"]
         for r in fit_runs
     ])
     T_meas = np.array([r["measured_median"] for r in fit_runs])
@@ -240,7 +271,7 @@ def fit_overhead_scalar(fit_runs: list, primitives: dict) -> tuple:
     overhead = weighted_median(residuals, 1.0 / T_meas)
 
     mape = float(np.mean([
-        abs(r["measured_median"] - (predict_layer_time(r["config"], r["per_rank_stats"], primitives)["T_total"] + overhead))
+        abs(r["measured_median"] - (predict_layer_time(r["config"], r["per_rank_stats"], primitives, nics_per_node)["T_total"] + overhead))
         / r["measured_median"]
         for r in fit_runs
     ]))
@@ -258,6 +289,11 @@ def parse_args():
     p.add_argument("--e2e-runs", nargs="+", required=True, metavar="FILE")
     p.add_argument("--fit-filter", type=str, default="world_size <= 8",
                    help="Python expression evaluated per run; True → fit set")
+    p.add_argument("--nics-per-node", type=int, default=1,
+                   help="Network interfaces per node (topology constant, from "
+                        "`nvidia-smi topo -m`; not fitted). Co-located ranks "
+                        "share them, so each rank sees B_inter divided by "
+                        "ceil(ranks_per_node / nics_per_node).")
     p.add_argument("--output", type=str, default="data/fitted_overhead.json")
     return p.parse_args()
 
@@ -274,12 +310,13 @@ def main():
     fit_runs, held_runs = apply_filter(all_runs, args.fit_filter)
     print(f"[fit_overhead] Fit set: {len(fit_runs)}  Held-out: {len(held_runs)}")
 
-    overhead, mape_in = fit_overhead_scalar(fit_runs, primitives)
+    overhead, mape_in = fit_overhead_scalar(fit_runs, primitives, args.nics_per_node)
     print(f"[fit_overhead] T_overhead = {overhead*1e3:.3f} ms  in-sample MAPE = {mape_in*100:.2f}%")
 
     result = {
         "overhead_seconds": overhead,
         "fit_filter": args.fit_filter,
+        "nics_per_node": args.nics_per_node,
         "num_fit_points": len(fit_runs),
         "num_held_out": len(held_runs),
         "in_sample_mape": mape_in,

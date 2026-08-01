@@ -64,6 +64,11 @@ def main():
         overhead_data = json.load(f)
 
     T_overhead = overhead_data.get("overhead_seconds", 0.0)
+    # Read from fitted_overhead.json rather than taking a second CLI flag:
+    # T_overhead was fitted under a specific contention assumption, so passing
+    # a different nics_per_node here would silently pair an overhead constant
+    # with a network model it was never fitted against.
+    nics_per_node = overhead_data.get("nics_per_node", 1)
 
     all_runs = load_e2e_runs(args.e2e_runs)
     fit_runs, held_runs = apply_filter(all_runs, args.fit_filter)
@@ -72,7 +77,7 @@ def main():
 
     prediction_entries = []
     for r in all_runs:
-        breakdown = predict_layer_time(r["config"], r["per_rank_stats"], primitives)
+        breakdown = predict_layer_time(r["config"], r["per_rank_stats"], primitives, nics_per_node)
         T_pred = breakdown["T_total"] + T_overhead
         T_meas = r["measured_median"]
         abs_err = abs(T_meas - T_pred)
