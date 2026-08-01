@@ -48,6 +48,12 @@ if [[ "${NNODES}" -lt 2 ]]; then
 fi
 
 GPUS_PER_NODE=${GPUS_PER_NODE:-4}
+# Network interfaces per node -- a topology constant, from `nvidia-smi topo -m`.
+# Co-located ranks share NICs, so each rank sees B_inter divided by
+# ceil(GPUS_PER_NODE / NICS_PER_NODE). Getting this wrong does not error, it
+# just silently mispredicts: on 2 nodes x 4 GPU with 2 NICs, leaving it at 1
+# under-predicts every multi-node run by 15-31%.
+NICS_PER_NODE=${NICS_PER_NODE:-1}
 SEED=${SEED:-42}
 FEATURE_DIM=${FEATURE_DIM:-128}
 MODEL=${MODEL:-gcn}
@@ -72,6 +78,16 @@ TORCHRUN_HPC_EXCLUSIVE=${TORCHRUN_HPC_EXCLUSIVE:-1}    # non-empty = pass --excl
 TORCHRUN_HPC_EXTRA_ARGS=${TORCHRUN_HPC_EXTRA_ARGS:-}   # e.g. "-r mpi --comm-backend NCCL"
 
 K=$((NNODES * GPUS_PER_NODE))   # total world size for the full-scale runs
+
+# The default NICS_PER_NODE=1 is only correct when each rank owns a NIC. Warn
+# loudly otherwise: this is the one setting whose misconfiguration produces a
+# confidently wrong model rather than an error.
+if [[ "${NICS_PER_NODE}" -eq 1 && "${GPUS_PER_NODE}" -gt 1 ]]; then
+  echo "[warn] NICS_PER_NODE=1 with GPUS_PER_NODE=${GPUS_PER_NODE}: the model" >&2
+  echo "       will assume every rank has a NIC to itself. If this node has" >&2
+  echo "       fewer NICs than GPUs, inter-node time will be under-predicted." >&2
+  echo "       Check 'nvidia-smi topo -m' and set NICS_PER_NODE accordingly." >&2
+fi
 
 mkdir -p "$DATA_DIR" "$FIG_DIR"
 # Canonicalize to absolute paths -- see launch-directory note above.
@@ -191,22 +207,51 @@ fi
 # into the multi-node regime specifically.
 FIT_FILTER=${FIT_FILTER:-"world_size < ${K}"}
 
+# The compute sweeps are single-GPU and are produced by run_experiments.sh,
+# which writes one file per (model, F, sweep-direction) cell. Collect whatever
+# cells exist rather than naming them: this script does not know which
+# COMPUTE_FEATURE_DIMS the other one was run with.
+#
+# The F marker in the glob is deliberate — it matches only the current naming
+# scheme, so a stray file from an ad-hoc run (which historically did pool
+# incompatible feature dims into one regression) cannot be swept in.
+FIT_COMPUTE_ARGS=()
+for m in gcn edge gcn_spmm; do
+  files=("${DATA_DIR}/compute_${m}_F"*_vswp.json "${DATA_DIR}/compute_${m}_F"*_eswp.json)
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo "[warn] no compute sweeps found for model '${m}' — skipping its fit." \
+         "Run ./run_experiments.sh to produce them." >&2
+    continue
+  fi
+  case "$m" in
+    gcn)      FIT_COMPUTE_ARGS+=(--compute-gcn "${files[@]}") ;;
+    edge)     FIT_COMPUTE_ARGS+=(--compute-edge "${files[@]}") ;;
+    gcn_spmm) FIT_COMPUTE_ARGS+=(--compute-gcn-spmm "${files[@]}") ;;
+  esac
+done
+
+if [[ ${#FIT_COMPUTE_ARGS[@]} -eq 0 ]]; then
+  echo "[error] no compute sweep files in ${DATA_DIR}/ — T_comp cannot be fit," >&2
+  echo "        so every prediction would be missing its dominant term." >&2
+  exit 1
+fi
+
 step "fit_primitives (intra + inter network)"
 python -m analysis.fit_primitives \
   --pingpong-intra "${DATA_DIR}/pingpong_intra.json" \
   --pingpong-inter "${DATA_DIR}/pingpong_inter.json" \
-  --compute-gcn "${DATA_DIR}/compute_gcn_vswp.json" "${DATA_DIR}/compute_gcn_eswp.json" \
-  --compute-edge "${DATA_DIR}/compute_edge_vswp.json" "${DATA_DIR}/compute_edge_eswp.json" \
+  "${FIT_COMPUTE_ARGS[@]}" \
   --gather-contiguous "${DATA_DIR}/gather_contiguous.json" \
   --gather-clustered "${DATA_DIR}/gather_clustered.json" \
   --gather-random "${DATA_DIR}/gather_random.json" \
   --output "${DATA_DIR}/fitted_primitives.json"
 
-step "fit_overhead (fit-filter: ${FIT_FILTER})"
+step "fit_overhead (fit-filter: ${FIT_FILTER}, nics-per-node: ${NICS_PER_NODE})"
 python -m analysis.fit_overhead \
   --primitives "${DATA_DIR}/fitted_primitives.json" \
   --e2e-runs "${E2E_FILES[@]}" \
   --fit-filter "${FIT_FILTER}" \
+  --nics-per-node "${NICS_PER_NODE}" \
   --output "${DATA_DIR}/fitted_overhead.json"
 
 step "compute_predictions (fit-filter: ${FIT_FILTER})"
