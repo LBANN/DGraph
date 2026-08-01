@@ -3,14 +3,21 @@
 Single-GPU benchmark.  Fits f_comp(|Ṽ|, |Ẽ|) for two message-function
 variants:
 
-* ``gcn``  — GCN-like: φ(h_b) = W h_b  (source-only linear transform)
-* ``edge`` — Edge-conditioned: φ(h_b, h_a, e_ba) = MLP([h_b, h_a, e_ba])
-             with a 2-layer MLP (hidden dim = feature_dim)
+* ``gcn``      — GCN-like, applied per edge: φ(h_b) = W h_b. Costs |E|F².
+* ``edge``     — Edge-conditioned: φ(h_b, h_a, e_ba) = MLP([h_b, h_a, e_ba])
+                 with a 2-layer MLP (hidden dim = feature_dim). Costs |E|F².
+* ``gcn_spmm`` — A real GCN: transform-then-aggregate, dense [V,F]x[F,F]
+                 followed by a sparse matmul. Costs |V|F² + |E|F.
 
 Two sweep modes (controlled by ``--sweep``):
 
 * ``vertices`` — vary |V| with |E| fixed at ``--fixed-value``
 * ``edges``    — vary |E| with |V| fixed at ``--fixed-value``
+
+Sweeping ``--feature-dim`` across several runs is what makes ``T_comp``'s F
+dependence identifiable: at a single F the F² and F terms are collinear, so
+compute-bound and bandwidth-bound layers are indistinguishable. See
+``analysis/compute_forms.py``.
 
 Usage::
 
@@ -73,6 +80,39 @@ class GCNLayer(nn.Module):
         return out
 
 
+class GCNSpMMLayer(nn.Module):
+    """A real GCN: transform-then-aggregate via sparse matmul.
+
+    ``GCNLayer`` above transforms *per edge* (``|E| * F^2``); this transforms
+    the vertex matrix once (``|V| * F^2``) and aggregates with an SpMM
+    (``|E| * F``). At average degree 20 the per-edge form does ~20x the FLOPs,
+    so the two need separate fits — see analysis/compute_forms.py.
+    """
+
+    def __init__(self, feature_dim: int):
+        super().__init__()
+        self.linear = nn.Linear(feature_dim, feature_dim, bias=False)
+
+    def forward(self, x: torch.Tensor, adj_sparse: torch.Tensor) -> torch.Tensor:
+        return torch.sparse.mm(adj_sparse, self.linear(x))
+
+
+def build_sparse_adj(edge_index: torch.Tensor, num_vertices: int,
+                     device: torch.device, sparse_format: str) -> torch.Tensor:
+    """Square [V, V] aggregation matrix: row = dst, column = src.
+
+    Built once per sweep point, outside the timed region — in the distributed
+    setting the adjacency comes prebuilt from the comm pattern, so including
+    its construction here would measure something the model never pays for.
+    """
+    indices = torch.stack([edge_index[1], edge_index[0]])
+    values = torch.ones(edge_index.shape[1], dtype=torch.float32, device=device)
+    adj = torch.sparse_coo_tensor(
+        indices, values, size=(num_vertices, num_vertices), device=device
+    ).coalesce()
+    return adj.to_sparse_csr() if sparse_format == "csr" else adj
+
+
 class EdgeConditionedLayer(nn.Module):
     """Edge-conditioned: φ(h_b, h_a, e_ba) = MLP([h_b, h_a, e_ba])."""
 
@@ -103,7 +143,11 @@ class EdgeConditionedLayer(nn.Module):
 
 def parse_args():
     p = argparse.ArgumentParser(description="GNN compute primitive benchmark")
-    p.add_argument("--model", choices=["gcn", "edge"], required=True)
+    p.add_argument("--model", choices=["gcn", "edge", "gcn_spmm"], required=True)
+    p.add_argument("--sparse-format", choices=["csr", "coo"], default="csr",
+                   help="Sparse layout for --model gcn_spmm. CSR is faster; "
+                        "switch to coo if torch.sparse.mm's backward rejects "
+                        "CSR on this PyTorch build.")
     p.add_argument("--sweep", choices=["vertices", "edges"], required=True)
     p.add_argument("--min", type=int, default=1_000, dest="sweep_min")
     p.add_argument("--max", type=int, default=1_000_000, dest="sweep_max")
@@ -132,6 +176,8 @@ def main():
     # Build model
     if args.model == "gcn":
         model = GCNLayer(F).to(device)
+    elif args.model == "gcn_spmm":
+        model = GCNSpMMLayer(F).to(device)
     else:
         model = EdgeConditionedLayer(F).to(device)
 
@@ -153,46 +199,55 @@ def main():
         else:
             num_v, num_e = args.fixed_value, val
 
-        # Synthetic data
-        x = torch.randn(num_v, F, device=device, requires_grad=True)
-        edge_index = erdos_renyi_edges(num_v, num_e, device)
-        edge_attr = (
-            torch.randn(num_e, F, device=device) if args.model == "edge" else None
-        )
+        # A sweep over feature dims will eventually hit a cell that does not
+        # fit (edge-conditioned at F=512 with |E|=1e6 is the tightest). Skip
+        # that point and keep going: an unguarded OOM here loses every
+        # measurement already collected in this run.
+        x = edge_index = edge_attr = adj = None
+        try:
+            # Synthetic data
+            x = torch.randn(num_v, F, device=device, requires_grad=True)
+            edge_index = erdos_renyi_edges(num_v, num_e, device)
+            edge_attr = (
+                torch.randn(num_e, F, device=device) if args.model == "edge" else None
+            )
+            adj = (
+                build_sparse_adj(edge_index, num_v, device, args.sparse_format)
+                if args.model == "gcn_spmm"
+                else None
+            )
 
-        # Forward timing
-        def fwd():
-            if args.model == "gcn":
-                model(x, edge_index)
-            else:
-                model(x, edge_index, edge_attr)
+            def call_model():
+                if args.model == "gcn":
+                    return model(x, edge_index)
+                if args.model == "gcn_spmm":
+                    return model(x, adj)
+                return model(x, edge_index, edge_attr)
 
-        fwd_times = cuda_timed(fwd, warmup=args.warmup, trials=args.trials)
+            # Forward timing
+            fwd_times = cuda_timed(call_model, warmup=args.warmup, trials=args.trials)
 
-        # Backward timing (run fwd first to get a graph)
-        if args.model == "gcn":
-            out = model(x, edge_index)
-        else:
-            out = model(x, edge_index, edge_attr)
-        loss_ref = out.sum()
+            # NOTE: this closure times grad-zero + FORWARD + backward, not the
+            # backward pass alone — the forward must be re-run inside the timed
+            # region to rebuild the autograd graph consumed by each .backward()
+            # call. So "backward_trials_seconds" below is really the combined
+            # forward+backward cost (which is what the assembled cost model's
+            # T_comp needs, since bench_end_to_end.py times the same op set).
+            # Do not subtract or add "forward_trials_seconds" to it.
+            def bwd():
+                if x.grad is not None:
+                    x.grad.zero_()
+                call_model().sum().backward()
 
-        # NOTE: this closure times grad-zero + FORWARD + backward, not the
-        # backward pass alone — the forward must be re-run inside the timed
-        # region to rebuild the autograd graph consumed by each .backward()
-        # call. So "backward_trials_seconds" below is really the combined
-        # forward+backward cost (which is what the assembled cost model's
-        # T_comp needs, since bench_end_to_end.py times the same op set).
-        # Do not subtract or add "forward_trials_seconds" to it.
-        def bwd():
-            if x.grad is not None:
-                x.grad.zero_()
-            if args.model == "gcn":
-                out_inner = model(x, edge_index)
-            else:
-                out_inner = model(x, edge_index, edge_attr)
-            out_inner.sum().backward()
-
-        bwd_times = cuda_timed(bwd, warmup=args.warmup, trials=args.trials)
+            bwd_times = cuda_timed(bwd, warmup=args.warmup, trials=args.trials)
+        except torch.cuda.OutOfMemoryError:
+            print(
+                f"[compute/{args.model}] OOM: |V|={num_v:,} |E|={num_e:,} F={F} "
+                "does not fit; skipping this point and continuing"
+            )
+            del x, edge_index, edge_attr, adj
+            torch.cuda.empty_cache()
+            continue
 
         measurements.append(
             {
@@ -211,8 +266,20 @@ def main():
         med_fwd = sorted(fwd_times)[len(fwd_times) // 2]
         med_bwd = sorted(bwd_times)[len(bwd_times) // 2]
         print(
-            f"[compute/{args.model}] |V|={num_v:>8}  |E|={num_e:>9}  "
+            f"[compute/{args.model}] |V|={num_v:>8}  |E|={num_e:>9}  F={F:>4}  "
             f"fwd {1e3*med_fwd:.2f} ms  bwd {1e3*med_bwd:.2f} ms"
+        )
+
+        del x, edge_index, edge_attr, adj
+        torch.cuda.empty_cache()
+
+    if not measurements:
+        raise RuntimeError(
+            f"Every sweep point OOMed for model={args.model} F={F} "
+            f"(|V|/|E| from {args.sweep_min:,} to {args.sweep_max:,}, fixed "
+            f"{args.fixed_value:,}). Writing an empty file would silently "
+            "produce a fit with no data behind it. Lower --max, --fixed-value, "
+            "or --feature-dim."
         )
 
     payload = {
@@ -220,6 +287,7 @@ def main():
         "metadata": collect_metadata(),
         "config": {
             "model": args.model,
+            "sparse_format": args.sparse_format if args.model == "gcn_spmm" else None,
             "sweep": args.sweep,
             "sweep_min": args.sweep_min,
             "sweep_max": args.sweep_max,

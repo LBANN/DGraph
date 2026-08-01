@@ -24,7 +24,16 @@ shopt -s nullglob
 GPU_COUNTS=(${GPU_COUNTS:-2 4})        # world sizes to sweep via torchrun --nproc_per_node
 SEED=${SEED:-42}
 FEATURE_DIM=${FEATURE_DIM:-128}
-MODEL=${MODEL:-gcn}                    # gcn | edge
+MODEL=${MODEL:-gcn}                    # gcn | edge | gcn_spmm (distributed runs)
+# Layer variants and feature dims for the single-GPU compute sweeps (1.3).
+# Sweeping F is what makes T_comp's F dependence identifiable: at a single F
+# the F^2 and F terms are collinear, so a compute-bound layer and a
+# bandwidth-bound one fit the data equally well. See analysis/compute_forms.py.
+COMPUTE_MODELS=(${COMPUTE_MODELS:-gcn edge gcn_spmm})
+COMPUTE_FEATURE_DIMS=(${COMPUTE_FEATURE_DIMS:-32 64 128 256 512})
+# Defaults to FEATURE_DIM so overriding one does not silently leave the
+# figures pointing at a different feature dim than the distributed runs use.
+REF_FEATURE_DIM=${REF_FEATURE_DIM:-$FEATURE_DIM}
 GRAPH=${GRAPH:-erdos_renyi}            # erdos_renyi | sbm
 PARTITIONER=${PARTITIONER:-balanced}   # random | balanced | metis
 WARMUP=${WARMUP:-10}
@@ -42,6 +51,21 @@ FIG_DIR=${FIG_DIR:-figures}
 MAX_GPU_COUNT=$(printf '%s\n' "${GPU_COUNTS[@]}" | sort -n | tail -1)
 FIT_FILTER=${FIT_FILTER:-"world_size < ${MAX_GPU_COUNT}"}
 
+# Fail before spending GPU hours rather than at the plotting step at the end:
+# plot_compute reads the REF_FEATURE_DIM cell, which only exists if that F was
+# actually swept, and the distributed runs use MODEL, which only gets a fit if
+# it was among the compute models.
+if [[ ! " ${COMPUTE_FEATURE_DIMS[*]} " =~ " ${REF_FEATURE_DIM} " ]]; then
+  echo "[error] REF_FEATURE_DIM=${REF_FEATURE_DIM} is not in COMPUTE_FEATURE_DIMS" \
+       "(${COMPUTE_FEATURE_DIMS[*]}); the figures would have no data to plot." >&2
+  exit 1
+fi
+if [[ ! " ${COMPUTE_MODELS[*]} " =~ " ${MODEL} " ]]; then
+  echo "[error] MODEL=${MODEL} is not in COMPUTE_MODELS (${COMPUTE_MODELS[*]});" \
+       "the distributed runs would have no T_comp fit to predict with." >&2
+  exit 1
+fi
+
 mkdir -p "$DATA_DIR" "$FIG_DIR"
 
 step() { echo; echo "=== $* ==="; }
@@ -55,18 +79,39 @@ step() { echo; echo "=== $* ==="; }
 #    single MODEL the distributed crossover/end-to-end sweep below uses —
 #    so both model types are always benchmarked here.
 # -------------------------------------------------------------------------
-for m in gcn edge; do
-  step "1.3 compute -- ${m}, vertex sweep"
-  python -m benchmarks.bench_compute --model "${m}" --sweep vertices \
-    --min 1000 --max 1000000 --steps 10 --fixed-value 200000 \
-    --feature-dim "${FEATURE_DIM}" --warmup "${WARMUP}" --trials "${TRIALS}" \
-    --output "${DATA_DIR}/compute_${m}_vswp.json" --seed "${SEED}"
-
-  step "1.3 compute -- ${m}, edge sweep"
-  python -m benchmarks.bench_compute --model "${m}" --sweep edges \
-    --min 1000 --max 1000000 --steps 10 --fixed-value 200000 \
-    --feature-dim "${FEATURE_DIM}" --warmup "${WARMUP}" --trials "${TRIALS}" \
-    --output "${DATA_DIR}/compute_${m}_eswp.json" --seed "${SEED}"
+# Both sweep directions are required per (model, F) cell: fit_compute needs a
+# vertex sweep (|E| fixed) and an edge sweep (|V| fixed) to identify the |V|
+# and |E| coefficients independently. Filenames carry F so the cells stay
+# separable and a stale file from a different F cannot be pooled in.
+#
+# FIT_COMPUTE_ARGS is accumulated here rather than reconstructed later: the
+# outer loop is per-model, so each --compute-* flag is followed contiguously
+# by exactly the files just generated for it, which is what nargs="+" wants.
+# (Built as a flat array, not an associative one — bash 3.2, still the default
+# on macOS, has no `declare -A`.)
+FIT_COMPUTE_ARGS=()
+for m in "${COMPUTE_MODELS[@]}"; do
+  case "$m" in
+    gcn)      FIT_COMPUTE_ARGS+=(--compute-gcn) ;;
+    edge)     FIT_COMPUTE_ARGS+=(--compute-edge) ;;
+    gcn_spmm) FIT_COMPUTE_ARGS+=(--compute-gcn-spmm) ;;
+    *) echo "[error] unknown compute model '${m}'" >&2; exit 1 ;;
+  esac
+  for f in "${COMPUTE_FEATURE_DIMS[@]}"; do
+    for sweep in vertices edges; do
+      case "$sweep" in
+        vertices) tag=vswp ;;
+        edges)    tag=eswp ;;
+      esac
+      out="${DATA_DIR}/compute_${m}_F${f}_${tag}.json"
+      step "1.3 compute -- ${m}, F=${f}, ${sweep} sweep"
+      python -m benchmarks.bench_compute --model "${m}" --sweep "${sweep}" \
+        --min 1000 --max 1000000 --steps 10 --fixed-value 200000 \
+        --feature-dim "${f}" --warmup "${WARMUP}" --trials "${TRIALS}" \
+        --output "${out}" --seed "${SEED}"
+      FIT_COMPUTE_ARGS+=("${out}")
+    done
+  done
 done
 
 step "1.4 gather -- contiguous / clustered / random"
@@ -133,8 +178,7 @@ step "fit_primitives"
 # silently pool incompatible data into one regression.
 python -m analysis.fit_primitives \
   --pingpong-intra "${DATA_DIR}/pingpong_intra.json" \
-  --compute-gcn "${DATA_DIR}/compute_gcn_vswp.json" "${DATA_DIR}/compute_gcn_eswp.json" \
-  --compute-edge "${DATA_DIR}/compute_edge_vswp.json" "${DATA_DIR}/compute_edge_eswp.json" \
+  "${FIT_COMPUTE_ARGS[@]}" \
   --gather-contiguous "${DATA_DIR}/gather_contiguous.json" \
   --gather-clustered "${DATA_DIR}/gather_clustered.json" \
   --gather-random "${DATA_DIR}/gather_random.json" \
@@ -159,9 +203,15 @@ python -m analysis.compute_predictions \
 # 5. Visualization.
 # -------------------------------------------------------------------------
 step "visualization"
+# plot_compute shows one (model, F) cell per panel, so it gets the reference
+# feature dim. NOTE: there is no figure for the F sweep itself yet — the
+# fitted F* values are printed by fit_primitives and stored in
+# fitted_primitives.json, but nothing plots T vs F.
 python -m visualization.plot_compute \
-  --gcn-vertex "${DATA_DIR}/compute_gcn_vswp.json" --gcn-edge "${DATA_DIR}/compute_gcn_eswp.json" \
-  --edge-vertex "${DATA_DIR}/compute_edge_vswp.json" --edge-edge "${DATA_DIR}/compute_edge_eswp.json" \
+  --gcn-vertex "${DATA_DIR}/compute_gcn_F${REF_FEATURE_DIM}_vswp.json" \
+  --gcn-edge "${DATA_DIR}/compute_gcn_F${REF_FEATURE_DIM}_eswp.json" \
+  --edge-vertex "${DATA_DIR}/compute_edge_F${REF_FEATURE_DIM}_vswp.json" \
+  --edge-edge "${DATA_DIR}/compute_edge_F${REF_FEATURE_DIM}_eswp.json" \
   --primitives "${DATA_DIR}/fitted_primitives.json" --output "${FIG_DIR}/compute"
 
 # bench_gather records BOTH gather_trials_seconds and

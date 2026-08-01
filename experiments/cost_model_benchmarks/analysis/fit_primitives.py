@@ -33,6 +33,8 @@ from scipy import stats as sp_stats
 from scipy.optimize import curve_fit
 from scipy.special import expit
 
+from analysis import compute_forms
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,44 +139,60 @@ def fit_network(records: list) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def fit_compute(records: list, timing_key: str = "forward_trials_seconds") -> dict:
-    """Fit compute cost as a function of |V| and |E|.
+def fit_compute(records: list, timing_key: str = "forward_trials_seconds",
+                model_type: str = "gcn") -> dict:
+    """Fit compute cost as a function of |V|, |E| and the feature dim F.
 
-    Uses multiple linear regression: T = a * |V| + b * |E| + c
+    The design matrix depends on the layer's structure and on whether F was
+    actually swept — see ``analysis/compute_forms.py``, which owns the form
+    definitions so that fitting and prediction cannot disagree. With single-F
+    data this degrades to the original ``T = a|V| + b|E| + c``.
     """
-    V_arr, E_arr, T_arr = [], [], []
+    V_arr, E_arr, F_arr, T_arr = [], [], [], []
     for rec in records:
+        default_F = rec.get("config", {}).get("feature_dim")
         for meas in rec["measurements"]:
-            V_arr.append(meas["params"]["num_vertices"])
-            E_arr.append(meas["params"]["num_edges"])
+            params = meas["params"]
+            V_arr.append(params["num_vertices"])
+            E_arr.append(params["num_edges"])
+            F_arr.append(params.get("feature_dim", default_F))
             T_arr.append(median_of_trials(meas[timing_key]))
+
+    if any(f is None for f in F_arr):
+        raise ValueError(
+            "Some compute measurements have no feature_dim, in params or in "
+            "the file's config block. F is a design-matrix input now, so it "
+            "cannot be inferred. Re-run bench_compute.py to regenerate."
+        )
 
     V_arr = np.array(V_arr, dtype=float)
     E_arr = np.array(E_arr, dtype=float)
+    F_arr = np.array(F_arr, dtype=float)
     T_arr = np.array(T_arr, dtype=float)
 
-    # Design matrix: [V, E, 1], weighted by relative error (1/T) for
-    # consistency with fit_gather's curve_fit(sigma=T_arr) — |V|/|E| sweeps
-    # are log-spaced over several orders of magnitude, so an unweighted fit
-    # would be dominated by the largest graphs and leave the small-graph
-    # intercept (which matters most for the crossover/tipping-point
-    # analysis) poorly constrained.
-    A = np.column_stack([V_arr, E_arr, np.ones_like(V_arr)])
+    form = compute_forms.select_form(model_type, len(np.unique(F_arr)))
+
+    # Weighted by relative error (1/T) for consistency with fit_gather's
+    # curve_fit(sigma=T_arr) — |V|/|E| sweeps are log-spaced over several
+    # orders of magnitude, so an unweighted fit would be dominated by the
+    # largest graphs and leave the small-graph intercept (which matters most
+    # for the crossover/tipping-point analysis) poorly constrained.
+    A = np.column_stack(compute_forms.design_columns(form, V_arr, E_arr, F_arr))
     w = 1.0 / T_arr
-    A_w = A * w[:, None]
-    b_w = T_arr * w
-    result, _, _, _ = np.linalg.lstsq(A_w, b_w, rcond=None)
-    coeff_V, coeff_E, intercept = result
+    result, _, _, _ = np.linalg.lstsq(A * w[:, None], T_arr * w, rcond=None)
     T_pred = A @ result
     r2 = r_squared(T_arr, T_pred)
 
-    return {
-        "coeff_V": float(coeff_V),
-        "coeff_E": float(coeff_E),
-        "intercept": float(intercept),
+    out = {
+        "form": form,
         "r_squared": r2,
         "_num_points": len(T_arr),
+        "_distinct_feature_dims": sorted(float(f) for f in np.unique(F_arr)),
     }
+    out.update(
+        {name: float(v) for name, v in zip(compute_forms.FORM_COEFFS[form], result)}
+    )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +297,10 @@ def parse_args():
     p.add_argument("--pingpong-inter", nargs="+", default=[], metavar="FILE")
     p.add_argument("--compute-gcn", nargs="+", default=[], metavar="FILE")
     p.add_argument("--compute-edge", nargs="+", default=[], metavar="FILE")
+    p.add_argument("--compute-gcn-spmm", nargs="+", default=[], metavar="FILE",
+                   help="Sweeps for the transform-then-aggregate SpMM GCN "
+                        "layer (--model gcn_spmm). Fit with the vertex-centric "
+                        "form; see analysis/compute_forms.py.")
     p.add_argument("--gather-contiguous", nargs="+", default=[], metavar="FILE")
     p.add_argument("--gather-clustered", nargs="+", default=[], metavar="FILE")
     p.add_argument("--gather-random", nargs="+", default=[], metavar="FILE")
@@ -324,28 +346,43 @@ def main():
 
     # Compute
     comp = {}
-    if args.compute_gcn:
-        recs = load_json_files(args.compute_gcn)
-        comp["gcn"] = {
-            "forward": fit_compute(recs, "forward_trials_seconds"),
-            "backward": fit_compute(recs, "backward_trials_seconds"),
+    for model_type, files in [
+        ("gcn", args.compute_gcn),
+        ("edge", args.compute_edge),
+        ("gcn_spmm", args.compute_gcn_spmm),
+    ]:
+        if not files:
+            continue
+        recs = load_json_files(files)
+        comp[model_type] = {
+            "forward": fit_compute(recs, "forward_trials_seconds", model_type),
+            "backward": fit_compute(recs, "backward_trials_seconds", model_type),
         }
-        print(
-            f"[compute/gcn] coeff_V={comp['gcn']['forward']['coeff_V']:.3e}  "
-            f"coeff_E={comp['gcn']['forward']['coeff_E']:.3e}  "
-            f"R²={comp['gcn']['forward']['r_squared']:.4f}"
+        fwd = comp[model_type]["forward"]
+        coeff_str = "  ".join(
+            f"{name}={fwd[name]:.3e}"
+            for name in compute_forms.FORM_COEFFS[fwd["form"]]
         )
-    if args.compute_edge:
-        recs = load_json_files(args.compute_edge)
-        comp["edge"] = {
-            "forward": fit_compute(recs, "forward_trials_seconds"),
-            "backward": fit_compute(recs, "backward_trials_seconds"),
-        }
-        print(
-            f"[compute/edge] coeff_V={comp['edge']['forward']['coeff_V']:.3e}  "
-            f"coeff_E={comp['edge']['forward']['coeff_E']:.3e}  "
-            f"R²={comp['edge']['forward']['r_squared']:.4f}"
-        )
+        print(f"[compute/{model_type}] form={fwd['form']}  {coeff_str}  "
+              f"R²={fwd['r_squared']:.4f}")
+        if fwd["form"] == "legacy_VE":
+            print(f"[compute/{model_type}] NOTE: only one feature dim "
+                  f"({fwd['_distinct_feature_dims']}) in the input, so the "
+                  "F-dependent form is unidentifiable and T_comp was fit at "
+                  "fixed F. Sweep --feature-dim to get F*.")
+        else:
+            avg_deg = None
+            if fwd["form"] == "vertex_centric":
+                # F* depends on |E|/|V| for this form; report at the degree the
+                # benchmark actually used rather than inventing one.
+                degs = {
+                    m["params"]["num_edges"] / m["params"]["num_vertices"]
+                    for r in recs for m in r["measurements"]
+                }
+                avg_deg = sum(degs) / len(degs)
+            f_star = compute_forms.crossover_feature_dim(fwd, avg_deg)
+            print(f"[compute/{model_type}] F* = {f_star:.1f}" + (
+                f"  (at mean degree {avg_deg:.1f})" if avg_deg else ""))
     result["compute"] = comp
 
     # Gather

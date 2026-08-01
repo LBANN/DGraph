@@ -27,6 +27,8 @@ from pathlib import Path
 
 import numpy as np
 
+from analysis import compute_forms
+
 
 # ---------------------------------------------------------------------------
 # Cost model (without overhead)
@@ -110,9 +112,10 @@ def predict_layer_time(run_config: dict, per_rank_stats: dict,
     # forward+backward together instead would double-count the forward pass.
     comp_params = primitives.get("compute", {}).get(model_type, {}).get("backward", None)
     if comp_params:
-        T_comp = (comp_params["coeff_V"] * n_total
-                  + comp_params["coeff_E"] * n_edges_local
-                  + comp_params["intercept"])
+        # Which columns this evaluates depends on the form fit_compute chose
+        # (fixed-F legacy, edge-centric, or vertex-centric). compute_forms owns
+        # both sides so the fit and this evaluation cannot drift apart.
+        T_comp = compute_forms.evaluate(comp_params, n_total, n_edges_local, F)
     else:
         T_comp = 0.0
     T_comp = max(T_comp, 0.0)
