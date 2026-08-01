@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 
 from analysis import compute_forms
 
-COLORS = {"gcn": "#2ca02c", "edge": "#ff7f0e"}
+COLORS = {"gcn": "#2ca02c", "edge": "#ff7f0e", "gcn_spmm":"#613cd1"}
 plt.rcParams.update(
     {
         "font.size": 9,
