@@ -11,108 +11,126 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
+from typing import Union
+
 import torch
 import torch.nn as nn
 
-from DGraph.distributed import HaloExchange, CommunicationPattern
 from DGraph.utils.TimingReport import TimingReport
-from DGraph import Communicator
-import torch.distributed as dist
-import sys
 
 
-import torch
-import torch.nn as nn
+def create_sparse_adj(
+    edge_index,
+    num_local_nodes,
+    num_halo_nodes,
+    device: Union[str, torch.device] = "cpu",
+):
+    """
+    Converts an edge_index of shape [num_edges, 2] into a PyTorch sparse tensor.
+
+    Follows ``DGraph.distributed.commInfo``'s edge-list convention: column 1 is
+    the destination, which is always a locally-owned vertex, and column 0 is the
+    source/neighbour, which may be a halo vertex. Hence the adjacency is
+    rectangular: [num_local_nodes, num_local_nodes + num_halo_nodes].
+    """
+    # PyTorch sparse tensors expect indices in shape [2, num_edges]
+    indices = torch.stack(
+        [
+            edge_index[:, 1],  # Rows: Targets (strictly < num_local_nodes)
+            edge_index[:, 0],  # Cols: Sources (< num_local_nodes + num_halo_nodes)
+        ]
+    )
+
+    # Adjacency values are 1 for unweighted graphs
+    values = torch.ones(edge_index.size(0), dtype=torch.float32, device=device)
+
+    # Create the sparse COO tensor
+    adj_sparse = torch.sparse_coo_tensor(
+        indices,
+        values,
+        size=(num_local_nodes, num_local_nodes + num_halo_nodes),
+        device=device,
+    )
+
+    # Convert to CSR format for faster spmm operations
+    if not adj_sparse.is_coalesced():
+        adj_sparse = adj_sparse.coalesce()
+
+    adj_sparse_csr = adj_sparse.to_sparse_csr()
+
+    return adj_sparse_csr
 
 
-class GraphConvLayer(nn.Module):
-    def __init__(self, message_dim, out_channels):
-        super(GraphConvLayer, self).__init__()
-        self.conv = nn.Linear(message_dim, out_channels)
+class GCNLayer(nn.Module):
+    """GCN layer using a sparse adjacency matmul for message passing.
+
+    Transform-then-aggregate: a dense [V, F] x [F, F] linear followed by an
+    SpMM against the rectangular local adjacency. The SpMM consumes the
+    augmented [num_local + num_halo, F] feature matrix and emits only the
+    num_local rows, so the tensor does not grow from layer to layer.
+    """
+
+    def __init__(self, in_channels, out_channels):
+        super(GCNLayer, self).__init__()
+        self.linear = nn.Linear(in_channels, out_channels)
         self.act = nn.ReLU(inplace=True)
 
-    def forward(self, x, edge_index, num_local_nodes, edge_features=None):
-        source_vertices = edge_index[:, 0]
-        target_vertices = edge_index[:, 1]
+    def forward(self, x, adj_sparse):
+        """
+        Args:
+            x: Node features tensor of shape [num_local + num_halo, in_channels]
+            adj_sparse: Sparse adjacency of shape
+                [num_local, num_local + num_halo]
+        """
+        # 1. Feature transformation (Dense)
+        x = self.linear(x)
 
-        assert (source_vertices < num_local_nodes).all(), (
-            f"Graph routing error: Found source_vertices >= num_local_nodes ({num_local_nodes}). "
-            "Boundary nodes must only act as targets (x_j) in this aggregation scheme!"
-        )
+        # 2. Message Passing via Sparse Matrix Multiplication
+        # This single line replaces x_j, out.zeros(), and scatter_add()
+        out = torch.sparse.mm(adj_sparse, x)
 
-        x_i = x[source_vertices, :]
-        x_j = x[target_vertices, :]
-
-        if edge_features is not None:
-            x_ij = torch.cat([x_i, x_j, edge_features], dim=1)
-        else:
-            x_ij = torch.cat([x_i, x_j], dim=1)
-
-        m_ij = self.conv(x_ij)
-        m_ij = self.act(m_ij)
-
-        out_channels = m_ij.size(1)
-
-        # 1. Allocate ONLY for the local nodes (the sources we are aggregating to)
-        out = torch.zeros(num_local_nodes, out_channels, dtype=x.dtype, device=x.device)
-
-        # 2. Scatter messages back to the SOURCE vertices
-        scatter_index = (
-            source_vertices.unsqueeze(-1).expand(-1, out_channels).to(x.device)
-        )
-
-        # 3. Perform the aggregation
-        out = out.scatter_add(0, scatter_index, m_ij)
+        # 3. Activation
+        out = self.act(out)
 
         return out
 
 
-class CommAwareGCN(nn.Module):
-    """
-    Least interesting GNN model to test distributed training
-    but good enough for the purpose of testing.
-    """
-
+class GCNModel(nn.Module):
     def __init__(
         self,
-        in_channels: int,
-        hidden_dims: int,
-        num_classes: int,
-        halo_exchanger: HaloExchange,
-        comm: Communicator,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers,
+        halo_exchanger,
     ):
-        super(CommAwareGCN, self).__init__()
+        super(GCNModel, self).__init__()
+        self.convs = nn.ModuleList()
+        self.convs.append(GCNLayer(in_channels, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.convs.append(GCNLayer(hidden_channels, hidden_channels))
+        self.convs.append(GCNLayer(hidden_channels, out_channels))
         self.halo_exchanger = halo_exchanger
 
-        self.conv1 = GraphConvLayer(2 * in_channels, hidden_dims)
+    def forward(self, x, comm_pattern):
+        # comm_pattern.local_edge_list must already have been converted to a
+        # sparse CSR adjacency via create_sparse_adj().
+        edge_index = comm_pattern.local_edge_list
+        counter = 1
+        for conv in self.convs[:-1]:
+            with TimingReport(f"feature-exchange-{counter}"):
+                boundary_features = self.halo_exchanger(x, comm_pattern)
 
-        self.conv2 = GraphConvLayer(2 * hidden_dims, hidden_dims)
+            with TimingReport(f"process-{counter}"):
+                x = torch.cat([x, boundary_features], dim=0)
+                x = conv(x, edge_index)
 
-        self.fc = nn.Linear(hidden_dims, num_classes)
-        self.softmax = nn.Softmax(dim=1)
-        self.comm = comm
+            counter += 1
 
-    def forward(
-        self, local_node_features: torch.Tensor, comm_pattern: CommunicationPattern
-    ):
-
-        num_local_nodes = local_node_features.shape[0]
-
-        with TimingReport("feature-exchange-1"):
-            boundary_features = self.halo_exchanger(local_node_features, comm_pattern)
-
-        with TimingReport("process-1"):
-            x = torch.cat([local_node_features, boundary_features], dim=0)
-            x = self.conv1(x, comm_pattern.local_edge_list, num_local_nodes)
-
-        with TimingReport("feature-exchange-2"):
+        with TimingReport(f"feature-exchange-{counter}"):
             boundary_features = self.halo_exchanger(x, comm_pattern)
 
-        with TimingReport("process-2"):
+        with TimingReport(f"process-{counter}"):
             x = torch.cat([x, boundary_features], dim=0)
-            x = self.conv2(x, comm_pattern.local_edge_list, num_local_nodes)
-
-        with TimingReport("final-fc"):
-            x = self.fc(x)
-        # x = self.softmax(x)
+            x = self.convs[-1](x, edge_index)
         return x

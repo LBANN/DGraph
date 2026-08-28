@@ -164,6 +164,8 @@ if __name__ == "__main__":
 
     data, labels, comm_pattern = dataset[0]
     if rank == 0:
+
+        breakpoint()
         import os
 
         print(comm_pattern.comm_map)
@@ -172,3 +174,5 @@ if __name__ == "__main__":
         file_dir = os.path.dirname(file_path)
         print(f"Saving to {file_dir}/comm_map_{world_size}.pt")
         torch.save(comm_pattern.comm_map, f"{file_dir}/comm_map_{world_size}.pt")
+
+    comm.barrier()

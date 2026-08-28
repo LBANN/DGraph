@@ -11,14 +11,12 @@
 # https://github.com/LBANN and https://github.com/LLNL/LBANN.
 #
 # SPDX-License-Identifier: (Apache-2.0)
-
-from typing import Tuple, Union
-import numpy as np
 import torch
 import torch.nn as nn
-from typing import Optional
-from DGraph.Communicator import Communicator
-from dist_utils import SingleProcessDummyCommunicator
+from DGraph.utils.TimingReport import TimingReport
+
+"""
+Local only layers for mesh processing. These layers do not perform any communication and can be used in both GraphCast and MeshGraphNet."""
 
 
 class MeshGraphMLP(nn.Module):
@@ -72,7 +70,8 @@ class MeshGraphMLP(nn.Module):
         Returns:
             The transformed tensor
         """
-        return self._model(x)
+        with TimingReport("MeshGraphMLP/forward"):
+            return self._model(x)
 
 
 class MeshNodeBlock(nn.Module):
@@ -83,7 +82,6 @@ class MeshNodeBlock(nn.Module):
         input_node_dim: int,
         input_edge_dim: int,
         output_node_dim: int,
-        comm: Union[Communicator, SingleProcessDummyCommunicator],
         hidden_dim: int = 512,
         num_hidden_layers: int = 1,
         aggregation_type: str = "sum",
@@ -102,7 +100,6 @@ class MeshNodeBlock(nn.Module):
         super(MeshNodeBlock, self).__init__()
         assert aggregation_type in ["sum"], "Only sum aggregation is supported for now."
         self.aggregation_type = aggregation_type
-        self.comm = comm
         self.mesh_mlp = MeshGraphMLP(
             input_dim=input_node_dim + input_edge_dim,
             output_dim=output_node_dim,
@@ -115,7 +112,6 @@ class MeshNodeBlock(nn.Module):
         node_features: torch.Tensor,
         edge_features: torch.Tensor,
         src_indices: torch.Tensor,
-        rank_mapping: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Compute the node block
@@ -129,17 +125,23 @@ class MeshNodeBlock(nn.Module):
         Returns:
             The updated node features
         """
-        # Sum all the edge features for each node
         num_local_nodes = node_features.shape[0]
-        # TODO: This can be optimized by a fused gather-scatter operation - S.Z
+        with TimingReport("MeshNodeBlock/scatter_add"):
+            aggregated_edge_features = torch.zeros(
+                num_local_nodes,
+                edge_features.shape[-1],
+                device=edge_features.device,
+                dtype=edge_features.dtype,
+            )
+            aggregated_edge_features.scatter_add_(
+                0,
+                src_indices.unsqueeze(-1).expand(-1, edge_features.shape[-1]),
+                edge_features,
+            )
 
-        aggregated_edge_features = self.comm.scatter(
-            edge_features, src_indices, rank_mapping, num_local_nodes
-        )
-        # Concatenate the node and edge features
-        x = torch.cat([node_features, aggregated_edge_features], dim=-1)
-        # Apply the MLP
-        node_features_new = self.mesh_mlp(x) + node_features
+        with TimingReport("MeshNodeBlock/mlp"):
+            x = torch.cat([node_features, aggregated_edge_features], dim=-1)
+            node_features_new = self.mesh_mlp(x) + node_features
         return node_features_new
 
 
@@ -152,7 +154,6 @@ class MeshEdgeBlock(nn.Module):
         input_dst_node_dim: int,
         input_edge_dim: int,
         output_edge_dim: int,
-        comm: Union[Communicator, SingleProcessDummyCommunicator],
         hidden_dim: int = 512,
         num_hidden_layers: int = 1,
         aggregation_type: str = "sum",
@@ -162,7 +163,6 @@ class MeshEdgeBlock(nn.Module):
             input_node_dim (int): The dimensionality of the input node features.
             input_edge_dim (int): The dimensionality of the input edge features.
             output_edge_dim (int): The dimensionality of the output edge features.
-            comm (CommunicatorBase): The communicator to use for distributed training.
             hidden_dim (int, optional): The dimensionality of the hidden layers. Defaults to 512.
             aggregation_type (str, optional): The type of aggregation to use. Defaults to "sum".
         """
@@ -171,7 +171,6 @@ class MeshEdgeBlock(nn.Module):
         super(MeshEdgeBlock, self).__init__()
         assert aggregation_type in ["sum"], "Only sum aggregation is supported for now."
         self.aggregation_type = aggregation_type
-        self.comm = comm
         self.mesh_mlp = MeshGraphMLP(
             input_dim=input_src_node_dim + input_dst_node_dim + input_edge_dim,
             output_dim=output_edge_dim,
@@ -186,8 +185,6 @@ class MeshEdgeBlock(nn.Module):
         edge_features: torch.Tensor,
         src_indices: torch.Tensor,
         dst_indices: torch.Tensor,
-        src_rank_mapping: Optional[torch.Tensor] = None,
-        dst_rank_mapping: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Compute the edge block
@@ -201,16 +198,13 @@ class MeshEdgeBlock(nn.Module):
         Returns:
             The updated edge features
         """
-        # Concatenate the source and destination node features with the edge features
-        src_node_features = self.comm.gather(
-            src_node_features, src_indices, src_rank_mapping
-        )
-        dst_node_features = self.comm.gather(
-            dst_node_features, dst_indices, dst_rank_mapping
-        )
-        concatenated_features = torch.cat(
-            [src_node_features, dst_node_features, edge_features], dim=-1
-        )
-        # Apply the MLP
-        edge_features_new = self.mesh_mlp(concatenated_features) + edge_features
+        with TimingReport("MeshEdgeBlock/gather"):
+            src_node_features = src_node_features[src_indices]
+            dst_node_features = dst_node_features[dst_indices]
+
+        with TimingReport("MeshEdgeBlock/mlp"):
+            concatenated_features = torch.cat(
+                [src_node_features, dst_node_features, edge_features], dim=-1
+            )
+            edge_features_new = self.mesh_mlp(concatenated_features) + edge_features
         return edge_features_new

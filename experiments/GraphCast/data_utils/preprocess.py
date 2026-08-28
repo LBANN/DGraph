@@ -12,17 +12,22 @@ def graphcast_graph_to_nxgraph(mesh_graph):
 
 
 def partition_graph(G: nx.Graph, num_ranks: int):
-    try:
-        import metis
-    except ImportError:
-        raise ImportError("Please install metis to use this function.")
-    if num_ranks == 1:
-        return np.ones(len(G.nodes), dtype=int)
     if num_ranks < 1:
         raise ValueError("Number of ranks must be greater than 0.")
+    if num_ranks == 1:
+        return np.zeros(G.number_of_nodes(), dtype=int)
 
-    metis_graph = metis.networkx_to_metis(G)
-    (edgecuts, node_rank_placement) = metis.part_graph(metis_graph, nparts=num_ranks)
+    try:
+        import pymetis
+    except ImportError:
+        raise ImportError(
+            "Please install pymetis to use this function (`pip install pymetis`)."
+        )
+
+    # pymetis takes an adjacency list indexed by contiguous node id 0..N-1
+    # (the mesh graph's vertices are numbered this way).
+    adjacency = [sorted(G.neighbors(node)) for node in range(G.number_of_nodes())]
+    (edgecuts, node_rank_placement) = pymetis.part_graph(num_ranks, adjacency=adjacency)
     # Node_rank_placement is of shape (num_nodes, ), where each element is the
     # rank of the node in the partitioning.
 

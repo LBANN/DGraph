@@ -22,6 +22,33 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
     def get_world_size(self):
         return self._world_size
 
+    def init_process_group(self, backend: str, **kwargs):
+        pass
+
+    def barrier(self) -> None:
+        pass
+
+    def destroy(self) -> None:
+        pass
+
+    def alloc_buffer(
+        self, size, dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
+        return torch.empty(size, dtype=dtype, device=device)
+
+    def put(
+        self,
+        send_buffer: torch.Tensor,
+        recv_buffer: torch.Tensor,
+        send_offsets: torch.Tensor,
+        recv_offsets: torch.Tensor,
+        remote_offsets=None,
+    ) -> None:
+        # world_size == 1: every rank is this rank, so a halo exchange is just
+        # the identity -- the same trivial case a real backend's all-to-all
+        # would reduce to with a single participant.
+        recv_buffer.copy_(send_buffer)
+
     def scatter(
         self, tensor: torch.Tensor, src: torch.Tensor, rank_mappings, num_local_nodes
     ):

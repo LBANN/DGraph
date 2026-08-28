@@ -47,46 +47,102 @@ def compute_halo_vertices(
     """
     Computes halo vertices. Supports both homogeneous and bipartite/heterogeneous relations.
     """
-    # Fallback for homogeneous graphs
     if dst_partitioning is None:
         dst_partitioning = src_partitioning
 
     src_rank = src_partitioning[edge_list[:, 0]]
     dst_rank = dst_partitioning[edge_list[:, 1]]
 
-    # Cross-rank mask: source is local, destination is remote
-    cross_mask = (src_rank == rank) & (dst_rank != rank)
+    # FIX: Cross-rank mask for pull model: source is remote, destination is local
+    cross_mask = (src_rank != rank) & (dst_rank == rank)
 
-    # Return unique destination vertex IDs from those edges
-    return torch.unique(edge_list[cross_mask, 1])
+    # FIX: Return unique SOURCE vertex IDs from those edges
+    return torch.unique(edge_list[cross_mask, 0])
 
 
 def compute_local_edge_list(
     global_edge_list: torch.Tensor,  # [E, 2]
-    partitioning: torch.Tensor,  # [V]
-    local_vertices_global: torch.Tensor,  # [num_local]
-    halo_vertices_global: torch.Tensor,  # [num_halo]
+    partitioning: torch.Tensor,  # [V_dst] (Acts as dst_partitioning)
+    local_vertices_global: torch.Tensor,  # [num_local], dst vertex space
+    halo_vertices_global: torch.Tensor,  # [num_halo], src vertex space
     rank: int,
+    src_partitioning: Optional[torch.Tensor] = None,
+    src_local_vertices_global: Optional[torch.Tensor] = None,  # [num_src_local], src space
 ) -> torch.Tensor:
+    """
+    Remaps a global edge list [E, 2] (col0=src/neighbor, col1=dst/local) into
+    local numbering.
+
+    The dst column (col1) maps to ``[0, num_local)``. The src column (col0) maps
+    into the augmented src feature buffer ``[src_local ; halo]`` that the halo
+    exchange produces: locally-owned src vertices -> ``[0, num_src_local)`` and
+    halo (remote) src vertices -> ``[num_src_local, num_src_local + num_halo)``.
+
+    For homogeneous graphs (src_partitioning=None), src and dst share one vertex
+    ID space (num_src_local == num_local) and a single remap table is used for
+    both columns. For bipartite/heterogeneous graphs, src_partitioning's vertex
+    space may be sized differently than partitioning's (dst) space, so a separate
+    src remap table is built; it must cover BOTH local and halo src vertices,
+    since a bipartite relation can have on-rank src vertices (e.g. every edge is
+    intra-rank at world_size=1, so num_halo=0 and every src is local).
+    """
     num_local = local_vertices_global.size(0)
     num_halo = halo_vertices_global.size(0)
-    num_global = partitioning.size(0)
+    num_dst_global = partitioning.size(0)
 
-    # Filter edges owned by this rank
-    local_edge_mask = partitioning[global_edge_list[:, 0]] == rank
+    # FIX: Filter edges where the DESTINATION is owned by this rank (Index 1)
+    local_edge_mask = partitioning[global_edge_list[:, 1]] == rank
     local_edges_global = global_edge_list[local_edge_mask]
 
-    # Build inverse map: global_id -> local_idx via scatter
-    g2l = torch.empty(num_global, dtype=torch.long, device=global_edge_list.device)
-    g2l.scatter_(0, local_vertices_global, torch.arange(num_local, device=g2l.device))
-    g2l.scatter_(
-        0,
-        halo_vertices_global,
-        torch.arange(num_local, num_local + num_halo, device=g2l.device),
+    # dst remap table: dst global id -> local index [0, num_local)
+    g2l_dst = torch.empty(
+        num_dst_global, dtype=torch.long, device=global_edge_list.device
     )
+    g2l_dst.scatter_(0, local_vertices_global, torch.arange(num_local, device=g2l_dst.device))
 
-    # Remap to local numbering
-    local_edge_list = g2l[local_edges_global]
+    if src_partitioning is None:
+        # Homogeneous: src and dst share one ID space and one remap table. Local
+        # src vertices are already mapped to [0, num_local) via g2l_dst above.
+        g2l_dst.scatter_(
+            0,
+            halo_vertices_global,
+            torch.arange(num_local, num_local + num_halo, device=g2l_dst.device),
+        )
+        g2l_src = g2l_dst
+    else:
+        # Heterogeneous/bipartite: src vertices live in the (differently-sized)
+        # src vertex space and need their own remap table covering both the
+        # locally-owned src vertices and the halo (remote) src vertices, matching
+        # the augmented src feature buffer layout [src_local ; halo].
+        if src_local_vertices_global is None:
+            raise ValueError(
+                "src_local_vertices_global is required for bipartite/heterogeneous "
+                "edge lists (src_partitioning is not None)."
+            )
+        num_src_global = src_partitioning.size(0)
+        num_src_local = src_local_vertices_global.size(0)
+        g2l_src = torch.empty(
+            num_src_global, dtype=torch.long, device=global_edge_list.device
+        )
+        # local src -> [0, num_src_local)
+        g2l_src.scatter_(
+            0,
+            src_local_vertices_global,
+            torch.arange(num_src_local, device=g2l_src.device),
+        )
+        # halo src -> [num_src_local, num_src_local + num_halo)
+        g2l_src.scatter_(
+            0,
+            halo_vertices_global,
+            torch.arange(
+                num_src_local, num_src_local + num_halo, device=g2l_src.device
+            ),
+        )
+
+    # Remap to local numbering: col0 via src table, col1 via dst table.
+    local_edge_list = torch.stack(
+        [g2l_src[local_edges_global[:, 0]], g2l_dst[local_edges_global[:, 1]]], dim=1
+    )
 
     return local_edge_list
 
@@ -124,8 +180,15 @@ def compute_boundary_vertices(
     target_ranks_unique = unique_encoded // v_src_total
     src_global_unique = unique_encoded % v_src_total
 
-    # 3. Sort by target rank
-    sort_idx = torch.argsort(target_ranks_unique)
+    # 3. Sort by target rank. target_ranks_unique is already non-decreasing (it's
+    # floor(unique_encoded / v_src_total), and unique_encoded is sorted ascending
+    # by construction), but ties (multiple src vertices going to the same target
+    # rank) must keep their relative src_global order -- the receiving rank's
+    # halo buffer is indexed by torch.unique(...)-sorted (ascending) src global
+    # ids (see compute_halo_vertices), so an unstable sort here can silently
+    # permute which local vertex's data lands at which halo slot for ranks with
+    # more than one vertex going to the same target.
+    sort_idx = torch.argsort(target_ranks_unique, stable=True)
     target_ranks_sorted = target_ranks_unique[sort_idx]
     src_global_sorted = src_global_unique[sort_idx]
 
@@ -169,25 +232,53 @@ def build_communication_pattern(
     partitioning: torch.Tensor,
     rank: int,
     world_size: int,
+    src_partitioning: Optional[torch.Tensor] = None,
 ) -> CommunicationPattern:
     """
 
     Args:
-        global_edge_list (torch.Tensor)): A tensor of shape [E, 2]
-        partitioning (torch.Tensor): A tensor of shape [V]
+        global_edge_list (torch.Tensor)): A tensor of shape [E, 2], col0=src/neighbor,
+            col1=dst/local (dst is always the aggregation target and is guaranteed local)
+        partitioning (torch.Tensor): A tensor of shape [V_dst]; the dst/local-vertex
+            partitioning
         rank (int): Rank of this process
         world_size (int): Total number of processes
+        src_partitioning (Optional[torch.Tensor]): A tensor of shape [V_src], the
+            partitioning of the (possibly differently-sized) neighbor/src vertex
+            space, for bipartite/heterogeneous relations. Defaults to `partitioning`
+            for homogeneous graphs.
 
     Returns:
         CommunicationPattern
     """
+    src_part = partitioning if src_partitioning is None else src_partitioning
+
     local_verts = compute_local_vertices(partitioning, rank)
-    halo_verts = compute_halo_vertices(global_edge_list, partitioning, rank)
+    src_local_verts = (
+        local_verts
+        if src_partitioning is None
+        else compute_local_vertices(src_partitioning, rank)
+    )
+
+    halo_verts = compute_halo_vertices(
+        global_edge_list, src_part, rank, dst_partitioning=partitioning
+    )
     local_edges = compute_local_edge_list(
-        global_edge_list, partitioning, local_verts, halo_verts, rank
+        global_edge_list,
+        partitioning,
+        local_verts,
+        halo_verts,
+        rank,
+        src_partitioning=src_partitioning,
+        src_local_vertices_global=src_local_verts,
     )
     send_idx, send_off = compute_boundary_vertices(
-        global_edge_list, partitioning, local_verts, rank, world_size
+        global_edge_list,
+        src_part,
+        src_local_verts,
+        rank,
+        world_size,
+        dst_partitioning=partitioning,
     )
     comm = compute_comm_map(send_off, world_size)
     recv_off, recv_back_off = compute_recv_offsets(comm, rank)
