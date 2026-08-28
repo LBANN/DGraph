@@ -24,7 +24,6 @@ from data_utils.graphcast_graph import (  # noqa: E402
     DistributedGraphCastGraphGenerator,
     move_graphcast_graph_to_device,
 )
-from data_utils.utils import padded_size  # noqa: E402
 from dataset import SyntheticWeatherDataset  # noqa: E402
 from dist_utils import SingleProcessDummyCommunicator  # noqa: E402
 from graphcast_config import Config  # noqa: E402
@@ -187,12 +186,13 @@ def run_correctness_check(
     """Two-step correctness gate for world_size > 1 runs.
 
     Step 1 (structural): SyntheticWeatherDataset.__getitem__ shards grid input/
-    output via a naive contiguous chunk, independent of
-    DistributedGraphCastGraphGenerator's connectivity-weighted grid_part voting
-    used to build the mesh2grid CommunicationPattern. If their per-rank local
-    grid vertex counts disagree, GraphCastDecoder silently operates on the
-    wrong slice of grid vertices. This step catches that mismatch and halts
-    before the (more expensive, more failure-prone) Step 2.
+    output using local_grid_original_indices -- the comm-pattern's
+    connectivity-weighted grid_part voting (see dataset.py), not a naive equal
+    split. This step verifies the dataset actually returns as many local grid
+    rows as the mesh2grid CommunicationPattern expects to own on this rank --
+    catching any regression where dataset sharding and the graph's local
+    partition drift apart -- before the (more expensive, more failure-prone)
+    Step 2.
 
     Step 2 (value-level, only if Step 1 passes): every rank independently
     builds an identical, full (world_size=1, SingleProcessDummyCommunicator)
@@ -206,13 +206,12 @@ def run_correctness_check(
     """
     partition = load_partition(partition_dir, mesh_level, world_size)
 
-    num_local_expected = padded_size(NUM_GRID_POINTS, world_size) // world_size
-
     dataset = build_dataset(cfg, mesh_level, partition, rank, world_size, device)
     static_graph = dataset.get_static_graph()
-    num_local_actual = (
+    num_local_expected = (
         static_graph.distributed_comm_patterns.mesh2grid.num_local_vertices
     )
+    num_local_actual = dataset.local_grid_original_indices.numel()
 
     gathered = [None] * world_size
     dist.all_gather_object(gathered, (rank, num_local_expected, num_local_actual))

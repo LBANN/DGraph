@@ -180,8 +180,15 @@ def compute_boundary_vertices(
     target_ranks_unique = unique_encoded // v_src_total
     src_global_unique = unique_encoded % v_src_total
 
-    # 3. Sort by target rank
-    sort_idx = torch.argsort(target_ranks_unique)
+    # 3. Sort by target rank. target_ranks_unique is already non-decreasing (it's
+    # floor(unique_encoded / v_src_total), and unique_encoded is sorted ascending
+    # by construction), but ties (multiple src vertices going to the same target
+    # rank) must keep their relative src_global order -- the receiving rank's
+    # halo buffer is indexed by torch.unique(...)-sorted (ascending) src global
+    # ids (see compute_halo_vertices), so an unstable sort here can silently
+    # permute which local vertex's data lands at which halo slot for ranks with
+    # more than one vertex going to the same target.
+    sort_idx = torch.argsort(target_ranks_unique, stable=True)
     target_ranks_sorted = target_ranks_unique[sort_idx]
     src_global_sorted = src_global_unique[sort_idx]
 
