@@ -1,6 +1,23 @@
+import os
 from typing import Optional, Tuple
 import torch
 from torch.utils.data import Dataset
+
+from local_papers100m_dataset import LocalPapers100MDataset
+
+# ogb's cached .pt files predate torch 2.6's weights_only=True default and
+# contain plain dicts/numpy arrays that the safe unpickler rejects, so force
+# the legacy behavior for every torch.load call ogb makes internally.
+_torch_load = torch.load
+
+
+def _weights_only_false_load(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _torch_load(*args, **kwargs)
+
+
+torch.load = _weights_only_false_load
+
 from ogb.nodeproppred import NodePropPredDataset
 from DGraph.Communicator import CommunicatorBase
 from DGraph.distributed import CommunicationPattern, build_communication_pattern
@@ -58,6 +75,7 @@ class DGraphOGBDataset(Dataset):
         comm: CommunicatorBase,
         node_rank_placement: Optional[torch.Tensor] = None,
         root_dir: Optional[str] = None,
+        feature_dim: Optional[int] = None,
         *args,
         **kwargs,
     ) -> None:
@@ -66,6 +84,11 @@ class DGraphOGBDataset(Dataset):
             dname (str): Name of the dataset
             comm (CommunicatorBase): Communicator object
             node_rank_placement (torch.Tensor): Node rank placement, where node_rank_placement[i] is the rank of the node i
+            feature_dim (Optional[int]): If set, truncate node features to the
+                first `feature_dim` columns before sharding. A memory-pressure
+                lever for timing-only benchmarks (no real accuracy tracked) on
+                graphs whose full feature width doesn't fit -- not meaningful
+                for anything that reports learned accuracy.
             *args:
             **kwargs:
 
@@ -77,42 +100,73 @@ class DGraphOGBDataset(Dataset):
 
         comm.barrier()
 
-        if self.rank == 0:
-            # Load dataset on rank 0 first
-            self.dataset = NodePropPredDataset(
-                name=dname, root=root_dir if root_dir else "dataset"
-            )
+        local_papers100m_dir = os.path.join(
+            root_dir or "dataset", "papers100M_dgl"
+        )
+        extract_dir = os.path.join(
+            local_papers100m_dir, "ogbn-papers100M-seeds"
+        )
+        converted_dir = os.path.join(local_papers100m_dir, "converted")
+        if dname == "ogbn-papers100M" and os.path.exists(
+            os.path.join(converted_dir, "edge_index.pt")
+        ):
+            self.dataset = LocalPapers100MDataset(extract_dir, converted_dir)
+        else:
+            if self.rank == 0:
+                # Load dataset on rank 0 first
+                self.dataset = NodePropPredDataset(
+                    name=dname, root=root_dir if root_dir else "dataset"
+                )
+
+            comm.barrier()
+
+            # Load dataset on all other ranks
+            if self.rank != 0:
+                self.dataset = NodePropPredDataset(
+                    name=dname, root=root_dir if root_dir else "dataset"
+                )
 
         comm.barrier()
 
-        # Load dataset on all other ranks
-        if self.rank != 0:
-            self.dataset = NodePropPredDataset(
-                name=dname, root=root_dir if root_dir else "dataset"
-            )
+        import time as _time
 
-        comm.barrier()
+        _t0 = _time.time()
 
+        def _log(msg):
+            if self.rank == 0:
+                print(f"[DGraphOGBDataset][rank0] +{_time.time() - _t0:6.1f}s {msg}", flush=True)
+
+        _log("calling self.dataset[0] ...")
         graph_data, labels = self.dataset[0]
+        _log("self.dataset[0] done; calling get_idx_split() ...")
         split_idx = self.dataset.get_idx_split()
+        _log("get_idx_split() done")
 
         num_nodes = graph_data["num_nodes"]
         node_features = torch.from_numpy(graph_data["node_feat"]).float()
+        if feature_dim is not None:
+            # Column slice on the (possibly mmap-backed) array stays a view;
+            # only the row-gather below actually materializes memory.
+            node_features = node_features[:, :feature_dim]
         edge_index = torch.from_numpy(graph_data["edge_index"]).long().T
         labels = torch.from_numpy(labels).long()
+        _log(f"tensors wrapped (num_nodes={num_nodes}, edge_index={tuple(edge_index.shape)})")
 
         if node_rank_placement is None:
             node_rank_placement = get_round_robin_node_rank_map(
                 num_nodes, self.world_size
             )
+        _log("node_rank_placement ready; building communication pattern ...")
 
         self.comm_pattern = generate_communication_pattern(
             edge_index, node_rank_placement, self.rank, self.world_size
         )
+        _log("communication pattern built")
 
         local_nodes = node_rank_placement == self.rank
         local_node_features = node_features[local_nodes, :]
         local_labels = labels[local_nodes]
+        _log("local features/labels sliced")
         self.local_node_features = local_node_features
         self.local_labels = local_labels
 

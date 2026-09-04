@@ -49,10 +49,12 @@ def benchmark_ogb_end_to_end(
     warm_up: int = 10,
     cur_dir: Optional[str] = None,
     convert_to_sparse_adj: bool = True,
+    dtype: torch.dtype = torch.float32,
 ):
 
     graph_dataset = dataset[0]
     local_node_features, local_labels, comm_pattern = graph_dataset
+    local_node_features = local_node_features.to(dtype)
 
     in_dim = local_node_features.shape[1]
     local_masks = dataset.get_masks()
@@ -67,6 +69,7 @@ def benchmark_ogb_end_to_end(
             num_local_nodes=comm_pattern.num_local_vertices,
             num_halo_nodes=comm_pattern.num_halo_vertices,
             device=device,
+            dtype=dtype,
         )
     model = GCNModel(
         in_channels=in_dim,
@@ -74,7 +77,7 @@ def benchmark_ogb_end_to_end(
         out_channels=num_classes,
         num_layers=num_layers,
         halo_exchanger=halo_exchanger,
-    ).to(device)
+    ).to(device=device, dtype=dtype)
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = torch.nn.CrossEntropyLoss()
@@ -86,6 +89,7 @@ def benchmark_ogb_end_to_end(
         print(
             f"Starting benchmark with {comm.get_world_size()} processes, local rank {local_rank}, global rank {rank}",
             f" Local node features shape: {local_node_features.shape}, local labels shape: {local_labels.shape}",
+            f" dtype: {dtype}, hidden_dims: {hidden_dims}",
         )
 
     for epoch in range(epochs):
@@ -114,14 +118,31 @@ def benchmark_ogb_end_to_end(
             json.dump(report, f, indent=4)
 
 
-def main(dataset: str = "arxiv"):
+_DTYPE_MAP = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
+
+
+def main(
+    dataset: str = "arxiv",
+    epochs: int = 100,
+    warm_up: int = 10,
+    hidden_dims: int = 128,
+    dtype: str = "fp32",
+    feature_dim: Optional[int] = None,
+    log_suffix: str = "",
+):
 
     assert dataset in (
         "arxiv",
         "products",
-    ), f"Unsupported dataset '{dataset}'. Choose from: arxiv, products."
+        "papers100M",
+    ), f"Unsupported dataset '{dataset}'. Choose from: arxiv, products, papers100M."
+    assert dtype in _DTYPE_MAP, f"Unsupported dtype '{dtype}'. Choose from: {list(_DTYPE_MAP)}."
 
-    num_classes = {"arxiv": 40, "products": 47}[dataset]
+    num_classes = {"arxiv": 40, "products": 47, "papers100M": 172}[dataset]
 
     comm = Communicator.init_process_group("nccl")
     rank = comm.get_rank()
@@ -135,21 +156,24 @@ def main(dataset: str = "arxiv"):
         dname=f"ogbn-{dataset}",
         comm=comm,
         root_dir=f"{cur_dir}/data",
+        feature_dim=feature_dim,
     )
 
     benchmark_ogb_end_to_end(
         dataset=dist_dataset,
         comm=comm,
         lr=0.01,
-        epochs=100,
-        log_prefix=f"ogbn_{dataset}-{world_size}",
-        hidden_dims=128,
+        epochs=epochs,
+        log_prefix=f"ogbn_{dataset}-{world_size}{log_suffix}",
+        hidden_dims=hidden_dims,
         num_classes=num_classes,
         num_layers=3,
         device="cuda",
         rank=rank,
         local_rank=local_rank,
+        warm_up=warm_up,
         cur_dir=cur_dir,
+        dtype=_DTYPE_MAP[dtype],
     )
 
 

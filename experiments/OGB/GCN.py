@@ -24,6 +24,7 @@ def create_sparse_adj(
     num_local_nodes,
     num_halo_nodes,
     device: Union[str, torch.device] = "cpu",
+    dtype: torch.dtype = torch.float32,
 ):
     """
     Converts an edge_index of shape [num_edges, 2] into a PyTorch sparse tensor.
@@ -42,7 +43,7 @@ def create_sparse_adj(
     )
 
     # Adjacency values are 1 for unweighted graphs
-    values = torch.ones(edge_index.size(0), dtype=torch.float32, device=device)
+    values = torch.ones(edge_index.size(0), dtype=dtype, device=device)
 
     # Create the sparse COO tensor
     adj_sparse = torch.sparse_coo_tensor(
